@@ -1,4 +1,4 @@
-# CLAUDE.md
+# claude.md
 
 ## Project
 
@@ -59,7 +59,7 @@ and dates live in `TRACKER.md` — this is the reference plan.
 
 | Phase | Scope | Estimate | Depends on |
 |---|---|---|---|
-| 0 | Close spec gaps: resolve 5 stub sections, lock tech stack, define IMPS cycle handling | 1.5–2 weeks | — |
+| 0 | Close spec gaps: resolve 5 stub sections, define IMPS cycle handling (tech stack locked 2026-08-28, frontend framework still open) | 1.5–2 weeks | — |
 | 1 | Database Design + File Processing Framework | 3–4 weeks | Phase 0 |
 | 2 | Transaction Processing Engine + Business Rule Engine | 5–6 weeks | Phase 1 |
 | 3 | Exception Management + Maker-Checker Workflow | 3–4 weeks | Phase 2 |
@@ -85,9 +85,12 @@ disappear when the spec doc is next edited:
 - Five stub sections with zero content: Exception Management,
   Maker-Checker Workflow, NPCI File Generation, Database Design, Front
   End Design, API.
-- Tech stack is "under consideration," not decided: Django/DRF for the
-  app, Postgres or MySQL for the database, Python for file parsing,
-  encrypted-file handling unspecified. Don't treat any of these as final.
+- Tech stack locked 2026-08-30 (see `TRACKER.md` → Tech Stack table):
+  Django/DRF, PostgreSQL, Python (pandas/openpyxl) for file parsing,
+  Celery+Redis for async jobs. Two items still open within that: the
+  frontend framework (React vs. Django templates+HTMX) is undecided,
+  and encrypted-file handling (`cryptography`) needs confirming against
+  the actual NPCI file-exchange spec before treating it as final.
 
 ## Reporting format
 

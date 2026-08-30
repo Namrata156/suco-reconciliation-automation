@@ -25,17 +25,17 @@ accurate than the initial planning numbers above.
 
 | Component | Phase | Status | Owner | Notes |
 |---|---|---|---|---|
-| Database Design | 1 | Not Started | | Header only, no content |
-| File Processing Framework | 1 | In Progress | | Source file details, normalization, RRN extraction defined; IMPS cycle-wise handling still open |
-| Transaction Processing Engine | 2 | In Progress | | Presence matrix, matching keys, 3-way/4-way recon defined |
-| Business Rule Engine | 2 | In Progress | | Rule evaluation & repository defined; error/response code table missing |
-| Exception Management | 3 | Not Started | | Header only, no content |
-| Maker-Checker Workflow | 3 | Not Started | | Header only, no content |
-| Settlement Control / NTSL Validation | 4 | In Progress | | Validation and exceptions defined |
-| NPCI File Generation | 4 | Not Started | | Header only, no content (functional requirement exists, design doesn't) |
-| API | 5 | Not Started | | Header only; tooling still "under consideration" |
-| Front End Design | 5 | Not Started | | Header only, no content |
-| Reporting Module | 6 | Not Started | | Not yet started |
+| Database Design | 1 | Not Started | backend-engineer | Header only, no content |
+| File Processing Framework | 1 | In Progress | backend-engineer | Source file details, normalization, RRN extraction defined; IMPS cycle-wise handling still open |
+| Transaction Processing Engine | 2 | In Progress | backend-engineer | Presence matrix, matching keys, 3-way/4-way recon defined |
+| Business Rule Engine | 2 | In Progress | backend-engineer | Rule evaluation & repository defined; error/response code table missing |
+| Exception Management | 3 | Not Started | backend-engineer (logic) / frontend-engineer (UI) | Header only, no content |
+| Maker-Checker Workflow | 3 | Not Started | backend-engineer (logic) / frontend-engineer (UI) | Header only, no content |
+| Settlement Control / NTSL Validation | 4 | In Progress | backend-engineer | Validation and exceptions defined |
+| NPCI File Generation | 4 | Not Started | backend-engineer | Header only, no content (functional requirement exists, design doesn't) |
+| API | 5 | Not Started | backend-engineer | Header only; framework now locked (Django/DRF), no endpoints designed yet |
+| Front End Design | 5 | Not Started | frontend-engineer | Header only, no content; framework choice (React vs. Django templates+HTMX) still open |
+| Reporting Module | 6 | Not Started | backend-engineer (data/queries) / frontend-engineer (UI) | Not yet started |
 
 ## Open Questions
 
@@ -45,6 +45,16 @@ accurate than the initial planning numbers above.
 | Transaction register flowchart | Transaction Processing Engine > Transaction Registers | | |
 | Presence-matrix example | Transaction Processing Engine > Transaction Presence Verification | | |
 | Error/response code repository table | Business Rule Engine > Error Code and Response Code Management | | |
-| Main app framework: Django vs alternatives | Tools under consideration | | |
-| Database: PostgreSQL vs MySQL | Tools under consideration | | |
 | Encrypted file handling approach | Tools under consideration | | |
+
+## Tech Stack (approved 2026-08-28)
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Backend / API | Django + Django REST Framework | Fits rule-engine and maker-checker patterns well |
+| Database | PostgreSQL | Stronger transactional integrity for settlement/recon; JSONB for rule definitions; better reporting support |
+| File parsing | Python (pandas / openpyxl) | UPI file intake, normalization, RRN extraction, cycle-wise handling |
+| Task/queue | Celery + Redis | Async file processing, scheduled cycle-wise ingestion, NPCI file generation jobs |
+| Encrypted-file handling | Python `cryptography` | Scheme may be externally mandated by NPCI/bank partners — confirm against file-exchange spec before finalizing implementation |
+| Frontend | React (or Django templates + HTMX as lighter alternative) | Depends on richness needed for Exception Management / Maker-Checker UI |
+| Auth | Django built-in auth + role-based permissions | Administrator / Maker / Checker / Auditor roles |
