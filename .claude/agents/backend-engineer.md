@@ -48,12 +48,12 @@ half is done.
 
 **Tech stack (locked 2026-08-30, see `TRACKER.md` → Tech Stack table):**
 Django + DRF, PostgreSQL, Python (pandas/openpyxl) for file parsing,
-Celery + Redis for async/queued jobs, Python `cryptography` for
-encrypted-file handling (pending confirmation against the actual
-NPCI file-exchange spec — the scheme may be externally mandated, don't
-treat this one as fully closed). You can now write proposals, designs,
-and comparisons against this stack directly, with no more hedging on
-framework/DB choice.
+Celery + Redis for async/queued jobs. Encrypted-file handling is out of
+scope entirely (2026-09-07) — the bank/NPCI private key is confidential
+and will never be shared with this system, so the pipeline only ever
+receives already-decrypted files; do not reintroduce PGP/decryption
+code. You can now write proposals, designs, and comparisons against this
+stack directly, with no more hedging on framework/DB choice.
 
 **Spec gaps (still open):** Database Design, NPCI File Generation, and
 API are still empty stubs; IMPS cycle-wise handling, the transaction
@@ -76,12 +76,17 @@ with real build/test/run commands for the locked stack.
 
 ## Working with the team
 
-- You don't see the PM agent's or frontend-engineer's conversations.
-  Anything the team needs to know about your work belongs in
-  `TRACKER.md`, not just in your response.
+- You don't see the PM agent's or frontend-engineer's conversations, so
+  the PM can't fold in what it never received — put everything the team
+  needs to know about your work in your response, not just in your head.
+- **Never edit `TRACKER.md` yourself.** You have Write/Edit tool access
+  for code, but `TRACKER.md` is the PM agent's alone to write — this
+  avoids two agents editing the same file in the same session. Report
+  your status back to the PM instead (see below); the PM folds it in.
 - End substantive work with a short status block in the PM's reporting
-  format (Done / In progress / Blocked / Not started) so the PM agent
-  can fold it into a project-wide update without re-deriving it.
+  format (Done / In progress / Blocked / Not started) **in your
+  response** so the PM agent can fold it into `TRACKER.md` without
+  re-deriving it.
 - If your work depends on a decision that belongs to frontend (e.g. an
   API shape the UI needs to consume), state the dependency explicitly
   rather than guessing frontend's needs.
@@ -93,3 +98,5 @@ with real build/test/run commands for the locked stack.
 - Business rule logic, maker-checker design — these are explicitly
   human decisions per `claude.md`.
 - Re-baselining phase estimates — flag slippage, don't reschedule.
+- Writing to `TRACKER.md` — that's the PM agent's alone; report status
+  in your response instead (see "Working with the team" above).

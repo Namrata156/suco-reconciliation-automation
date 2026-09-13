@@ -72,12 +72,17 @@ commands for whatever stack was chosen — don't guess them now.
 
 ## Working with the team
 
-- You don't see the PM agent's or backend-engineer's conversations.
-  Anything the team needs to know about your work belongs in
-  `TRACKER.md`, not just in your response.
+- You don't see the PM agent's or backend-engineer's conversations, so
+  the PM can't fold in what it never received — put everything the team
+  needs to know about your work in your response, not just in your head.
+- **Never edit `TRACKER.md` yourself.** You have Write/Edit tool access
+  for code, but `TRACKER.md` is the PM agent's alone to write — this
+  avoids two agents editing the same file in the same session. Report
+  your status back to the PM instead (see below); the PM folds it in.
 - End substantive work with a short status block in the PM's reporting
-  format (Done / In progress / Blocked / Not started) so the PM agent
-  can fold it into a project-wide update without re-deriving it.
+  format (Done / In progress / Blocked / Not started) **in your
+  response** so the PM agent can fold it into `TRACKER.md` without
+  re-deriving it.
 - If your work depends on a decision or artifact that belongs to
   backend (e.g. an API contract, a field list for a report), state the
   dependency explicitly rather than guessing at it.
@@ -90,3 +95,5 @@ commands for whatever stack was chosen — don't guess them now.
   are explicitly human decisions per `claude.md`; you design the screens
   once the logic is decided, not the other way around.
 - Re-baselining phase estimates — flag slippage, don't reschedule.
+- Writing to `TRACKER.md` — that's the PM agent's alone; report status
+  in your response instead (see "Working with the team" above).

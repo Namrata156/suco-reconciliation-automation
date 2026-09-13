@@ -85,12 +85,14 @@ disappear when the spec doc is next edited:
 - Five stub sections with zero content: Exception Management,
   Maker-Checker Workflow, NPCI File Generation, Database Design, Front
   End Design, API.
-- Tech stack locked 2026-08-30 (see `TRACKER.md` → Tech Stack table):
+- Tech stack locked 2026-08-28 (see `TRACKER.md` → Tech Stack table):
   Django/DRF, PostgreSQL, Python (pandas/openpyxl) for file parsing,
-  Celery+Redis for async jobs. Two items still open within that: the
-  frontend framework (React vs. Django templates+HTMX) is undecided,
-  and encrypted-file handling (`cryptography`) needs confirming against
-  the actual NPCI file-exchange spec before treating it as final.
+  Celery+Redis for async jobs. One item still open within that: the
+  frontend framework (React vs. Django templates+HTMX) is undecided.
+  Encrypted-file handling was resolved 2026-09-07 by removing it from
+  scope entirely — the bank/NPCI private key is confidential and will
+  never be shared with this system, so the pipeline only ever receives
+  already-decrypted files (see `TRACKER.md` → Tech Stack table).
 
 ## Reporting format
 
@@ -110,6 +112,11 @@ anything "done."
 
 - Keep `TRACKER.md` as the single place for status and schedule — don't
   duplicate status inside this file or inside the spec doc itself.
+- `CHANGELOG.md` is PM-owned, same as `TRACKER.md`: it's the running log
+  of features added and modifications made. Engineer agents (backend/
+  frontend) implement and report back what changed; the PM logs the
+  entry once the work is confirmed done — engineers should not edit
+  `CHANGELOG.md` directly.
 - When the spec doc changes, note what changed and which tracker rows
   or phases it affects, rather than silently re-syncing.
 - Once real development starts, add a "Development" section here with

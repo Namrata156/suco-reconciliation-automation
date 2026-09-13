@@ -1,0 +1,314 @@
+# Changelog
+
+Running log of features added and modifications made to the codebase.
+This is a chronological build history — for current status/schedule per
+component, see `TRACKER.md`; for requirements, see
+`docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
+don't duplicate this history there.
+
+## Baseline (Phase 1 scaffolding, pre-dates this log)
+
+No commit history distinguishes individual features within this baseline
+(built and left uncommitted before this log started), so it's recorded
+here as one set:
+
+- **`core` app** — shared reference data used across payment modules:
+  `PaymentModule` (payment rail, e.g. UPI/IMPS/NEFT/RTGS/ATM), `SettlementCycle`
+  (admin-editable settlement cycles per module, e.g. UPI's 10 numbered
+  financial cycles 1C-10C + DC1/DC2 non-financial cycles — found to
+  contradict the spec's "8 cycles," tracked as an open question),
+  `RegisterType` and `Direction` enums.
+- **`file_processing` app — models**: `FileTypeConfig` (File Configuration
+  Repository: per-file-type intake/parse/validate/normalize rules,
+  versioned), `UploadedFile` (per-file lifecycle tracking), `FileValidationException`
+  (File Validation Exception Queue).
+- **Decryption** (`decryption.py`) — PGP decryption via `python-gnupg`,
+  confirmed against real sample data (genuine OpenPGP, BouncyCastle/.NET-generated).
+- **Format sniffing** (`parsers/sniff.py`) — detects a file's real payload
+  format from content, not its extension (confirmed CBS's `.xls` is
+  SpreadsheetML XML and NTSL's `.xls` is genuine OOXML zip — extensions
+  aren't trustworthy).
+- **Parsers**: `parsers/cbs_spreadsheetml.py` (CBS GL Extract, SpreadsheetML
+  XML, honors sparse `ss:Index` cell positions), `parsers/ntsl_ooxml.py`
+  (NTSL, real OOXML zip), `parsers/csv_parser.py` (generic CSV).
+- **Pagination stripping** (`parsers/pagination_strip.py`) — content-pattern-based
+  (not row-count-based) removal of header/footer/GL-info/opening-balance
+  rows, so parsing works regardless of a file's exact repetition/position
+  of these artifacts.
+- **Celery pipeline** (`tasks.py`) — 4 chained stages: `decrypt_file` →
+  `format_sniff_and_parse` → `validate_structure_and_content` →
+  `normalize_rows` (RRN extraction, direction derivation, amount parsing).
+  Stage 5 (`load_to_unified_table`) deliberately stubbed pending the
+  `TransactionRecord` field list from the project owner.
+- **Admin** (`admin.py`) — plain Django admin registration for
+  `FileTypeConfig`, `UploadedFile`, `FileValidationException` (no upload
+  API/frontend exists yet — that's Phase 5).
+
+## 2026-09-05
+
+- **Added: interactive business-date selection for CBS (3-day-range) files.**
+  Previously, `UploadedFile.business_date` (the date `normalize_rows` filters
+  CBS rows against, since CBS files cover 13th–15th July for a business
+  date of 14th July) was a blind, required field someone had to type
+  correctly before processing ran — no way to see what dates the file
+  actually contained first.
+  Now: for `FileTypeConfig.date_validation_mode == RANGE_CONTAINS` file
+  types, the pipeline stops after `validate_structure_and_content`,
+  surfaces the distinct dates actually found in the file
+  (`UploadedFile.detected_dates`), and pauses at a new
+  `ProcessingStatus.AWAITING_DATE_SELECTION` status. A new Django admin
+  action ("Select business date for detected date range") on
+  `UploadedFileAdmin` lets the user pick one of the detected dates via an
+  intermediate page; on submit it sets `business_date` and re-queues
+  `normalize_rows`. `EXACT_MATCH` file types (DRC/Timeout/NTSL/etc.) are
+  unaffected — they keep running straight through as before.
+  Added `UploadedFile.pending_pipeline_context` (holds stage 3's output
+  durably while paused, since rows otherwise only travel between Celery
+  stages as in-flight task payloads) and migration
+  `0002_uploadedfile_detected_dates_and_more.py`.
+  This is a **Django-admin stand-in** — scoped deliberately to Phase 1 since
+  no upload API/frontend exists yet (that's Phase 5). Tracked in
+  `TRACKER.md` Open Questions so the real UI/API version isn't forgotten.
+  New test: `file_processing/tests/test_date_selection.py`.
+
+- **Fixed: CBS pagination patterns missing two non-data row types.** CBS's
+  canonical pagination-artifact pattern list (`CBS_ARTIFACT_PATTERNS` in
+  `file_processing/tests/test_pagination_strip.py` — the de facto
+  reference for the real `FileTypeConfig.pagination_artifact_patterns`
+  value, since no seed/fixture data for a real CBS config exists yet)
+  didn't strip two row types, confirmed by auditing all 154,661 rows
+  across all 3 worksheets of the real sample file with the actual parser:
+  - Each worksheet's own column-header row (`Date | Remarks | Cheque# |
+    Withdrawals | Deposits | Balance`) — its "Date" cell literally
+    contains the word "Date," which would otherwise leak into
+    `detected_dates` as a bogus 4th choice alongside the real
+    13th/14th/15th. Pattern added: `r"^Date\s+Remarks"`.
+  - A report-end summation/totals row (`"Summation of Debits and
+    Credit..."` followed by aggregate totals, worksheet "Report2") — no
+    date cell, so it previously slipped past both pagination stripping
+    *and* the business-date row filter and was silently counted in
+    `normalize_rows` regardless of which date was selected. Pattern
+    added: `r"^Summation of Debits and Credit"`.
+  Audit found no other non-data row types and nothing ambiguous — the
+  3-worksheet split is purely Excel's 65,536-row-per-sheet limit slicing
+  one continuous report (confirmed no repeated header/footer at
+  worksheet-split boundaries), not separate "pages" with their own
+  headers. `test_date_selection.py` now imports `CBS_ARTIFACT_PATTERNS`
+  from `test_pagination_strip.py` instead of keeping its own
+  locally-patched copy.
+
+- **Hardened: date-cell parsing (`_row_date_iso` in `tasks.py`).**
+  Previously, a cell value that wasn't in the recognized `"T"`-delimited
+  ISO format silently fell back to blind string-slicing
+  (`str(raw_date)[:10]`), which could mistake a non-date value (like the
+  header row's literal "Date") for a real date. Now: ISO datetime-with-`T`
+  values are parsed and normalized to `YYYY-MM-DD` (confirmed the only
+  format present anywhere in the real 154,661-row sample); a bare
+  `YYYY-MM-DD` value is validated via `datetime.strptime` and normalized
+  (defensive handling for a format not currently seen, but no longer
+  guessed at); anything else (garbage, a label like `"Date"`, empty)
+  returns `None` — no blind slicing remains.
+  New tests: `test_strips_column_header_row` /
+  `test_strips_summation_footer_row` (`test_pagination_strip.py`),
+  `file_processing/tests/test_row_date_iso.py` (new file). One existing
+  test's expected count corrected: `valid_record_count` for the 14th is
+  **69,239** (not 69,240) now that the summation row is correctly
+  excluded rather than miscounted in.
+  `python manage.py test file_processing`: **30 tests, OK (2 skipped,
+  pre-existing/unrelated — no local gpg-agent in this sandbox)**.
+
+## 2026-09-07
+
+- **Removed: PGP decryption, entirely and permanently.** Project owner
+  decided the bank/NPCI private key is confidential and will never be
+  shared with this system — the pipeline will only ever receive
+  already-decrypted files (confirmed via `sample_decrypted_files/`, flat
+  plaintext CSVs with no `.pgp`/zip wrapping). This isn't "not needed
+  yet" — it's out of scope permanently, so the code was deleted rather
+  than left dormant.
+  Deleted: `file_processing/decryption.py`, `file_processing/secrets_backend.py`,
+  `file_processing/tests/test_decryption.py`.
+  Changed: `parsers/sniff.py` (dropped `ContainerKind.PGP_ARMORED`/
+  `PGP_BINARY`, `_looks_like_pgp_binary()`, the PGP-armor-header check;
+  the zip-containing-`.pgp`-members special case collapsed into a
+  generic "unrecognized zip contents" fallback); `tasks.py` (removed the
+  `decrypt_file` Celery task — former Stage 1 — `build_processing_chain`
+  now starts at `format_sniff_and_parse`; stages renumbered 1-4, not
+  2-5); `models.py` (removed `ContainerFormat.PGP_ARMORED`/`PGP_BINARY`,
+  `FileTypeConfig.decrypt_required`/`decryption_key_ref`, the
+  `EncryptionStatus` class, `UploadedFile.encryption_status`,
+  `ProcessingStatus.DECRYPTED`); `requirements.txt` (dropped
+  `python-gnupg`, `PGPy`, `cryptography` — confirmed `cryptography` was
+  never imported by any code, only listed alongside the other two).
+  New migration: `0003_remove_filetypeconfig_decrypt_required_and_more.py`.
+  `python manage.py test file_processing`: **24 tests, OK**.
+
+## 2026-09-08
+
+- **Added: the `transactions` app and `TransactionRecord` model** — the
+  unified table `file_processing/tasks.py`'s Stage 4
+  (`load_to_unified_table`) has been forward-referencing since it was
+  first stubbed. One table across every file type (not separate tables
+  per source), with common canonical fields as real indexed columns —
+  `payment_module`, `source_register_type` (reuses `core.RegisterType`),
+  `uploaded_file` (FK, `on_delete=PROTECT`, traceability back to the
+  source file), `settlement_cycle`, `business_date`, `rrn`, `rrn_valid`,
+  `amount`, `direction` (reuses `core.Direction`), `row_reference` — plus
+  a JSONB `extra_fields` column for whatever's unique to each source
+  (CBS remarks, DRC/Timeout STAN/Response Code, Adjustment's ~48 extra
+  columns, etc.). Indexes on `rrn` (the core matching key),
+  `(payment_module, business_date)`, and `(source_register_type,
+  business_date)`.
+  Two duplicate-prevention constraints added: `unique_row_per_uploaded_file`
+  (`TransactionRecord`, blocks the same file's rows loading twice — e.g.
+  a retried Celery task) and `unique_sha256_hash_for_non_reprocess_uploads`
+  (`UploadedFile`, blocks the same file content being uploaded twice by
+  mistake — exempts genuine reprocesses via `is_reprocess=True`).
+  Design decision: corrections/reprocessing never delete old
+  `TransactionRecord` rows — this is a bank reconciliation system with an
+  explicit Auditor role, and deleting data destroys the audit trail.
+  Superseded rows stay in the table, excluded from matching/reporting via
+  `uploaded_file__is_current=True` (that flag already existed on
+  `UploadedFile`).
+  Table partitioning was considered and explicitly deferred — see
+  `doubts.md`'s "TransactionRecord table partitioning" entry for the
+  concrete triggers to revisit it by.
+  **Scope: schema only.** `load_to_unified_table`'s actual per-file-type
+  population logic is not built yet — still blocked on open `doubts.md`
+  items (Adjustment's business-date field, the `SSKUPI14072026.csv`
+  mystery file, the Merchant Raw Data BBP variant, scope/rollout order).
+  New migrations: `transactions/migrations/0001_initial.py`,
+  `file_processing/migrations/0004_uploadedfile_unique_sha256_hash_for_non_reprocess_uploads.py`.
+  `python manage.py test transactions file_processing`: **31 tests, OK**.
+
+## 2026-09-11
+
+- **Changed: local Postgres moved to `postgres:16-alpine`, host port
+  5432 → 5434.** Two separate fixes, both in `docker-compose.yml`/
+  `.env`/`.env.example`:
+  - Swapped `postgres:16` for `postgres:16-alpine` to reduce local disk
+    footprint (dev-machine space concern). Same Postgres 16 engine/SQL
+    behavior — measured 419MB on disk, smaller than a full non-alpine
+    image (~1GB typical) though not as small as Alpine images generally
+    run (Postgres needs enough runtime dependencies that the Alpine
+    savings are more modest here than for something like Redis).
+  - **Found and fixed a real port conflict while verifying the above**:
+    a native PostgreSQL 18 Windows service was already running and bound
+    to port 5432 on the dev machine (unrelated to this project), so
+    every connection attempt from `manage.py` was silently landing on
+    that native install instead of our container — surfaced as password
+    authentication failures that had nothing to do with the actual
+    `.env` password. Port 5433 was also already taken (an unrelated
+    project's own Postgres container). Remapped our container to host
+    port **5434** rather than touch the pre-existing native install.
+  Verified end-to-end against the real container (not the
+  `DJANGO_USE_SQLITE_FOR_MIGRATION_CHECK` stand-in): `manage.py migrate`
+  applies all 26 migrations cleanly; `manage.py test`: **52 tests, OK**
+  (real Postgres, ~473s — slower than the SQLite-backed runs used
+  earlier, as expected for real disk-backed transactions).
+
+## 2026-09-10
+
+- **Added: Stage 4 (`load_to_unified_table`) implementation** — the
+  Celery pipeline's final stage, previously a deliberate stub, now
+  populates `transactions.TransactionRecord` for six of the seven
+  in-scope classifications: Raw Data, Merchant Raw Data, Merchant Raw
+  Data BBP (new), DRC, Timeout, and Adjustment. NTSL remains excluded by
+  design — see `doubts.md`, it's a settlement-summary report with no
+  RRN column, not a per-transaction register.
+  - **New `core.RegisterType.MERCHANT_RAW_DATA_BBP`** — BBP files
+    (cycles 4/5/6's `UPIBBPMERCHANTRAWDATAACQSSK...`) get their own
+    classification per the project owner's 2026-09-10 decision, kept
+    separately identifiable for audit/reporting even though row
+    structure is identical to standard Merchant Raw Data ACQ.
+  - **New `FileTypeConfig.has_header` field** distinguishing DRC/
+    Timeout/Adjustment's real header row from Raw Data/Merchant Raw
+    Data/BBP's headerless `HT`/`TX`/`FT` layout; threaded through
+    `csv_parser.py`.
+  - **`_row_date_iso` extended** for `DD/MM/YYYY` (DRC/Timeout) and
+    `DD-MM-YYYY` (Adjustment), alongside the existing ISO formats.
+  - **New `_extract_generic_rrn`** (position-based RRN extraction +
+    leading-apostrophe stripping) used by every non-CBS type via a new
+    branch in `normalize_rows`; CBS's existing `remarks_prefix`
+    extraction is untouched.
+  - **New partial composite index** `(rrn, business_date)` on
+    `TransactionRecord` (`rrn_valid=True` only), supporting the
+    RRN+business_date matching key direction confirmed by the project
+    owner (RRNs are not assumed globally unique across business dates).
+  - `load_to_unified_table` resolves each row's `business_date` (its own
+    date if resolvable, else the file's), skips and logs
+    `SKIPPED_UNLOADABLE_ROW` for rows with no parseable amount rather
+    than fabricating one, stores full raw row cells under
+    `extra_fields.raw_cells`, and uses `bulk_create(...,
+    ignore_conflicts=True)` for retry-safety. `build_processing_chain`
+    and the admin "Select business date" action now include Stage 4.
+  - **New `seed_file_type_configs` management command** — creates the 7
+    `FileTypeConfig` rows (none existed before this; a data migration
+    was tried first but its inserts don't roll back between tests and
+    collided with every existing test's own `PaymentModule` fixture).
+  - New migrations: `file_processing/migrations/0005_filetypeconfig_has_header_and_more.py`,
+    `transactions/migrations/0002_alter_transactionrecord_source_register_type_and_more.py`.
+  - New tests: `file_processing/tests/test_load_to_unified_table.py`
+    (17 tests covering all 7 configs plus skip/idempotency/chain-shape
+    behavior), `file_processing/tests/test_row_date_iso.py` (new date-
+    format coverage).
+  `python manage.py test`: **48 tests, OK** (up from 31).
+  Verified end-to-end against real sample data: RAW_DATA 1,810 rows
+  loaded · MERCHANT_RAW_DATA 4,123 · MERCHANT_RAW_DATA_BBP 1 · DRC 273 ·
+  TIMEOUT 30 · ADJUSTMENT 257 (including one row whose `Adjdate`
+  genuinely differs from the file's nominal business date, correctly
+  reflected in `TransactionRecord.business_date`).
+
+  **CBS is the exception — reaches `ProcessingStatus.LOADED` but loads
+  0 rows.** The shared `column_mapping` used by every existing CBS test
+  matches worksheet "Report"'s layout, but worksheets "Report1"/
+  "Report2" — confirmed to hold all 69,239 of 2026-07-14's real rows —
+  use a genuinely different column layout. Every row is silently
+  skipped (logged as `SKIPPED_UNLOADABLE_ROW`) rather than the file
+  failing outright, so file-level status alone doesn't surface the
+  problem. Not fixed as part of this work — flagged as a File
+  Processing Framework design gap needing a decision (per-worksheet
+  column mapping vs. content-based field detection), not guessed at.
+  See `doubts.md` and `TRACKER.md` Open Questions.
+
+  Also flagged, not resolved: no direction (`DEBIT`/`CREDIT`)
+  derivation rule is confirmed for the 5 non-CBS types (all currently
+  load as `UNKNOWN`); Adjustment's amount column is mapped to
+  `Adjamount` rather than `Txnamount` without confirmation (the two were
+  equal in every sample row inspected). Both in `doubts.md`.
+
+- **Fixed: CBS's 0-rows-loaded bug** — root cause confirmed by a full
+  (not sampled) scan of `14072026/cbs_report/b5rg090oa.xls`'s 154,661
+  rows: CBS's single continuous report is split across 3 worksheets
+  ("Report", "Report1", "Report2") purely by Excel's row-count limit,
+  but each worksheet uses a genuinely different, internally-stable
+  column layout (99.99%+ of each worksheet's rows share one `ss:Index`
+  shape) — `date`/`remarks`/`withdrawals`/`deposits`/`balance` sit at
+  indices (1,3,7,10,12) on "Report", (1,2,4,5,6) on "Report1", and
+  (1,2,5,6,9) on "Report2". `FileTypeConfig.column_mapping` only
+  encoded "Report"'s layout, so every row on the other two worksheets
+  (which hold the bulk of the report) silently failed to resolve and
+  was skipped — CBS reached `ProcessingStatus.LOADED` while loading 0
+  rows.
+  Fix: `column_mapping` now supports a per-worksheet nested form (keyed
+  by worksheet name, `_default` fallback) alongside the existing flat
+  form; a new `_resolve_column_mapping` helper in `tasks.py` picks the
+  right one per row, used at both call sites (`validate_structure_and_
+  content`'s required-columns check, `normalize_rows`'s date/remarks/
+  amount-column resolution). The other 6 file types (single-worksheet,
+  flat mapping) are unaffected. `seed_file_type_configs.py` updated with
+  CBS's 3-worksheet mapping. No model change or migration — `column_
+  mapping` was already a JSONField.
+  Verified against the real file: **business_date=2026-07-14: 69,239
+  rows loaded, 0 skipped** (previously 0 loaded, 69,239 skipped) — from
+  Report1 (56,918) and Report2 (12,321); Report had no rows for this
+  date. Also checked 2026-07-13: 74,144 rows loaded, 0 skipped, from
+  Report (65,527) and Report1 (8,617). Spot-checked rows from all 3
+  worksheets confirm direction (credit/debit) agrees with which amount
+  column is populated, not just a non-zero count.
+  New tests: `ResolveColumnMappingUnitTests` (flat back-compat,
+  per-worksheet resolution, `_default` fallback); the old
+  `CbsEndToEndLoadTests` (which had asserted the 0-row bug as expected
+  behavior) replaced with tests proving real rows load from Report1/
+  Report2 plus a regression guard on `SKIPPED_UNLOADABLE_ROW` count.
+  `python manage.py test`: **52 tests, OK** (up from 48).

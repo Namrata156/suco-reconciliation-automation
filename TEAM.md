@@ -1,6 +1,6 @@
 # TEAM.md — Agent Team Operating Model
 
-Companion to `claude.md` and `TRACKER.md`. Explains how the three agents
+Companion to `claude.md` and `TRACKER.md`. Explains how the four agents
 on this project work together. Read this once when setting up the team;
 individual agent files (`.claude/agents/*.md`) carry the day-to-day
 role detail.
@@ -9,9 +9,10 @@ role detail.
 
 | Agent | File | Role |
 |---|---|---|
-| PM agent | `claude.md` (main agent) | Orchestrator. Tracks status/schedule, surfaces gaps, produces status reports, delegates to the two engineer subagents, is the only agent that edits `TRACKER.md`. |
+| PM agent | `claude.md` (main agent) | Orchestrator. Tracks status/schedule, surfaces gaps, produces status reports, delegates to the engineer subagents, is the only agent that edits `TRACKER.md`. |
 | backend-engineer | `.claude/agents/backend-engineer.md` | Owns Database Design, File Processing Framework, Transaction Processing Engine, Business Rule Engine, Settlement Control/NTSL, NPCI File Generation, API. |
 | frontend-engineer | `.claude/agents/frontend-engineer.md` | Owns Front End Design, Web Interface, and the UI side of Exception Management, Maker-Checker, and Reporting. |
+| test-engineer | `.claude/agents/test-engineer.md` | Owns cross-component/end-to-end test scenarios, test-coverage strategy, regression-suite health, and Phase 7 UAT support. Does not own or replace backend/frontend's own component-level unit tests — see that agent's "What you do NOT own". Added 2026-09-13. |
 
 ## Why this structure
 
@@ -24,10 +25,12 @@ before acting.
 ## Current gate: Phase 0 is partly closed
 
 Tech stack was locked 2026-08-28 (see `TRACKER.md` → Tech Stack table):
-Django/DRF, PostgreSQL, Python (pandas/openpyxl), Celery+Redis,
-`cryptography` for encrypted-file handling (pending confirmation
-against the actual NPCI spec). The frontend framework is the one
-exception still open — React vs. Django templates+HTMX.
+Django/DRF, PostgreSQL, Python (pandas/openpyxl), Celery+Redis.
+Encrypted-file handling was resolved 2026-09-07 by removing it from
+scope entirely — the bank/NPCI private key is confidential and will
+never be shared with this system, so the pipeline only ever receives
+already-decrypted files. The frontend framework is the one exception
+still open — React vs. Django templates+HTMX.
 
 Spec gaps are **not** closed: Database Design, NPCI File Generation,
 API, and Front End Design are still empty stubs, and IMPS cycle-wise
@@ -73,8 +76,9 @@ Neither should be asked to scaffold a real codebase yet.
 Unchanged from `claude.md`, and binding on all three agents, not just
 the PM:
 
-- Tech stack (backend framework, database, frontend framework,
-  encrypted-file handling).
+- Tech stack (backend framework, database, frontend framework). Encrypted-
+  file handling is no longer a pending tech-stack decision — it's out of
+  scope entirely (2026-09-07, see `TRACKER.md`).
 - Business rule logic and the maker-checker design.
 - Re-baselining the schedule.
 
@@ -83,8 +87,8 @@ one of these calls should stop and flag it instead.
 
 ## Setup checklist
 
-- [ ] Place `backend-engineer.md` and `frontend-engineer.md` in
-      `.claude/agents/` in the project root.
+- [ ] Place `backend-engineer.md`, `frontend-engineer.md`, and
+      `test-engineer.md` in `.claude/agents/` in the project root.
 - [ ] Confirm `claude.md` and `TRACKER.md` are in the project root
       (already the case here).
 - [ ] Leave Phase 0 gate in place until the human owner actually

@@ -1,0 +1,62 @@
+# Local development infrastructure only.
+#
+# Django itself is NOT containerized here -- it keeps running on the host
+# venv (see TRACKER.md Tech Stack table / claude.md). This file only brings
+# up the two stateful services `config/settings.py` already expects to find
+# via env vars: PostgreSQL and Redis.
+#
+# Usage:
+#   1. cp .env.example .env   (fill in a real dev-only POSTGRES_PASSWORD)
+#   2. docker compose up -d
+#   3. Run `python manage.py migrate` etc. from the host venv as usual --
+#      Django connects to these containers over localhost:5432 / localhost:6379.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      # Host side is 5434, not Postgres's default 5432 -- must match
+      # POSTGRES_PORT in .env. Avoids clashing with a native Postgres
+      # install/service that may already be using 5432 on the host (and
+      # 5433, which was also already taken by an unrelated project's
+      # container on at least one dev machine).
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  adminer:
+    # Web UI for browsing tables / running queries against `postgres`
+    # above. At http://localhost:8083, log in with:
+    #   System: PostgreSQL   Server: postgres   Port: 5432 (container-
+    #   internal, not the host-mapped POSTGRES_PORT)
+    #   Username/Password/Database: same as POSTGRES_USER/PASSWORD/DB in .env
+    image: adminer
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "8083:8080"
+
+volumes:
+  postgres_data:

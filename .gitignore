@@ -23,6 +23,11 @@ db.sqlite3-journal
 media/
 staticfiles/
 
+# File Processing Framework working directory (decrypted/intermediate
+# files -- see settings.FILE_PROCESSING_WORK_DIR). Never commit source
+# file contents or decrypted output.
+var/
+
 # Environment variables / secrets
 .env
 .env.*
@@ -42,3 +47,13 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Real bank customer data samples -- never commit, regardless of
+# location or filename. See doubts.md / TRACKER.md for what these are.
+sample_decrypted_files/
+14072026/
+manual_reconciliation_sheet.xlsx
+
+# Real bank SOP doc -- contains live NPCI/EFRM portal credentials in
+# plaintext. Never commit. See doubts.md.
+SOP upi updated 25-26.docx
