@@ -3,20 +3,29 @@
 Status values: Not Started / In Progress / Blocked / Done
 Team size: 1–2 engineers
 
-## Timeline (planning estimate — fill in dates once Phase 0 starts)
+## Timeline (re-baselined 2026-09-25 to the 2026-10-15 deadline)
 
-| Phase | Scope | Estimate | Start | Target end | Status |
+**Project deadline: 2026-10-15** (set by project owner 2026-09-25).
+
+"Original estimate" is the planning estimate before the deadline was set.
+"Start"/"Target end" are the re-baselined 2026-09-25 windows that fit the
+deadline. They overlap heavily and assume **2 engineers** (plus agents)
+working phases in parallel. With 1 engineer these windows are not achievable.
+
+| Phase | Scope | Original estimate | Start | Target end | Status |
 |---|---|---|---|---|---|
-| 0 | Close spec gaps + lock tech stack | 1.5–2 weeks | 2026-08-19 | *overrun — needs re-baseline* | In Progress (tech stack locked; spec-gap closure deliberately deferred) |
-| 1 | Database Design + File Processing Framework | 3–4 weeks | 2026-08-28 | 2026-09-18 – 2026-09-25 | In Progress |
-| 2 | Transaction Processing Engine + Business Rule Engine | 5–6 weeks | | | Not Started |
-| 3 | Exception Management + Maker-Checker Workflow | 3–4 weeks | | | Not Started |
-| 4 | Settlement Control (NTSL) + NPCI File Generation | 3 weeks | | | Not Started |
-| 5 | API + Front End | 4–5 weeks | | | Not Started |
-| 6 | Reporting Module | 2–3 weeks | | | Not Started |
-| 7 | UAT, hardening, rollout | 2–3 weeks | | | Not Started |
+| 0 | Close spec gaps + lock tech stack | 1.5–2 weeks | 2026-08-19 | 2026-09-30 | In Progress (tech stack locked; the 5 stub sections must now close by 2026-09-30, since Phases 3–5 need them) |
+| 1 | Database Design + File Processing Framework | 3–4 weeks | 2026-08-28 | 2026-10-01 (target) / 2026-09-27 (actual) | Done (re-closed 2026-09-27, ahead of target, after the staging/fact/history redesign; originally closed 2026-09-12, reopened 2026-09-25) |
+| 2 | Transaction Processing Engine + Business Rule Engine | 5–6 weeks | 2026-09-13 | 2026-10-05 | In Progress |
+| 3 | Exception Management + Maker-Checker Workflow | 3–4 weeks | 2026-10-01 | 2026-10-08 | Not Started |
+| 4 | Settlement Control (NTSL) + NPCI File Generation | 3 weeks | 2026-10-01 | 2026-10-08 | Not Started (runs in parallel with Phase 3) |
+| 5 | API + Front End | 4–5 weeks | 2026-10-05 | 2026-10-12 | Not Started (API work starts alongside Phase 2's tail) |
+| 6 | Reporting Module | 2–3 weeks | 2026-10-08 | 2026-10-13 | Not Started |
+| 7 | UAT, hardening, rollout | 2–3 weeks | 2026-10-12 | 2026-10-15 | Not Started |
 
-Total estimate: ~26–30 weeks (6–7 months). Update Status per phase as
+Original total estimate: ~26–30 weeks (6–7 months). Re-baselined window:
+2026-09-25 → 2026-10-15, **~3 weeks for work originally estimated at
+~20–25 weeks remaining**. Update Status per phase as
 work moves (Not Started / In Progress / Blocked / Done) and note actual
 dates as they happen — that's what lets later estimates get more
 accurate than the initial planning numbers above.
@@ -25,30 +34,109 @@ accurate than the initial planning numbers above.
 since 2026-08-19 (~3 weeks as of 2026-09-10). The tech stack closed on
 time; the five stub spec sections did not, and were deliberately
 deferred to unblock Phase 1. Those stubs feed Phases 3–5, so this is a
-real schedule risk, not just stale bookkeeping. **Target end left blank
-deliberately — re-baselining is a project-owner decision, not a PM one.**
+real schedule risk, not just stale bookkeeping. **Re-baselined 2026-09-25
+by the project owner:** Phase 0 target end is now 2026-09-30 (see Timeline).
 
-**Phase 1 exit criteria (added 2026-09-10):** Phase 1 closes when
-`load_to_unified_table` (Stage 4) populates `TransactionRecord` for every
-in-scope file type, and the full pipeline runs end to end against
-`sample_decrypted_files/`. Schema existing is not sufficient — the
-current stub is why "Database Design: done?" reads as ambiguous.
+**Deadline schedule risk (flagged 2026-09-25):** the timeline above was
+re-baselined to 2026-10-15 at the project owner's request. That packs
+roughly 20–25 weeks of originally estimated work (rest of Phase 2,
+Phases 3–7, plus the reopened Phase 1 redesign) into ~3 weeks: about a
+7–8x compression. PM view: these windows are only credible if the scope
+per phase is cut, not just the time. Specific risks:
+- Phase 0's five stub spec sections (Exception Management, Maker-Checker,
+  NPCI File Generation, API, Front End) have no content yet. Phases 3–5
+  can't start on 2026-10-01 / 2026-10-05 unless those close by 2026-09-30.
+- The frontend framework (React vs. Django templates+HTMX) is still open
+  and is needed before Phase 5 starts on 2026-10-05.
+- Phase 7 (UAT/rollout) gets 3 days, originally estimated at 2–3 weeks.
+- The Business Rule Engine's error/response code table and the NTSL
+  settlement-summary design are still unresolved.
+**Still needs a project-owner decision:** what "done" means for each phase
+by 2026-10-15 (e.g. a minimal UPI slice per component rather than the full
+spec). See the "Deadline scope" row in Open Questions.
+
+**Phase 1 exit criteria (added 2026-09-10, revised 2026-09-25):** originally,
+Phase 1 closed when `load_to_unified_table` (Stage 4) populated
+`TransactionRecord` for every in-scope file type and the full pipeline ran
+end to end against `sample_decrypted_files/` (met 2026-09-12). With the
+redesign, Phase 1 now closes when: the per-file-type staging tables
+populate, `promote_to_fact` populates `TransactionFact`, the history
+tables are migrated, the full pipeline runs against
+`sample_decrypted_files/` (CBS still yields 69,239 rows for 2026-07-14),
+and `manage.py test` passes in full.
 
 ## Components
 
 | Component | Phase | Status | Owner | Notes |
 |---|---|---|---|---|
-| Database Design | 1 | In Progress | backend-engineer | `core`/`file_processing` Django models built (PaymentModule, SettlementCycle, FileTypeConfig, UploadedFile, FileValidationException) and migrated. **2026-09-08: `transactions.TransactionRecord` built** — one unified table across all file types (rrn/business_date/amount/direction/source_register_type as indexed columns, JSONB `extra_fields` for source-specific data), plus row-level (`unique_row_per_uploaded_file`) and file-level (`sha256_hash` uniqueness for non-reprocess uploads) duplicate-prevention constraints. Partitioning deliberately deferred — see Open Questions. **2026-09-10: population logic built** — `core.RegisterType.MERCHANT_RAW_DATA_BBP` added; a partial composite `(rrn, business_date)` index added supporting the RRN+date matching key direction. 48 tests passing (up from 31) |
-| File Processing Framework | 1 | In Progress | backend-engineer | Design complete; code scaffolded: format sniffing, CBS/NTSL/CSV parsers, pagination stripping, Celery pipeline stages 1-3 (parse/validate/normalize). NTSL excluded from Stage 4 (deferred — settlement summary, no RRN, see Open Questions). Merchant Raw Data BBP variant resolved 2026-09-10 — own distinct classification, separate from standard ACQ. **2026-09-10: Stage 4 (`load_to_unified_table`) implemented and verified end-to-end against real sample data** — RAW_DATA 1,810 rows loaded, MERCHANT_RAW_DATA 4,123, MERCHANT_RAW_DATA_BBP 1, DRC 273, TIMEOUT 30, ADJUSTMENT 257 (incl. a row whose `Adjdate` genuinely differs from the file's nominal date, correctly reflected). `_row_date_iso` extended for DRC/Timeout `DD/MM/YYYY` and Adjustment `DD-MM-YYYY`. **CBS is the exception: reaches `LOADED` status but loads 0 rows** — a newly-discovered per-worksheet column-mapping mismatch means the config that matches every existing CBS test doesn't match the worksheets ("Report1"/"Report2") holding all 69,239 real rows; see `doubts.md` and the new Open Questions row below. **2026-09-10: CBS 0-rows bug fixed** — confirmed via a full scan of the real file that each of CBS's 3 worksheets (one continuous report, split by Excel's row limit) has its own stable column layout; `column_mapping` now resolves per-worksheet. 69,239 rows now load for 2026-07-14 (was 0). All 6 in-scope RRN-bearing file types are now genuinely loading real data. Still flagged, unresolved: no direction (`DEBIT`/`CREDIT`) derivation rule confirmed for the 5 non-CBS types (all load as `UNKNOWN`), and Adjustment's amount column (`Adjamount` vs `Txnamount`) is unconfirmed — both in `doubts.md`. Adjustment's business-date field resolved 2026-09-09 — `Adjdate` is business_date, `Txndate` kept in `extra_fields` (see `doubts.md`). `SSKUPI14072026.csv` resolved 2026-09-09 — it's an NPCI-bound output file, out of this component's scope (see `doubts.md` and NPCI File Generation row below). IMPS cycle-wise handling still open. CBS business-date selection (3-day range files like GL Extract) now interactive: pipeline pauses at AWAITING_DATE_SELECTION with detected dates surfaced, user picks one via a Django-admin action + intermediate page — this is a Phase 1 stand-in only; a real UI/API "pick from detected dates" flow belongs in Phase 5 (API + Front End). **2026-09-07: PGP decryption removed from scope entirely** — bank/NPCI private key is confidential and will never be shared with this system; the pipeline now assumes every input file arrives already decrypted (`decryption.py`/`secrets_backend.py` deleted, former Stage 1 `decrypt_file` removed, pipeline starts at format sniffing) |
-| Transaction Processing Engine | 2 | In Progress | backend-engineer | Presence matrix, matching keys, 3-way/4-way recon defined |
+| Database Design | 1 | In Progress | backend-engineer | `core`/`file_processing` Django models built (PaymentModule, SettlementCycle, FileTypeConfig, UploadedFile, FileValidationException) and migrated. **2026-09-08: `transactions.TransactionRecord` built** — one unified table across all file types (rrn/business_date/amount/direction/source_register_type as indexed columns, JSONB `extra_fields` for source-specific data), plus row-level (`unique_row_per_uploaded_file`) and file-level (`sha256_hash` uniqueness for non-reprocess uploads) duplicate-prevention constraints. Partitioning deliberately deferred — see Open Questions. **2026-09-10: population logic built** — `core.RegisterType.MERCHANT_RAW_DATA_BBP` added; a partial composite `(rrn, business_date)` index added supporting the RRN+date matching key direction. 48 tests passing (up from 31). **2026-09-23: staging → fact → history redesign approved; built and verified 2026-09-26 (82/82 tests)** — 7 raw per-file-type staging tables, a rebuilt `TransactionFact` replacing `TransactionRecord` (`staging_row_id` lineage, `extra_fields` dropped, new nullable `txn_amount` for Adjustment's `Txnamount`), and 10 history tables (schema only). Only transaction-storage tables are dropped/rebuilt (existing ~150K rows dropped, re-ingest later); `core`/`file_processing` untouched. Deliberate redesign, not a regression — see Schema Redesign section |
+| File Processing Framework | 1 | In Progress | backend-engineer | Design complete; code scaffolded: format sniffing, CBS/NTSL/CSV parsers, pagination stripping, Celery pipeline stages 1-3 (parse/validate/normalize). NTSL excluded from Stage 4 (deferred — settlement summary, no RRN, see Open Questions). Merchant Raw Data BBP variant resolved 2026-09-10 — own distinct classification, separate from standard ACQ. **2026-09-10: Stage 4 (`load_to_unified_table`) implemented and verified end-to-end against real sample data** — RAW_DATA 1,810 rows loaded, MERCHANT_RAW_DATA 4,123, MERCHANT_RAW_DATA_BBP 1, DRC 273, TIMEOUT 30, ADJUSTMENT 257 (incl. a row whose `Adjdate` genuinely differs from the file's nominal date, correctly reflected). `_row_date_iso` extended for DRC/Timeout `DD/MM/YYYY` and Adjustment `DD-MM-YYYY`. **CBS is the exception: reaches `LOADED` status but loads 0 rows** — a newly-discovered per-worksheet column-mapping mismatch means the config that matches every existing CBS test doesn't match the worksheets ("Report1"/"Report2") holding all 69,239 real rows; see `doubts.md` and the new Open Questions row below. **2026-09-10: CBS 0-rows bug fixed** — confirmed via a full scan of the real file that each of CBS's 3 worksheets (one continuous report, split by Excel's row limit) has its own stable column layout; `column_mapping` now resolves per-worksheet. 69,239 rows now load for 2026-07-14 (was 0). All 6 in-scope RRN-bearing file types are now genuinely loading real data. **2026-09-16: Raw Data/Merchant Raw Data/BBP direction resolved and implemented** — split into ACQ-specific/ISS-specific `FileTypeConfig` rows per the SOP's confirmed rule (Acquirer→DEBIT, Issuer→CREDIT); new `constant:` direction rule in `normalize_rows`. Verified against real data: Raw Data 19,160 DEBIT/25,275 CREDIT, Merchant Raw Data 33,168 DEBIT/382 CREDIT, BBP 4 DEBIT (was all `UNKNOWN`). **2026-09-16/17: DRC/Timeout/Adjustment direction also resolved and implemented** — project owner confirmed, quoting the SOP: DRC→constant DEBIT, Timeout→constant CREDIT, Adjustment→constant CREDIT. Verified: DRC 273 rows/Timeout 30/Adjustment 257 all now carry real direction values (were `UNKNOWN`). **All 6 in-scope file types' direction is now fully resolved** — none remain `UNKNOWN` by design (CBS retains 2 rows at `UNKNOWN` for an unrelated, pre-existing reason). 64 tests passing. Note: this same DRC/Timeout/Adjustment rule was briefly, incorrectly implemented by a subagent on 2026-09-16 with a fabricated confirmation claim, caught and fully reverted same day, then genuinely confirmed and re-implemented after — see `doubts.md`/`CHANGELOG.md` for the full record. **2026-09-17: Adjustment amount column resolved** — the original "both equal in every row" claim was factually wrong (70% of real rows actually differ). Project owner clarified: `Txnamount` = original transaction's amount, `Adjamount` = this adjustment's own amount; `Adjamount` (already the existing mapping) is correct, no code change needed. See `doubts.md`. Adjustment's business-date field resolved 2026-09-09 — `Adjdate` is business_date, `Txndate` kept in `extra_fields` (see `doubts.md`). `SSKUPI14072026.csv` resolved 2026-09-09 — it's an NPCI-bound output file, out of this component's scope (see `doubts.md` and NPCI File Generation row below). IMPS cycle-wise handling still open. CBS business-date selection (3-day range files like GL Extract) now interactive: pipeline pauses at AWAITING_DATE_SELECTION with detected dates surfaced, user picks one via a Django-admin action + intermediate page — this is a Phase 1 stand-in only; a real UI/API "pick from detected dates" flow belongs in Phase 5 (API + Front End). **2026-09-07: PGP decryption removed from scope entirely** — bank/NPCI private key is confidential and will never be shared with this system; the pipeline now assumes every input file arrives already decrypted (`decryption.py`/`secrets_backend.py` deleted, former Stage 1 `decrypt_file` removed, pipeline starts at format sniffing). **2026-09-23 redesign (built and verified 2026-09-26):** new `load_to_staging` stage before normalization, `load_to_unified_table` renamed `promote_to_fact`, and the CBS date-selection pause will read rows back from staging instead of holding the full payload in `pending_pipeline_context` — see Schema Redesign section |
+| Transaction Processing Engine | 2 | In Progress | backend-engineer | **2026-09-14: first slice built** — new `reconciliation` app (`TransactionMatchGroup`/`RegisterPresence`), 2-way extensible presence matching (CBS vs. NPCI's Raw Data/Merchant Raw Data/BBP; no Bank Switch file exists, so not literally 3-way — see Open Questions/`doubts.md`), proven extensible via a synthetic 3rd-leg test with zero schema change. 10 new tests, 62/62 project-wide. Real numbers from a partial-data test run in `CHANGELOG.md`; a full-day run still needed for a real reconciliation rate. Deferred: DRC/Timeout/Adjustment exception classification, direction-sensitive matching, error-code population (blocked on Business Rule Engine's unresolved table). **2026-09-23 redesign (built and verified 2026-09-26):** `RegisterPresence` FK to be repointed from `TransactionRecord` to `TransactionFact`; `TransactionMatchGroupHistory`/`RegisterPresenceHistory` added — see Schema Redesign section |
 | Business Rule Engine | 2 | In Progress | backend-engineer | Rule evaluation & repository defined; error/response code table missing |
 | Exception Management | 3 | Not Started | backend-engineer (logic) / frontend-engineer (UI) | Header only, no content |
 | Maker-Checker Workflow | 3 | Not Started | backend-engineer (logic) / frontend-engineer (UI) | Header only, no content |
-| Settlement Control / NTSL Validation | 4 | In Progress | backend-engineer | Validation and exceptions defined |
+| Settlement Control / NTSL Validation | 4 | In Progress | backend-engineer | Validation and exceptions defined. **2026-09-27: NTSL data loading built** (pulled forward from Phase 4 at the project owner's request): raw `StagingNtsl` + `NtslSettlementLine` summary table (one row per category line; final-settlement line flagged) + 2 history tables, new pipeline stage `promote_to_settlement_summary` (NTSL runs parse → validate → stage → summarize, never the fact table). DC1/DC2 `SettlementCycle` rows and NTSL `FileTypeConfig` added. All 12 real files for 2026-07-14 loaded (6,000 staged rows, 1,559 lines, 12 final lines, no warnings). **88/88 tests** (PM re-ran). Still not built: the actual NTSL validation / settlement reconciliation check (SOP: matched CBS deposits − withdrawals vs NTSL credit − debit) — see `doubts.md` |
 | NPCI File Generation | 4 | Not Started | backend-engineer | Header only, no content (functional requirement exists, design doesn't). 2026-09-09: a real sample of an NPCI-bound output file now exists (`SSKUPI14072026.csv` — cross-references DRC RRNs with reason codes 102/103/104), useful reference once this component's design starts; see `doubts.md` |
 | API | 5 | Not Started | backend-engineer | Header only; framework now locked (Django/DRF), no endpoints designed yet |
 | Front End Design | 5 | Not Started | frontend-engineer | Header only, no content; framework choice (React vs. Django templates+HTMX) still open |
 | Reporting Module | 6 | Not Started | backend-engineer (data/queries) / frontend-engineer (UI) | Not yet started |
+
+## Schema Redesign — Staging → Fact → History (approved 2026-09-23)
+
+Reopens Phase 1 / Database Design. Approved by the project owner
+2026-09-23; **steps 1–5 built and PM-verified 2026-09-26** (ahead of the
+2026-10-01 target). Both follow-up decisions were made
+2026-09-27 (Adjustment `txn_amount` config enabled, old upload records
+deleted). **Re-ingestion done 2026-09-27; all Phase 1 exit criteria met,
+so Phase 1 is re-closed.**
+
+**Locked decisions** (don't re-litigate):
+- Scope: only transaction-storage tables (`transactions.TransactionRecord`,
+  `reconciliation.TransactionMatchGroup`/`RegisterPresence`) are rebuilt.
+  `core`/`file_processing` reference/config and file-lifecycle tables are
+  untouched.
+- Existing ~150K real rows are dropped, not migrated; re-ingestion from
+  `sample_decrypted_files/` is a separate follow-up.
+- Staging: one table per in-scope file type (CBS GL Extract, Raw Data,
+  Merchant Raw Data, BBP, DRC, Timeout, Adjustment — NTSL/SWITCH excluded),
+  holding the file in raw form: confirmed source fields as typed columns plus
+  a `raw_cells` JSONB fallback.
+- Fact: `TransactionFact` built fresh, same unified RRN-indexed shape as
+  `TransactionRecord`, plus `staging_row_id` lineage (plain ID + 
+  `source_register_type`, no DB-enforced FK); `extra_fields` dropped.
+  `amount` stays required and shared (Adjustment still uses `Adjamount`);
+  new nullable `txn_amount` carries Adjustment's `Txnamount`.
+- History: 10 tables (7 staging + fact in `transactions`, match-group +
+  presence in `reconciliation`), each mirroring its live table plus
+  `original_id`/`archived_at`/`archival_reason`. **Schema only** — the
+  archival job (trigger: reconciliation complete for a business date) waits
+  for Phase 3; see Open Questions.
+- Migrations: old `transactions`/`reconciliation` migrations deleted, fresh
+  `0001_initial`s. Reset done with `migrate reconciliation zero` /
+  `migrate transactions zero` rather than dropping the whole dev DB, so
+  config rows in `core`/`file_processing` survive, per the decision above
+  (2026-09-25).
+
+| # | Step | Owner | Status |
+|---|---|---|---|
+| 1 | Models — `transactions/models/` package (staging/fact/history) + reconciliation history models | backend-engineer | Done 2026-09-26 — 7 staging + `TransactionFact` + 8 history in `transactions`, 2 live + 2 history in `reconciliation` (20 tables, PM-verified) |
+| 2 | Migrations — delete old, fresh `0001_initial`, reset transaction tables | backend-engineer | Done 2026-09-26 — fresh `transactions`/`reconciliation` `0001_initial`, plus `file_processing/0006` (choices-only, for `STAGED`); `makemigrations --check` clean; config data intact (PaymentModule 1, SettlementCycle 10, FileTypeConfig 9, UploadedFile 47 before and after); 147,788 old transaction rows dropped as planned |
+| 3 | Pipeline — `load_to_staging`, `normalize_rows` reads staging, `promote_to_fact`, `ProcessingStatus.STAGED`, CBS pause/resume, admin `select_business_date` action | backend-engineer | Done 2026-09-26 — CBS pause now happens after staging; paused context is just `{"uploaded_file_id", "halted"}`; CBS 2026-07-14 still yields 69,239 fact rows (test-proven). Adjustment `txn_amount` enabled 2026-09-27 (config keys added with owner OK; real-file dry run: 257/257 populated) |
+| 4 | Reconciliation repoint — `RegisterPresence` FK + `presence.py` | backend-engineer | Done 2026-09-26 — presence counts identical to before the repoint (4,401 matched / 58,653 unmatched on the same test data) |
+| 5 | Tests — rewrite `test_load_to_unified_table.py`, adapt `test_presence.py` | backend-engineer | Done 2026-09-26 — replaced by `test_staging_and_fact.py`/`test_transaction_fact.py`; **82/82 passing** (PM re-ran independently) |
+| 6 | Docs — new `docs/db.md`, `doubts.md` supersede entry, `CHANGELOG.md` | PM | `docs/db.md` + `doubts.md` done 2026-09-26; 2026-09-27 `docs/db.md` replaced by `docs/phase1_report.txt` (table guide is its section 6) at the owner's request; `CHANGELOG.md` entry held until the project owner asks |
+| — | Follow-up: re-ingest `sample_decrypted_files/` into the new schema | PM | Done 2026-09-27 — all 47 in-scope files (46 from `sample_decrypted_files/` + CBS `14072026/cbs_report/b5rg090oa.xls`, CBS date 2026-07-14 picked at the pause) reached `LOADED`. Staging: CBS 154,651 (whole 3-day file, raw) / Raw Data 44,435 / Merchant Raw Data 33,550 / BBP 4 / DRC 273 / Timeout 30 / Adjustment 257. Fact: **147,788 rows, identical to the pre-redesign load**, with direction splits unchanged (CBS 45,583 CR / 23,654 DR / 2 UNKNOWN; Raw Data 19,160 DR / 25,275 CR; Merchant 33,168 DR / 382 CR; BBP 4 DR; DRC 273 DR; Timeout 30 CR; Adjustment 257 CR). All 257 Adjustment facts have `txn_amount`; 0 facts missing `staging_row_id` |
+
+**Verification (done when all pass):**
+- `manage.py migrate` runs clean on a freshly recreated dev DB.
+- `manage.py test` passes in full.
+- Full pipeline against `sample_decrypted_files/` for all 6 in-scope types:
+  staging row counts as expected, `TransactionFact` RRN/amount/direction
+  values match what `TransactionRecord` produced, CBS pause/resume still
+  yields 69,239 rows for 2026-07-14.
+- Presence matching gives the same matched/unmatched classification on the
+  same data after the repoint.
+- The table guide (now `docs/phase1_report.txt` section 6) reads clearly to someone new to the schema.
 
 ## Open Questions
 
@@ -70,13 +158,22 @@ current stub is why "Database Design: done?" reads as ambiguous.
 | ~~No PGP private key available to decrypt real sample data for Raw Data, Merchant Raw Data, DRC, Timeout, and Adjustment reports~~ | File Processing Framework > Source File Details / Database Design > TransactionRecord schema | project owner | Superseded 2026-09-07 — moot: decryption removed from this system's scope entirely (see Tech Stack table), project owner supplies pre-decrypted files directly (`sample_decrypted_files/`) as the standing process, not a one-off unblock |
 | ~~`_row_date_iso` helper only parses ISO-datetime and bare `YYYY-MM-DD`~~ | File Processing Framework > Normalization | | Resolved 2026-09-10 — extended for `DD/MM/YYYY` (DRC/Timeout) and `DD-MM-YYYY` (Adjustment) as part of Stage 4 build |
 | ~~CBS loads 0 rows despite reaching `LOADED` status~~ | File Processing Framework > Normalization; Database Design > TransactionRecord | | Resolved 2026-09-10 — root cause confirmed via a full (not sampled) scan of the real file: CBS's one continuous report splits across 3 worksheets by Excel's row limit, each with a genuinely different but internally-stable column layout. Fixed with a per-worksheet `column_mapping` (keyed by worksheet name, `_default` fallback); other 6 file types unaffected. Verified: 69,239 rows loaded for 2026-07-14 (was 0), 74,144 for 2026-07-13. 52 tests passing (up from 48). See `CHANGELOG.md` and `doubts.md` |
-| Direction (`DEBIT`/`CREDIT`) not derived for Raw Data, Merchant Raw Data (+ BBP), DRC, Timeout, Adjustment — all load as `UNKNOWN`; only CBS has a confirmed rule | Transaction Processing Engine > Transaction Identification; File Processing Framework > Normalization | project owner | See `doubts.md` |
-| Adjustment amount column unconfirmed: currently mapped to `Adjamount`, not `Txnamount` — the two were equal in every sample row inspected, so undistinguishable from data alone | File Processing Framework > Normalization | project owner | See `doubts.md` |
+| ~~Direction (`DEBIT`/`CREDIT`) not derived for Raw Data, Merchant Raw Data (+ BBP)~~ | Transaction Processing Engine > Transaction Identification; File Processing Framework > Normalization | | Resolved and implemented 2026-09-16 — Acquirer files → DEBIT, Issuer files → CREDIT, per the bank's SOP; see `doubts.md` |
+| ~~Direction (`DEBIT`/`CREDIT`) not derived for DRC, Timeout, Adjustment~~ | Transaction Processing Engine > Transaction Identification; File Processing Framework > Normalization | | Resolved and implemented 2026-09-16/17 — project owner confirmed, quoting the SOP directly: DRC → constant DEBIT (debit-side disputes), Timeout → constant CREDIT (credit-side disputes), Adjustment → constant CREDIT (defaults to crediting the customer). See `doubts.md` for the exact quotes and for a note on an earlier fabricated "confirmation" of the same rule that was caught and reverted before this genuine one happened |
+| ~~Adjustment amount column unconfirmed~~ | File Processing Framework > Normalization | | Resolved 2026-09-17 — the original "both equal" claim was factually wrong (verified: 70% of real rows actually differ). Project owner clarified the field semantics: `Txnamount` = the original disputed transaction's amount, `Adjamount` = this adjustment's own amount. `Adjamount` (already the existing `column_mapping` choice) is correct for `TransactionRecord.amount`; no code change needed. See `doubts.md` |
 | ~~Merchant Raw Data — BBP variant: does it need its own classification, or fold into standard ACQ processing?~~ | File Processing Framework > Source File Details | | Resolved 2026-09-10 — project owner decided BBP gets its own distinct classification (separate from standard Merchant Raw Data ACQ), so BBP volume stays identifiable for audit/reporting rather than merging into standard-ACQ figures. Row shape/parsing logic unchanged, only classification differs. Not yet implemented — backend-engineer still needs to add the `RegisterType`/`FileTypeConfig` entries before Stage 4 can include it; see `doubts.md`. One of three Stage-4 blockers resolved, two remain (scope/rollout order, NTSL column mapping) |
 | ~~File-type scope / rollout order: do all six file types go into `TransactionRecord` population now, or start narrower?~~ | File Processing Framework > Normalization; Database Design > TransactionRecord | | Resolved 2026-09-10 — project owner decided all six (CBS, Raw Data, Merchant Raw Data, DRC, Timeout, Adjustment) go in now, full scope in one pass. NTSL excluded from this decision (tracked separately, see NTSL row below). Not yet implemented — backend-engineer still needs per-file-type extraction logic for all six in Stage 4; see `doubts.md`. Two of three Stage-4 blockers now resolved, one remains (NTSL column mapping) |
-| NTSL is a settlement **summary/totals** report (Description/No of Txns/Debit/Credit, ~175 category rows + a final total), confirmed via real sample — **no RRN column exists at all**. Doesn't fit `TransactionRecord`'s RRN-indexed per-transaction design; needs its own settlement-summary table, not a column-mapping fix. **Deferred by project owner 2026-09-10** — does not block loading the other six file types | File Processing Framework > Source File Details; Settlement Control > NTSL Validation | project owner / backend-engineer | Deferred — parked for Phase 4 design; see `doubts.md` |
+| NTSL is a settlement **summary/totals** report (Description/No of Txns/Debit/Credit, ~175 category rows + a final total), confirmed via real sample — **no RRN column exists at all**. Doesn't fit `TransactionRecord`'s RRN-indexed per-transaction design; needs its own settlement-summary table, not a column-mapping fix. **Deferred by project owner 2026-09-10** — does not block loading the other six file types. **2026-09-27: loading resolved** — own staging + `NtslSettlementLine` summary table built and 12 real files loaded (see Settlement Control row). Remaining open: the validation check itself, plus the owner's confirmation of two edge-case handling choices (non-numeric amount → skip + WARNING; non-numeric count → NULL + WARNING) | File Processing Framework > Source File Details; Settlement Control > NTSL Validation | project owner / backend-engineer | Loading done; validation still Phase 4; see `doubts.md` |
+| ~~Settlement cycle times in DB (1C–10C) were placeholder 2-hour slots~~ | Core > Settlement cycles; File Processing Framework > Cycle-Wise File Processing | | Resolved 2026-09-27 — project owner supplied the NPCI circular "Annexure I – Revised Settlement Cycles": 1C–10C are AUTH-only (1C 21:00–00:00 … 10C 19:00–21:00), DC1 (00:00–16:00) / DC2 (16:00–00:00) are dispute-only; RTGS settlement time per cycle now stored. `core/migrations/0002`–`0003` + `seed_settlement_cycles` command; DB verified by PM; 91/91 tests. See `doubts.md` |
+| ~~`cycle_type` stored values renamed FINANCIAL/NON_FINANCIAL → AUTH/DISPUTE~~ | Core > Settlement cycles | | Resolved 2026-09-27 — project owner: keep the rename |
+| How the daily dispute files (DRC, Timeout, Adjustment) relate to the dispute-only cycles DC1/DC2 — e.g. should Phase 4 validate DC1/DC2 NTSL totals against these files rather than against CBS AUTH matches? Do these files ever arrive per cycle (the SOP says NPCI offers "per-cycle and consolidated")? | Settlement Control > NTSL Validation; File Processing Framework > Source File Details | project owner | Parked for Phase 4 (owner, 2026-09-27: keep open until NTSL validation design) |
+| ~~Merchant Raw Data BBP only accepts cycles 4C/5C/6C~~ | File Processing Framework > Cycle-Wise File Processing | | Resolved 2026-09-27 — project owner confirmed BBP can arrive in any of 1C–10C; `cycle_set` and filename pattern widened (seed + live DB row), verified no overlap with other file types, existing BBP data untouched |
 | ~~Adjustment report — which date is "the" business date (`Adjdate` vs `Txndate`)?~~ | File Processing Framework > Normalization | | Resolved 2026-09-09 — `Adjdate` is the canonical business date → `TransactionRecord.business_date`; `Txndate` retained in `extra_fields` (not dropped). No schema change needed; see `doubts.md` |
-| `TransactionRecord` table partitioning deferred at launch (Django has no native Postgres partitioning support; retrofitting onto a populated table means a live rebuild) — revisit once row count crosses ~20-30M, query/vacuum performance degrades, or a data retention/archival requirement emerges, whichever comes first. At current pace (CBS alone: 69,239 rows for one business day) expect the tens-of-millions range within ~1-2 years — check actual row count periodically rather than waiting for a fixed date. See `doubts.md` | Database Design > TransactionRecord schema | project owner / backend-engineer | |
+| `TransactionRecord` table partitioning deferred at launch (Django has no native Postgres partitioning support; retrofitting onto a populated table means a live rebuild) — revisit once row count crosses ~20-30M, query/vacuum performance degrades, or a data retention/archival requirement emerges, whichever comes first. At current pace (CBS alone: 69,239 rows for one business day) expect the tens-of-millions range within ~1-2 years — check actual row count periodically rather than waiting for a fixed date. See `doubts.md`. **2026-09-23: a retention/archival requirement has now emerged** (history tables, see Schema Redesign section) — one of this row's own revisit triggers; applies to `TransactionFact` once it replaces `TransactionRecord` | Database Design > TransactionRecord schema | project owner / backend-engineer | Revisit now that archival is in scope |
+| Archival job trigger — history tables are built in the redesign, but the "reconciliation complete for a business date" trigger depends on Exception Management/Maker-Checker. Hook point: a management command/Celery beat task keyed off `TransactionMatchGroup.processing_status` | Database Design; Exception Management / Maker-Checker Workflow | backend-engineer | Phase 3 |
+| ~~Adjustment `txn_amount`/`txn_date_raw` are NULL in real runs~~ | Database Design > TransactionFact; File Processing Framework > Normalization | | Resolved 2026-09-27 — owner OK'd adding `txn_amount: 16`/`txn_date: 8` to the ADJUSTMENT config (seed + live DB row); verified on the real file (257/257 populated, 180 differ from `amount`). See `doubts.md` |
+| ~~Re-ingestion after redesign reset — 47 old `UploadedFile` rows block re-upload~~ | File Processing Framework > Reprocessing | | Resolved 2026-09-27 — owner chose delete; 47 `UploadedFile` + 1 `FileValidationException` removed, source files untouched. See `doubts.md` |
+| Deadline scope — timeline re-baselined to 2026-10-15 (2026-09-25), but what each phase must deliver in its compressed window (full spec vs. a minimal UPI slice) is undecided, given ~20–25 weeks of originally estimated work (see Timeline) | Timeline | project owner | ASAP — before Phase 3/4 start on 2026-10-01 |
 
 ## Tech Stack (approved 2026-08-28)
 

@@ -1,9 +1,10 @@
 """
 Django settings for the Enterprise Payment Reconciliation Platform.
 
-Phase 1 scope only: `core` + `file_processing` + `transactions` apps
-(Database Design + File Processing Framework). No other app is wired in
-yet -- see claude.md / TRACKER.md for the full phase plan.
+Phase 1 apps: `core` + `file_processing` + `transactions` (Database
+Design + File Processing Framework). `reconciliation` (Transaction
+Processing Engine, Phase 2, first slice: 2-way presence matching) added
+2026-09-14 -- see claude.md / TRACKER.md for the full phase plan.
 
 All environment-specific values (DB credentials, Celery/Redis URLs, secret
 key) are read from environment variables with local-dev-only fallbacks.
@@ -47,6 +48,7 @@ INSTALLED_APPS = [
     "core",
     "file_processing",
     "transactions",
+    "reconciliation",
 ]
 
 MIDDLEWARE = [

@@ -1,10 +1,13 @@
 """
-Seeds real `FileTypeConfig` (version 1) rows for the six RRN-bearing UPI
-file types Stage 4 (`load_to_unified_table`, `file_processing/tasks.py`)
-populates `transactions.TransactionRecord` from -- CBS GL Extract, Raw
-Data, Merchant Raw Data (standard ACQ/ISS), Merchant Raw Data BBP, DRC,
-Timeout, Adjustment (7 configs across those 6 underlying file types; NTSL
-is deliberately excluded -- see doubts.md/TRACKER.md).
+Seeds real `FileTypeConfig` rows for the six RRN-bearing UPI file types
+the pipeline (`file_processing/tasks.py`: `load_to_staging` ->
+`normalize_rows` -> `promote_to_fact`) loads into the per-file-type staging
+tables and `transactions.TransactionFact` -- CBS GL Extract, Raw Data (ACQ/ISS),
+Merchant Raw Data (ACQ/ISS), Merchant Raw Data BBP, DRC, Timeout, Adjustment
+(9 configs across those 6 underlying file types) -- plus NTSL (added
+2026-09-27), which is staged into `StagingNtsl` and promoted to
+`transactions.NtslSettlementLine` by `promote_to_settlement_summary`
+instead (settlement summary, no RRN -- see doubts.md). 10 configs total.
 
 Deliberately a management command, not a data migration: `TestCase`-based
 tests in this codebase create their own throwaway `PaymentModule(code="UPI")`
@@ -20,16 +23,27 @@ collision entirely; test suites keep using their own local
 `_build_*_config()` helpers, unaffected by this command's existence.
 
 Idempotent: re-running only touches rows that don't already exist
-(`get_or_create` on `(payment_module, file_type_code, version=1)`, the
+(`get_or_create` on `(payment_module, file_type_code, version)`, the
 same natural key `FileTypeConfig.Meta.constraints` enforces).
+
+Raw Data and Merchant Raw Data are each split into two versioned rows
+(same `file_type_code`/`register_type`, `version` 1=ACQ/2=ISS) rather than
+one combined config -- resolved 2026-09-12 (see doubts.md's "Resolved"
+section): direction depends on which file (ACQ vs. ISS) a row came from,
+per the bank's SOP ("Issuer transactions are credit... Acquirer
+transactions are debit"), so one shared config with a combined `(ACQ|ISS)`
+filename pattern could never distinguish them. This is a config *value*
+difference (narrower `outer_filename_pattern` + a different
+`direction_derivation_rule`), not a new classification -- unlike Merchant
+Raw Data BBP, which did need its own `RegisterType` (see that entry below).
 
 Values below were validated directly against the real sample files under
 `sample_decrypted_files/`/`14072026/` (see doubts.md's "Resolved" section
 and the inline comments below for what each mapping is based on). Where a
 mapping choice wasn't already resolved in doubts.md/TRACKER.md (Adjustment's
-"which amount column", and every non-CBS type's `direction`), that's
-called out explicitly rather than silently invented -- see this backend
-engineer's handoff report for the full list of flagged assumptions.
+"which amount column"), that's called out explicitly rather than silently
+invented -- see this backend engineer's handoff report for the full list of
+flagged assumptions.
 
 `outer_filename_pattern` values document the real observed filenames for
 future use (e.g. a real upload API/UI auto-selecting FileTypeConfig by
@@ -119,40 +133,92 @@ _CONFIGS = [
     dict(
         file_type_code="RAW_DATA",
         register_type="RAW_DATA",
+        version=1,
         payload_format="CSV",
         container_format="NONE",
         has_header=False,
         # Headerless TX rows: RRN at fixed field 4, amount (paise) at field 8 --
-        # confirmed identical across the ACQ and ISS variants (both fold into this
-        # one RegisterType.RAW_DATA classification; only BBP gets its own type).
+        # confirmed identical across the ACQ and ISS variants. Both variants
+        # still fold into this one RegisterType.RAW_DATA classification (only
+        # BBP gets its own RegisterType) -- but ACQ/ISS now get their own
+        # FileTypeConfig row (version 1/2) so direction can be derived from
+        # which file a row came from (resolved 2026-09-12, see doubts.md).
         column_mapping={"rrn": 4, "amount": 8},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("0.01"),
+        direction_derivation_rule="constant:DEBIT",
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=_HT_FT_ARTIFACT_PATTERNS,
         date_validation_mode="EXACT_MATCH",
         is_cycle_wise=True,
         cycle_set=_CYCLES_1_TO_10,
-        outer_filename_pattern=r"^UPIRAWDATA(ACQ|ISS)SSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_filename_pattern=r"^UPIRAWDATAACQSSK\d{6}_(?:[1-9]|10)C\.csv$",
+    ),
+    dict(
+        file_type_code="RAW_DATA",
+        register_type="RAW_DATA",
+        version=2,
+        payload_format="CSV",
+        container_format="NONE",
+        has_header=False,
+        # Issuer variant of the same file type/RegisterType above -- same row
+        # shape, narrowed filename pattern, CREDIT per the SOP ("Issuer
+        # transactions are credit transaction to the bank customer").
+        column_mapping={"rrn": 4, "amount": 8},
+        required_columns=["rrn"],
+        amount_source_fields=["amount"],
+        amount_scale_factor=Decimal("0.01"),
+        direction_derivation_rule="constant:CREDIT",
+        rrn_expected_digit_length=12,
+        pagination_artifact_patterns=_HT_FT_ARTIFACT_PATTERNS,
+        date_validation_mode="EXACT_MATCH",
+        is_cycle_wise=True,
+        cycle_set=_CYCLES_1_TO_10,
+        outer_filename_pattern=r"^UPIRAWDATAISSSSK\d{6}_(?:[1-9]|10)C\.csv$",
     ),
     dict(
         file_type_code="MERCHANT_RAW_DATA",
         register_type="MERCHANT_RAW_DATA",
+        version=1,
         payload_format="CSV",
         container_format="NONE",
         has_header=False,
         # Same row shape as Raw Data (confirmed directly against samples).
+        # Acquirer variant -- see RAW_DATA's version=1/2 comment above for
+        # why this is split by version rather than one combined (ACQ|ISS)
+        # pattern.
         column_mapping={"rrn": 4, "amount": 8},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("0.01"),
+        direction_derivation_rule="constant:DEBIT",
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=_HT_FT_ARTIFACT_PATTERNS,
         date_validation_mode="EXACT_MATCH",
         is_cycle_wise=True,
         cycle_set=_CYCLES_1_TO_10,
-        outer_filename_pattern=r"^UPIMERCHANTRAWDATA(ACQ|ISS)SSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_filename_pattern=r"^UPIMERCHANTRAWDATAACQSSK\d{6}_(?:[1-9]|10)C\.csv$",
+    ),
+    dict(
+        file_type_code="MERCHANT_RAW_DATA",
+        register_type="MERCHANT_RAW_DATA",
+        version=2,
+        payload_format="CSV",
+        container_format="NONE",
+        has_header=False,
+        # Issuer variant -- see RAW_DATA's version=1/2 comment above.
+        column_mapping={"rrn": 4, "amount": 8},
+        required_columns=["rrn"],
+        amount_source_fields=["amount"],
+        amount_scale_factor=Decimal("0.01"),
+        direction_derivation_rule="constant:CREDIT",
+        rrn_expected_digit_length=12,
+        pagination_artifact_patterns=_HT_FT_ARTIFACT_PATTERNS,
+        date_validation_mode="EXACT_MATCH",
+        is_cycle_wise=True,
+        cycle_set=_CYCLES_1_TO_10,
+        outer_filename_pattern=r"^UPIMERCHANTRAWDATAISSSSK\d{6}_(?:[1-9]|10)C\.csv$",
     ),
     dict(
         file_type_code="MERCHANT_RAW_DATA_BBP",
@@ -161,17 +227,24 @@ _CONFIGS = [
         container_format="NONE",
         has_header=False,
         # Project owner decision 2026-09-10 (see doubts.md): own classification,
-        # identical row shape/parsing to standard Merchant Raw Data ACQ.
+        # identical row shape/parsing to standard Merchant Raw Data ACQ. ACQ-
+        # only (no ISS variant exists for BBP), so a constant DEBIT rule needs
+        # no filename split -- updated 2026-09-12 for consistency with the
+        # ACQ/ISS `constant:` rule above (was unset/UNKNOWN before).
         column_mapping={"rrn": 4, "amount": 8},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("0.01"),
+        direction_derivation_rule="constant:DEBIT",
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=_HT_FT_ARTIFACT_PATTERNS,
         date_validation_mode="EXACT_MATCH",
         is_cycle_wise=True,
-        cycle_set=["4C", "5C", "6C"],
-        outer_filename_pattern=r"^UPIBBPMERCHANTRAWDATAACQSSK\d{6}_[456]C\.csv$",
+        # Project owner confirmed 2026-09-27: BBP can arrive in any of the 10
+        # AUTH cycles (1C-10C). Previously limited to 4C/5C/6C, which was only
+        # what the 2026-07-14 sample data happened to contain.
+        cycle_set=_CYCLES_1_TO_10,
+        outer_filename_pattern=r"^UPIBBPMERCHANTRAWDATAACQSSK\d{6}_(?:[1-9]|10)C\.csv$",
     ),
     dict(
         file_type_code="DRC",
@@ -181,10 +254,21 @@ _CONFIGS = [
         has_header=True,
         # Named header row: RRN col 7, "TXN Date" col 3 (DD/MM/YYYY, confirmed
         # constant per file), Amount col 13 (plain rupee decimal, not paise).
+        # Direction: confirmed by project owner (2026-09-16, direct chat
+        # confirmation quoting the SOP): "DRC dispute file contains the
+        # debit response failed transaction[s]... whether the transaction
+        # is debited from customer and reversed online / need to reverse
+        # it manually or else online transaction response failed" -- DRC
+        # is inherently about debit-side disputes, so constant DEBIT.
+        # NOTE: the online-reversed/needs-manual-reversal/response-failed
+        # *status* itself (determined by comparing against CBS) is
+        # exception-classification logic, not a direction rule -- not
+        # implemented here; see doubts.md.
         column_mapping={"rrn": 7, "date": 3, "amount": 13},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("1"),
+        direction_derivation_rule="constant:DEBIT",
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=[],
         date_validation_mode="EXACT_MATCH",
@@ -198,10 +282,19 @@ _CONFIGS = [
         container_format="NONE",
         has_header=True,
         # Identical column layout to DRC (confirmed).
+        # Direction: confirmed by project owner (2026-09-16, direct chat
+        # confirmation quoting the SOP): "TIME OUT TRANSACTIONS [are]
+        # credit dispute transactions[;] we need to check whether the
+        # transaction is credit to customer" -- Timeout is inherently
+        # about credit-side disputes, so constant CREDIT. NOTE: whether
+        # the credit actually reached the customer is a separate
+        # verification/exception-classification check, not implemented
+        # here; see doubts.md.
         column_mapping={"rrn": 7, "date": 3, "amount": 13},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("1"),
+        direction_derivation_rule="constant:CREDIT",
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=[],
         date_validation_mode="EXACT_MATCH",
@@ -215,16 +308,21 @@ _CONFIGS = [
         container_format="NONE",
         has_header=True,
         # Adjdate (col 3, DD-MM-YYYY) is the canonical business date (resolved
-        # 2026-09-09, see doubts.md); Txndate (col 8) is NOT mapped here so it
-        # falls into extra_fields.raw_cells alongside the other ~46 columns,
-        # per that resolution. RRN col 10. Amount: mapped to "Adjamount" (col
-        # 17) rather than "Txnamount" (col 16) as the adjustment's own
-        # settled amount -- NOT explicitly confirmed in doubts.md (both were
-        # equal in the sample rows inspected), flagged for owner confirmation
-        # in the handoff report.
-        column_mapping={"rrn": 10, "date": 3, "amount": 17},
+        # 2026-09-09, see doubts.md). RRN col 10. "amount" = Adjamount (col
+        # 17), this adjustment's own amount -- confirmed by the project owner
+        # 2026-09-17 (see doubts.md). "txn_amount" = Txnamount (col 16, the
+        # original transaction's amount) and "txn_date" = Txndate (col 8) are
+        # contextual only: they fill StagingAdjustment.txn_amount_raw/
+        # txn_date_raw and TransactionFact.txn_amount, never business_date or
+        # amount. Added with the project owner's OK, 2026-09-27.
+        # Direction: confirmed by project owner (2026-09-16, direct chat
+        # confirmation quoting the SOP): "in this report all the returns
+        # and adjustment records will be there[,] hence by default we
+        # need to give credit to the customer" -- constant CREDIT.
+        column_mapping={"rrn": 10, "date": 3, "amount": 17, "txn_amount": 16, "txn_date": 8},
         required_columns=["rrn", "date"],
         amount_source_fields=["amount"],
+        direction_derivation_rule="constant:CREDIT",
         amount_scale_factor=Decimal("1"),
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=[],
@@ -232,15 +330,44 @@ _CONFIGS = [
         is_cycle_wise=False,
         outer_filename_pattern=r"^UPI Adjustment Report_SSK_\d{4}-\d{2}-\d{2}\.csv$",
     ),
+    dict(
+        file_type_code="NTSL",
+        register_type="NTSL",
+        # NTSL's ".xls" is a genuine OOXML zip (see parsers/sniff.py) --
+        # format_sniff_and_parse compares sniffed.payload.value against this.
+        payload_format="OOXML_ZIP",
+        container_format="NONE",
+        has_header=False,
+        # Settlement summary, NOT an RRN register (see doubts.md). Columns
+        # confirmed against all 12 real files in 14072026/NTSL/: Description
+        # | No of Txns | Debit | Credit (col 5 always empty). Added
+        # 2026-09-27 (plan approved by the project owner that day). Staged
+        # into StagingNtsl, then promoted to NtslSettlementLine by
+        # promote_to_settlement_summary -- never normalize_rows/promote_to_fact,
+        # so no RRN/amount/direction fields apply.
+        column_mapping={"description": 1, "txn_count": 2, "debit": 3, "credit": 4},
+        required_columns=[],
+        amount_source_fields=[],
+        amount_scale_factor=Decimal("1"),
+        direction_derivation_rule="",
+        # Staging keeps every parsed row (titles/header/blank rows included);
+        # promote_to_settlement_summary decides which are category lines.
+        pagination_artifact_patterns=[],
+        date_validation_mode="EXACT_MATCH",
+        is_cycle_wise=True,
+        cycle_set=[*_CYCLES_1_TO_10, "DC1", "DC2"],
+        outer_filename_pattern=r"^UPI_NTSLSSK\d{6}_(?:(?:[1-9]|10)C|DC[12])\.xls$",
+    ),
 ]
 
 
 class Command(BaseCommand):
     help = (
-        "Seeds the 7 FileTypeConfig rows (version 1) for Stage 4's 6 in-scope UPI file "
-        "types (CBS GL Extract, Raw Data, Merchant Raw Data, Merchant Raw Data BBP, DRC, "
-        "Timeout, Adjustment). Idempotent -- safe to re-run. NTSL is intentionally not "
-        "included; see doubts.md."
+        "Seeds the 10 FileTypeConfig rows for the in-scope UPI file types: "
+        "CBS GL Extract, Raw Data ACQ/ISS, Merchant Raw Data ACQ/ISS, "
+        "Merchant Raw Data BBP, DRC, Timeout, Adjustment (-> TransactionFact) "
+        "and NTSL (-> NtslSettlementLine). Idempotent -- safe to re-run; "
+        "existing rows are never modified."
     )
 
     def handle(self, *args, **options):
@@ -248,10 +375,16 @@ class Command(BaseCommand):
 
         created, existing = 0, 0
         for values in _CONFIGS:
+            # "version" defaults to 1 (a plain single-config file type); Raw
+            # Data / Merchant Raw Data set it explicitly (1=ACQ, 2=ISS) so
+            # both variants coexist under the same file_type_code/register_type
+            # -- see FileTypeConfig.Meta's unique_file_type_config_version
+            # constraint (payment_module, file_type_code, version).
+            version = values.get("version", 1)
             _, was_created = FileTypeConfig.objects.get_or_create(
                 payment_module=upi,
                 file_type_code=values["file_type_code"],
-                version=1,
+                version=version,
                 defaults=values,
             )
             if was_created:

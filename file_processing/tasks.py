@@ -1,34 +1,45 @@
 """
-Celery pipeline for inbound source-file processing (approved plan §5).
+Celery pipeline for inbound source-file processing (approved plan §5),
+restructured for the staging -> fact -> history schema redesign (approved
+2026-09-23, see tracker.md "Schema Redesign -- Staging -> Fact -> History").
 
-All four stages are implemented: 1 `format_sniff_and_parse`,
-2 `validate_structure_and_content`, 3 `normalize_rows`,
-4 `load_to_unified_table` (populates `transactions.TransactionRecord` --
-added 2026-09-10, see TRACKER.md's Phase 1 exit criteria and doubts.md's
-"Resolved" section for the facts this stage's per-file-type extraction
-logic is built against). In scope for Stage 4: CBS GL Extract, Raw Data,
-Merchant Raw Data (ACQ/ISS), Merchant Raw Data BBP, DRC, Timeout,
-Adjustment -- NTSL is deliberately excluded (settlement summary/totals
-report, no RRN column, needs its own design; see doubts.md).
+Stages, in order:
+  1 `format_sniff_and_parse`
+  2 `validate_structure_and_content`
+  3 `load_to_staging` -- writes every surviving parsed row, in raw form, to
+    its per-file-type staging table (`transactions.models.staging`, chosen
+    via `STAGING_MODEL_BY_REGISTER_TYPE`). Status -> STAGED.
+  4 `normalize_rows` -- reads the rows back from that staging table
+    (filtered by uploaded_file_id), same RRN/direction/amount/date
+    extraction logic as before, carrying each staging row's id forward.
+  5 `promote_to_fact` (formerly `load_to_unified_table`) -- builds
+    `transactions.TransactionFact` rows with `staging_row_id` lineage.
+    Status -> LOADED.
+In scope for stages 4-5: CBS GL Extract, Raw Data, Merchant Raw Data
+(ACQ/ISS), Merchant Raw Data BBP, DRC, Timeout, Adjustment.
+
+NTSL (added 2026-09-27) is a settlement summary/totals report with no RRN
+column (see doubts.md), so it never reaches normalize_rows/promote_to_fact.
+It runs stages 1-3 unchanged (staged into `StagingNtsl`, every parsed row
+kept) and then its own final stage instead:
+  4' `promote_to_settlement_summary` -- promotes the genuine category lines
+    to `transactions.NtslSettlementLine`. Status -> LOADED.
 
 Each stage is a separate Celery task chained together (`build_processing_
 chain`) so it's independently retryable/visible, rather than one large
 task, matching the approved plan.
 
-KNOWN SIMPLIFICATION (explicitly approved as an interim measure, not a
-resolved design): the approved plan's stage 2 says parsing writes "into a
-staging table keyed by uploaded_file_id", but no such staging model is in
-this task's scope (only UploadedFile/FileTypeConfig/FileValidationException
-were approved to build -- a real ParsedRow-style staging table is likely to
-be scoped alongside TransactionRecord later). Here, parsed/validated/
-normalized rows are instead passed from stage to stage as each Celery
-task's JSON-serializable return value, relying on Celery's normal chain
-mechanism (broker/result-backend transport) rather than a durable,
-independently-queryable table. This is fine for moderate files but means a
-~150k-row CBS file's rows travel through Redis as one serialized payload
-per stage -- acceptable for this phase, not a substitute for real staging
-storage. Row dict cell keys are stringified (`{"1": ..., "3": ...}`) since
-JSON object keys are always strings.
+KNOWN SIMPLIFICATION (narrowed by the staging redesign): a durable,
+queryable staging table now exists, so the CBS date-selection pause
+(RANGE_CONTAINS) no longer persists the whole parsed file in
+`UploadedFile.pending_pipeline_context` -- rows are staged first and the
+paused context is just `{"uploaded_file_id": ..., "halted": True}`. Rows
+still travel between stages 1 -> 2 -> 3 (parse -> validate -> stage) and
+4 -> 5 (normalized values, without raw cells) as each Celery task's
+JSON-serializable return value, i.e. through the broker/result backend,
+for the duration of one uninterrupted chain run. Row dict cell keys are
+stringified (`{"1": ..., "3": ...}`) since JSON object keys are always
+strings; staging's `raw_cells` keeps that same string-keyed form.
 """
 from __future__ import annotations
 
@@ -42,7 +53,7 @@ from typing import Any
 from celery import chain, shared_task
 from django.utils.dateparse import parse_datetime
 
-from core.models import Direction
+from core.models import Direction, RegisterType
 from file_processing.models import (
     DateValidationMode,
     FileValidationException,
@@ -55,7 +66,12 @@ from file_processing.parsers.csv_parser import parse_csv
 from file_processing.parsers.ntsl_ooxml import parse_ooxml_workbook
 from file_processing.parsers.pagination_strip import strip_pagination_artifacts
 from file_processing.parsers.sniff import PayloadKind, sniff_path
-from transactions.models import TransactionRecord
+from transactions.models import (
+    STAGING_MODEL_BY_REGISTER_TYPE,
+    NtslSettlementLine,
+    StagingNtsl,
+    TransactionFact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,30 +87,52 @@ _CBS_REMARKS_RE = re.compile(r"^(By|To)\s+UPI/([^/]+)/")
 def build_processing_chain(uploaded_file_id: int):
     """Assemble the Celery chain for one UploadedFile.
 
-    For EXACT_MATCH file types this is the full stage 1-4 chain. For
+    For EXACT_MATCH file types this is the full 5-stage chain. For
     RANGE_CONTAINS file types (e.g. CBS GL Extract) the chain stops after
-    validate_structure_and_content: that stage pauses processing at
-    AWAITING_DATE_SELECTION once it has detected the file's distinct row
-    dates, and normalize_rows + load_to_unified_table are instead invoked
-    later as their own standalone chain -- from the "Select business date"
-    admin action, see file_processing/admin.py -- once a human has picked
-    one of them."""
-    date_validation_mode = (
+    load_to_staging: rows are staged first, then that stage pauses
+    processing at AWAITING_DATE_SELECTION with the file's distinct row
+    dates surfaced. normalize_rows + promote_to_fact are invoked later as
+    their own standalone chain -- from the "Select business date" admin
+    action, see file_processing/admin.py -- once a human has picked one;
+    normalize_rows reads the already-staged rows back, so nothing but the
+    uploaded_file_id needs to survive the pause.
+
+    NTSL files (register_type NTSL) get their own 4-stage chain ending in
+    promote_to_settlement_summary instead of normalize_rows/promote_to_fact
+    (settlement summary, no RRN -- see module docstring)."""
+    config = (
         UploadedFile.objects.select_related("file_type_config")
         .get(pk=uploaded_file_id)
-        .file_type_config.date_validation_mode
+        .file_type_config
     )
+    if config.register_type == RegisterType.NTSL:
+        return chain(
+            format_sniff_and_parse.s(uploaded_file_id),
+            validate_structure_and_content.s(),
+            load_to_staging.s(),
+            promote_to_settlement_summary.s(),
+        )
+    date_validation_mode = config.date_validation_mode
     if date_validation_mode == DateValidationMode.RANGE_CONTAINS:
         return chain(
             format_sniff_and_parse.s(uploaded_file_id),
             validate_structure_and_content.s(),
+            load_to_staging.s(),
         )
     return chain(
         format_sniff_and_parse.s(uploaded_file_id),
         validate_structure_and_content.s(),
+        load_to_staging.s(),
         normalize_rows.s(),
-        load_to_unified_table.s(),
+        promote_to_fact.s(),
     )
+
+
+def _row_reference(worksheet: str | None, row_number: int) -> str:
+    """'<worksheet>:<row_number>' natural key -- the same format used by
+    FileValidationException.row_reference, staging row_reference, and
+    TransactionFact.row_reference."""
+    return f"{worksheet or ''}:{row_number}"
 
 
 def _record_exception(
@@ -357,17 +395,16 @@ def validate_structure_and_content(context: dict[str, Any]) -> dict[str, Any]:
         "stripped_count": stripped_count,
     }
 
+    update_fields = ["processing_status", "rejected_record_count"]
     if config.date_validation_mode == DateValidationMode.RANGE_CONTAINS:
         # The file's own business-date field is a range (e.g. CBS GL
         # Extract's "From 13/07 To 15/07"), so business_date can't be
-        # resolved yet -- pause here, surface the distinct dates actually
-        # found, and let a human pick one (see the "Select business date"
-        # admin action in file_processing/admin.py). Stage output is
-        # persisted to pending_pipeline_context (not just returned) since
-        # this pause can last minutes to days -- longer than it's safe to
-        # rely on Celery's broker/result-backend transport for (see module
-        # docstring's KNOWN SIMPLIFICATION).
-        detected_dates = sorted(
+        # resolved yet. The distinct dates actually found are computed and
+        # stored here; the pause itself (AWAITING_DATE_SELECTION) now
+        # happens at the end of load_to_staging, AFTER the rows are durably
+        # staged, so the paused context no longer has to carry them (see
+        # module docstring's KNOWN SIMPLIFICATION).
+        uploaded_file.detected_dates = sorted(
             {
                 d
                 for d in (
@@ -380,37 +417,132 @@ def validate_structure_and_content(context: dict[str, Any]) -> dict[str, Any]:
                 if d
             }
         )
-        uploaded_file.detected_dates = detected_dates
-        uploaded_file.pending_pipeline_context = stage3_context
-        uploaded_file.processing_status = ProcessingStatus.AWAITING_DATE_SELECTION
-        uploaded_file.rejected_record_count = 0
-        uploaded_file.save(
-            update_fields=[
-                "detected_dates",
-                "pending_pipeline_context",
-                "processing_status",
-                "rejected_record_count",
-            ]
-        )
-        _record_exception(
-            uploaded_file,
-            "AWAITING_DATE_SELECTION",
-            f"RANGE_CONTAINS file type; detected distinct row dates {detected_dates} -- "
-            "select a business date via the 'Select business date' admin action before "
-            "normalization can proceed.",
-            severity=ValidationSeverity.INFO,
-        )
-        return {**stage3_context, "halted": True}
+        update_fields.append("detected_dates")
 
     uploaded_file.processing_status = ProcessingStatus.VALIDATED
     uploaded_file.rejected_record_count = 0  # structural rejects, not row-level; row rejects happen in normalize
-    uploaded_file.save(update_fields=["processing_status", "rejected_record_count"])
+    uploaded_file.save(update_fields=update_fields)
 
     return stage3_context
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: normalize_rows
+# Stage 3: load_to_staging
+# ---------------------------------------------------------------------------
+_STAGING_BATCH_SIZE = 5000
+
+
+def _staging_model_or_fail(uploaded_file: UploadedFile, config, stage_name: str):
+    """Returns the staging model for this file's register_type, or records
+    an ERROR exception, marks the file FAILED, and returns None -- e.g. for
+    SWITCH, which has no staging table by design (no Switch file exists)."""
+    staging_model = STAGING_MODEL_BY_REGISTER_TYPE.get(config.register_type)
+    if staging_model is None:
+        _record_exception(
+            uploaded_file,
+            "NO_STAGING_TABLE",
+            f"{stage_name}: register_type '{config.register_type}' has no staging table "
+            "(in scope: CBS GL Extract, Raw Data, Merchant Raw Data, Merchant Raw Data BBP, "
+            "DRC, Timeout, Adjustment, NTSL)",
+        )
+        uploaded_file.processing_status = ProcessingStatus.FAILED
+        uploaded_file.save(update_fields=["processing_status"])
+    return staging_model
+
+
+@shared_task
+def load_to_staging(context: dict[str, Any]) -> dict[str, Any]:
+    """
+    Writes every row that survived validate_structure_and_content, in raw
+    form, to the per-file-type staging table for this file's register_type
+    (`transactions.models.staging`). Nothing is normalized here.
+
+    Each row stores its full parsed cell dict in `raw_cells`, plus the
+    model's typed raw columns, filled from the file type's EXISTING
+    `FileTypeConfig.column_mapping` through `_resolve_column_mapping` (so
+    CBS's per-worksheet layouts resolve correctly). A typed column whose
+    mapping key isn't in the config is left NULL -- its value is still in
+    `raw_cells`. No column position is hardcoded here.
+
+    RANGE_CONTAINS files (CBS) stage ALL rows, across every date in the
+    file's range; date filtering happens later, in normalize_rows, once a
+    business date has been selected. After staging, such a file pauses at
+    AWAITING_DATE_SELECTION with only {"uploaded_file_id", "halted": True}
+    persisted in `pending_pipeline_context`.
+
+    Idempotent: `bulk_create(ignore_conflicts=True)` against each staging
+    table's (uploaded_file, row_reference) unique constraint, so a retried
+    task doesn't double-stage rows.
+    """
+    if context.get("halted"):
+        return context
+
+    uploaded_file_id = context["uploaded_file_id"]
+    uploaded_file = UploadedFile.objects.select_related("file_type_config").get(pk=uploaded_file_id)
+    config = uploaded_file.file_type_config
+
+    staging_model = _staging_model_or_fail(uploaded_file, config, "load_to_staging")
+    if staging_model is None:
+        return {"uploaded_file_id": uploaded_file_id, "halted": True}
+
+    has_worksheet_column = any(f.name == "worksheet" for f in staging_model._meta.fields)
+    typed_field_keys = staging_model.TYPED_FIELD_MAPPING_KEYS
+
+    staging_rows = []
+    for row in context.get("rows", []):
+        worksheet = row.get("worksheet")
+        cells = row["cells"]
+        row_column_mapping = _resolve_column_mapping(config, worksheet)
+
+        typed_values: dict[str, Any] = {}
+        for field_name, mapping_key in typed_field_keys.items():
+            col_ref = row_column_mapping.get(mapping_key)
+            if col_ref in (None, ""):
+                typed_values[field_name] = None
+                continue
+            value = cells.get(str(col_ref))
+            typed_values[field_name] = None if value is None else str(value)
+        if has_worksheet_column:
+            typed_values["worksheet"] = worksheet
+
+        staging_rows.append(
+            staging_model(
+                uploaded_file=uploaded_file,
+                row_number=row["row_number"],
+                row_reference=_row_reference(worksheet, row["row_number"]),
+                raw_cells=cells,
+                **typed_values,
+            )
+        )
+
+    if staging_rows:
+        staging_model.objects.bulk_create(
+            staging_rows, ignore_conflicts=True, batch_size=_STAGING_BATCH_SIZE
+        )
+    staged_count = staging_model.objects.filter(uploaded_file=uploaded_file).count()
+
+    if config.date_validation_mode == DateValidationMode.RANGE_CONTAINS:
+        paused_context = {"uploaded_file_id": uploaded_file_id, "halted": True}
+        uploaded_file.pending_pipeline_context = paused_context
+        uploaded_file.processing_status = ProcessingStatus.AWAITING_DATE_SELECTION
+        uploaded_file.save(update_fields=["pending_pipeline_context", "processing_status"])
+        _record_exception(
+            uploaded_file,
+            "AWAITING_DATE_SELECTION",
+            f"RANGE_CONTAINS file type; {staged_count} rows staged; detected distinct row dates "
+            f"{uploaded_file.detected_dates} -- select a business date via the 'Select business "
+            "date' admin action before normalization can proceed.",
+            severity=ValidationSeverity.INFO,
+        )
+        return {**paused_context, "staged_count": staged_count}
+
+    uploaded_file.processing_status = ProcessingStatus.STAGED
+    uploaded_file.save(update_fields=["processing_status"])
+    return {"uploaded_file_id": uploaded_file_id, "halted": False, "staged_count": staged_count}
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: normalize_rows
 # ---------------------------------------------------------------------------
 def _extract_cbs_rrn(remarks: str | None, expected_digits: int) -> tuple[str | None, bool, str | None]:
     """Returns (direction_hint, rrn, rrn_valid) style tuple for CBS remarks.
@@ -438,11 +570,14 @@ def _extract_generic_rrn(raw_value: Any, expected_digits: int) -> tuple[str | No
     """RRN extraction for every file type that isn't CBS (i.e. doesn't use
     the `remarks_prefix` direction_derivation_rule mechanism): the RRN is
     read directly from `column_mapping["rrn"]`'s position -- no
-    regex/description parsing needed, unlike CBS's remarks field. No
-    direction-derivation rule is confirmed for any of these six types (see
-    doubts.md / this module's Stage 4 handoff notes) -- direction is left
-    at Direction.UNKNOWN by the caller regardless of this function's
-    result."""
+    regex/description parsing needed, unlike CBS's remarks field. Used by
+    the `constant:` direction path -- every one of the six in-scope
+    non-CBS file types now sets `constant:` (Raw Data ACQ/ISS, Merchant
+    Raw Data ACQ/ISS, Merchant Raw Data BBP resolved 2026-09-12; DRC,
+    Timeout, Adjustment resolved 2026-09-16, see doubts.md) -- and, if a
+    future file type is added with no `direction_derivation_rule` set at
+    all, the generic fallback path that leaves direction at
+    Direction.UNKNOWN."""
     if raw_value in (None, ""):
         return None, False
     cleaned = _LEADING_APOSTROPHE_RE.sub("", str(raw_value)).strip()
@@ -458,7 +593,15 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
     uploaded_file_id = context["uploaded_file_id"]
     uploaded_file = UploadedFile.objects.select_related("file_type_config").get(pk=uploaded_file_id)
     config = uploaded_file.file_type_config
-    rows = context["rows"]
+
+    # Rows are read back from this file's staging table (written by
+    # load_to_staging), not from the incoming context -- so this stage works
+    # identically whether it runs straight after staging or is resumed
+    # after a CBS date-selection pause.
+    staging_model = _staging_model_or_fail(uploaded_file, config, "normalize_rows")
+    if staging_model is None:
+        return {"uploaded_file_id": uploaded_file_id, "rows": [], "halted": True}
+    staged_rows = staging_model.objects.filter(uploaded_file_id=uploaded_file_id).order_by("id")
 
     business_date_iso = uploaded_file.business_date.isoformat()
     scale = config.amount_scale_factor or Decimal("1")
@@ -467,9 +610,12 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
     valid_count = 0
     rejected_count = 0
 
-    for row in rows:
-        cells = row["cells"]
-        row_ref = f"{row.get('worksheet') or ''}:{row['row_number']}"
+    for staging_row in staged_rows.iterator(chunk_size=_STAGING_BATCH_SIZE):
+        cells = staging_row.raw_cells
+        # Only the CBS staging table has a worksheet column; every other
+        # in-scope type is single-sheet CSV (worksheet None), same as before.
+        row = {"row_number": staging_row.row_number, "worksheet": getattr(staging_row, "worksheet", None)}
+        row_ref = staging_row.row_reference
 
         # Resolved per-row's worksheet -- for multi-worksheet, per-worksheet-
         # layout configs like CBS (whose 3 worksheets each use a different
@@ -500,7 +646,21 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
         rrn = None
         rrn_valid = False
 
-        if config.direction_derivation_rule.startswith("remarks_prefix"):
+        if config.direction_derivation_rule.startswith("constant:"):
+            # Whole-file-constant direction, keyed purely by which
+            # FileTypeConfig (i.e. which source file -- ACQ vs. ISS, or
+            # BBP's ACQ-only variant) this row came from, not any per-row
+            # column. Confirmed via the bank's SOP (see doubts.md's
+            # "Resolved" section, 2026-09-12): "Issuer transactions are
+            # credit transaction to the bank customer... Acquirer
+            # transactions are debit transaction to the bank customers."
+            rrn_col = str(config.column_mapping.get("rrn", ""))
+            if rrn_col:
+                rrn, rrn_valid = _extract_generic_rrn(
+                    cells.get(rrn_col), config.rrn_expected_digit_length
+                )
+            direction = config.direction_derivation_rule.split(":", 1)[1].strip()
+        elif config.direction_derivation_rule.startswith("remarks_prefix"):
             remarks_val = cells.get(remarks_col)
             direction_hint, rrn, rrn_valid = _extract_cbs_rrn(
                 remarks_val, config.rrn_expected_digit_length
@@ -528,11 +688,16 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
                         row_reference=row_ref,
                     )
         else:
-            # Generic path: RRN read directly from column_mapping["rrn"]'s
-            # position. Direction has no confirmed derivation rule for any
-            # of these six types (see doubts.md) -- deliberately left as
-            # Direction.UNKNOWN rather than guessed; a future Business Rule
-            # Engine / project-owner decision would set this, not this task.
+            # Generic fallback path: RRN read directly from
+            # column_mapping["rrn"]'s position, direction left at
+            # Direction.UNKNOWN. Reached only if a config has no
+            # `direction_derivation_rule` set at all -- every one of the
+            # six in-scope non-CBS file types now sets `constant:` (Raw
+            # Data ACQ/ISS, Merchant Raw Data ACQ/ISS, Merchant Raw Data
+            # BBP resolved 2026-09-12; DRC, Timeout, Adjustment resolved
+            # 2026-09-16, see doubts.md), so this branch is currently a
+            # defensive fallback for a not-yet-configured file type, not a
+            # live path.
             rrn_col = str(config.column_mapping.get("rrn", ""))
             if rrn_col:
                 rrn, rrn_valid = _extract_generic_rrn(
@@ -553,19 +718,43 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
                     row_reference=row_ref,
                 )
 
+        # Adjustment only: the original disputed transaction's Txnamount
+        # (-> TransactionFact.txn_amount). Read from the staging row's typed
+        # txn_amount_raw column, which is only populated when the ADJUSTMENT
+        # config's column_mapping has a "txn_amount" key -- see
+        # transactions/models/staging.py AdjustmentRawFields. `amount`
+        # above is unaffected (still Adjamount).
+        txn_amount = None
+        raw_txn_amount = getattr(staging_row, "txn_amount_raw", None)
+        if raw_txn_amount not in (None, ""):
+            try:
+                txn_amount = Decimal(str(raw_txn_amount)) * scale
+            except Exception:  # noqa: BLE001 - row-level data issue, not a crash
+                _record_exception(
+                    uploaded_file,
+                    "UNPARSEABLE_TXN_AMOUNT",
+                    f"Could not parse Txnamount value '{raw_txn_amount}'",
+                    severity=ValidationSeverity.WARNING,
+                    row_reference=row_ref,
+                )
+
         # RRN invalidity (e.g. CBS's ~10% non-12-digit rate, confirmed
         # directly against sample data) is a normal per-row state, not an
         # error path -- the row is still normalized/kept, just excluded
         # from RRN-keyed matching downstream (approved plan finding).
+        # Raw cells are no longer forwarded: TransactionFact has no
+        # extra_fields, and the raw row stays reachable via staging_row_id.
         normalized_rows.append(
             {
                 "row_number": row["row_number"],
                 "worksheet": row.get("worksheet"),
-                "cells": cells,
+                "row_reference": row_ref,
+                "staging_row_id": staging_row.id,
                 "rrn": rrn,
                 "rrn_valid": rrn_valid,
                 "direction": direction,
                 "amount": str(amount) if amount is not None else None,
+                "txn_amount": str(txn_amount) if txn_amount is not None else None,
                 "row_date": row_date_iso,
             }
         )
@@ -584,18 +773,18 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: load_to_unified_table
+# Stage 5: promote_to_fact (formerly load_to_unified_table)
 # ---------------------------------------------------------------------------
 @shared_task
-def load_to_unified_table(context: dict[str, Any]) -> dict[str, Any]:
+def promote_to_fact(context: dict[str, Any]) -> dict[str, Any]:
     """
-    Populates `transactions.TransactionRecord` from `normalize_rows`'
-    output. Scope: the six RRN-bearing file types resolved 2026-09-10 (CBS
-    GL Extract, Raw Data, Merchant Raw Data, Merchant Raw Data BBP, DRC,
-    Timeout, Adjustment -- 7 `FileTypeConfig`s across those 6 underlying
-    types). NTSL is out of scope entirely and must never reach this task
-    (see doubts.md's NTSL entry) -- it is deliberately not wired into any
-    `FileTypeConfig` this stage would run against.
+    Builds `transactions.TransactionFact` rows from `normalize_rows`'
+    output. Renamed from `load_to_unified_table` by the 2026-09-23 schema
+    redesign; the per-row logic below is unchanged apart from the target
+    model, `staging_row_id` lineage, `txn_amount`, and `extra_fields` being
+    gone. Scope: the six RRN-bearing file types (CBS GL Extract, Raw Data,
+    Merchant Raw Data, Merchant Raw Data BBP, DRC, Timeout, Adjustment).
+    NTSL never reaches this stage -- it ends in promote_to_settlement_summary.
 
     business_date resolution per row: uses the row's own resolved date
     (`row_date`, from `normalize_rows`' `_row_date_iso` call against
@@ -604,28 +793,27 @@ def load_to_unified_table(context: dict[str, Any]) -> dict[str, Any]:
     Adjustment, whose `Adjdate` can genuinely differ from the file's
     nominal business date (confirmed: one row in the real sample has
     Adjdate 2026-07-15 in a file otherwise dated 2026-07-14) -- see
-    doubts.md's "Adjustment report" resolution. For every other in-scope
-    type the row date is either unmapped (Raw Data/Merchant Raw Data/BBP,
-    whose business_date is a whole-file constant entered at upload) or
-    confirmed constant across the file (DRC/Timeout), so this fallback is
-    inert for them in practice.
+    doubts.md's "Adjustment report" resolution.
+
+    `amount` is unchanged (for Adjustment it is still Adjamount). `txn_amount`
+    is set ONLY for Adjustment rows, from normalize_rows' `txn_amount`
+    (Txnamount); NULL for every other register type.
 
     A row whose amount could not be parsed (`normalize_rows` already logged
     an UNPARSEABLE_AMOUNT warning and kept the row) cannot be loaded here --
-    `TransactionRecord.amount` is a required, non-null column -- so it is
+    `TransactionFact.amount` is a required, non-null column -- so it is
     skipped with its own logged exception rather than silently coerced to
     e.g. zero, which would fabricate a value never present in the source
     file.
 
-    `direction` is carried over as whatever `normalize_rows` resolved:
-    CBS's remarks-prefix rule, or `Direction.UNKNOWN` for the other five
-    types (see `_extract_generic_rrn`'s docstring -- no direction-derivation
-    rule is confirmed for them; this is a Business Rule Engine / project
-    owner decision, not invented here).
+    `direction` is carried over as whatever `normalize_rows` resolved: CBS's
+    `remarks_prefix` rule, a whole-file `constant:DEBIT`/`constant:CREDIT`
+    rule, or `Direction.UNKNOWN` for any type with no
+    `direction_derivation_rule` set at all.
 
     Uses `bulk_create(..., ignore_conflicts=True)` against
-    `unique_row_per_uploaded_file` so a retried Celery task (the scenario
-    that constraint was added for) doesn't raise or double-load rows.
+    `unique_row_per_uploaded_file` so a retried Celery task doesn't raise or
+    double-load rows.
     """
     if context.get("halted"):
         return context
@@ -636,20 +824,21 @@ def load_to_unified_table(context: dict[str, Any]) -> dict[str, Any]:
     ).get(pk=uploaded_file_id)
     config = uploaded_file.file_type_config
     rows = context["rows"]
+    is_adjustment = config.register_type == RegisterType.ADJUSTMENT
 
-    records: list[TransactionRecord] = []
+    facts: list[TransactionFact] = []
     loaded_count = 0
     skipped_count = 0
 
     for row in rows:
-        row_ref = f"{row.get('worksheet') or ''}:{row['row_number']}"
+        row_ref = row.get("row_reference") or _row_reference(row.get("worksheet"), row["row_number"])
 
         if row.get("amount") is None:
             _record_exception(
                 uploaded_file,
                 "SKIPPED_UNLOADABLE_ROW",
                 "Row has no parseable amount (see prior UNPARSEABLE_AMOUNT warning, if "
-                "any) -- TransactionRecord.amount is required, so this row cannot be "
+                "any) -- TransactionFact.amount is required, so this row cannot be "
                 "loaded and is excluded rather than assigned a fabricated value.",
                 row_reference=row_ref,
             )
@@ -659,8 +848,12 @@ def load_to_unified_table(context: dict[str, Any]) -> dict[str, Any]:
         row_date_iso = row.get("row_date")
         business_date = date.fromisoformat(row_date_iso) if row_date_iso else uploaded_file.business_date
 
-        records.append(
-            TransactionRecord(
+        txn_amount = None
+        if is_adjustment and row.get("txn_amount") is not None:
+            txn_amount = Decimal(row["txn_amount"])
+
+        facts.append(
+            TransactionFact(
                 payment_module=uploaded_file.payment_module,
                 source_register_type=config.register_type,
                 uploaded_file=uploaded_file,
@@ -669,15 +862,16 @@ def load_to_unified_table(context: dict[str, Any]) -> dict[str, Any]:
                 rrn=row.get("rrn") or "",
                 rrn_valid=bool(row.get("rrn_valid")),
                 amount=Decimal(row["amount"]),
+                txn_amount=txn_amount,
                 direction=row.get("direction") or Direction.UNKNOWN,
                 row_reference=row_ref,
-                extra_fields={"raw_cells": row["cells"]},
+                staging_row_id=row.get("staging_row_id"),
             )
         )
         loaded_count += 1
 
-    if records:
-        TransactionRecord.objects.bulk_create(records, ignore_conflicts=True)
+    if facts:
+        TransactionFact.objects.bulk_create(facts, ignore_conflicts=True, batch_size=_STAGING_BATCH_SIZE)
 
     uploaded_file.processing_status = ProcessingStatus.LOADED
     uploaded_file.save(update_fields=["processing_status"])
@@ -688,3 +882,223 @@ def load_to_unified_table(context: dict[str, Any]) -> dict[str, Any]:
         "skipped_count": skipped_count,
         "halted": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# NTSL final stage: promote_to_settlement_summary (replaces stages 4-5 for NTSL)
+# ---------------------------------------------------------------------------
+# Row 3 of every real NTSL file (all 12 in 14072026/NTSL/ checked), e.g.
+# "Daily Settlement Statement for SUCO SOUHARDA SAHAKARI BANK LTD - UPI as on
+# 14-07-2026 ( 1C 21:00:00 TO 00:00:00 )" / "... ( DC1 00:00:00 TO 16:00:00 )".
+_NTSL_TITLE_RE = re.compile(r"as on (\d{2}-\d{2}-\d{4}) \( (\S+) ")
+_NTSL_FINAL_SETTLEMENT_DESCRIPTION = "final settlement amount"
+
+
+def _parse_ntsl_number(raw: Any) -> Decimal | None:
+    """Decimal for a numeric NTSL cell ("2257.0", "0", "-12.5"); None for
+    None/blank/whitespace or anything that isn't a finite number (e.g. the
+    header row's "No of Txns"/"Debit"/"Credit" labels)."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text)
+    except Exception:  # noqa: BLE001 - decimal.InvalidOperation etc.: not a number
+        return None
+    return value if value.is_finite() else None
+
+
+def _is_blank(raw: Any) -> bool:
+    return raw is None or not str(raw).strip()
+
+
+@shared_task
+def promote_to_settlement_summary(context: dict[str, Any]) -> dict[str, Any]:
+    """
+    NTSL's final stage (after load_to_staging): promotes the genuine
+    category lines of one NTSL file from `StagingNtsl` to
+    `transactions.NtslSettlementLine`. Loading only -- NTSL validation /
+    settlement reconciliation is Phase 4 work and is not done here.
+
+    A staged row is a category line when its description (stripped) is
+    non-empty AND at least one of txn_count/debit/credit parses as a
+    number. That excludes the title rows, the "Description | No of Txns |
+    Debit | Credit" header (its number cells are text labels), blank rows,
+    and heading rows such as "FOR NON - FINANCIAL MANDATE/OD TXNs" (blank/
+    whitespace number cells). Rows with a parseable number but an empty
+    description are not loaded; one INFO exception records how many.
+
+    Per line: txn_count "18.0" -> 18, blank -> NULL, non-integral or
+    non-numeric -> NULL plus a WARNING (never guessed). debit/credit ->
+    Decimal, blank/whitespace -> 0. A non-blank debit/credit that does not
+    parse would have to be invented to load, so that line is skipped with a
+    WARNING instead (does not occur in any of the 12 real files).
+    is_final_settlement = description == "Final Settlement Amount"
+    (case-insensitive).
+
+    Non-fatal WARNING cross-checks (the file still reaches LOADED): the
+    title row's "as on <date> ( <cycle> " must match the UploadedFile's
+    business_date / settlement_cycle (WARNING if it differs or no such
+    title row exists), and exactly one final-settlement line must exist.
+
+    Idempotent: bulk_create(ignore_conflicts=True) against
+    unique_ntsl_line_per_uploaded_file. (A re-run does re-record its
+    INFO/WARNING exceptions, same as the other stages.)
+    """
+    if context.get("halted"):
+        return context
+
+    uploaded_file_id = context["uploaded_file_id"]
+    uploaded_file = UploadedFile.objects.select_related(
+        "file_type_config", "payment_module", "settlement_cycle"
+    ).get(pk=uploaded_file_id)
+    config = uploaded_file.file_type_config
+
+    if config.register_type != RegisterType.NTSL:
+        _record_exception(
+            uploaded_file,
+            "NOT_NTSL",
+            f"promote_to_settlement_summary: register_type '{config.register_type}' is not NTSL",
+        )
+        uploaded_file.processing_status = ProcessingStatus.FAILED
+        uploaded_file.save(update_fields=["processing_status"])
+        return {"uploaded_file_id": uploaded_file_id, "halted": True}
+
+    staged_rows = StagingNtsl.objects.filter(uploaded_file_id=uploaded_file_id).order_by("row_number", "id")
+
+    lines: list[NtslSettlementLine] = []
+    title_match = None
+    empty_description_refs: list[str] = []
+
+    for staging_row in staged_rows:
+        description = (staging_row.description_raw or "").strip()
+        if title_match is None and description:
+            title_match = _NTSL_TITLE_RE.search(description)
+
+        txn_count_raw = staging_row.txn_count_raw
+        debit_raw = staging_row.debit_raw
+        credit_raw = staging_row.credit_raw
+        txn_count_num = _parse_ntsl_number(txn_count_raw)
+        debit_num = _parse_ntsl_number(debit_raw)
+        credit_num = _parse_ntsl_number(credit_raw)
+        if txn_count_num is None and debit_num is None and credit_num is None:
+            continue  # title / header / blank / heading row
+        if not description:
+            empty_description_refs.append(staging_row.row_reference)
+            continue
+
+        row_ref = staging_row.row_reference
+
+        bad_amounts = [
+            (label, raw)
+            for label, raw, num in (("Debit", debit_raw, debit_num), ("Credit", credit_raw, credit_num))
+            if num is None and not _is_blank(raw)
+        ]
+        if bad_amounts:
+            _record_exception(
+                uploaded_file,
+                "NTSL_UNPARSEABLE_AMOUNT",
+                f"NTSL line '{description}' not loaded: non-numeric "
+                + ", ".join(f"{label}={raw!r}" for label, raw in bad_amounts),
+                severity=ValidationSeverity.WARNING,
+                row_reference=row_ref,
+            )
+            continue
+
+        txn_count = None
+        if txn_count_num is not None:
+            if txn_count_num == txn_count_num.to_integral_value():
+                txn_count = int(txn_count_num)
+            else:
+                _record_exception(
+                    uploaded_file,
+                    "NTSL_NON_INTEGRAL_TXN_COUNT",
+                    f"NTSL line '{description}': No of Txns {txn_count_raw!r} is not a whole "
+                    "number -- stored as NULL rather than rounded.",
+                    severity=ValidationSeverity.WARNING,
+                    row_reference=row_ref,
+                )
+        elif not _is_blank(txn_count_raw):
+            _record_exception(
+                uploaded_file,
+                "NTSL_UNPARSEABLE_TXN_COUNT",
+                f"NTSL line '{description}': No of Txns {txn_count_raw!r} is not numeric -- "
+                "stored as NULL.",
+                severity=ValidationSeverity.WARNING,
+                row_reference=row_ref,
+            )
+
+        lines.append(
+            NtslSettlementLine(
+                payment_module=uploaded_file.payment_module,
+                uploaded_file=uploaded_file,
+                settlement_cycle=uploaded_file.settlement_cycle,
+                business_date=uploaded_file.business_date,
+                row_reference=row_ref,
+                staging_row_id=staging_row.id,
+                description=description,
+                txn_count=txn_count,
+                debit=debit_num if debit_num is not None else Decimal("0"),
+                credit=credit_num if credit_num is not None else Decimal("0"),
+                is_final_settlement=description.lower() == _NTSL_FINAL_SETTLEMENT_DESCRIPTION,
+            )
+        )
+
+    if empty_description_refs:
+        _record_exception(
+            uploaded_file,
+            "NTSL_EMPTY_DESCRIPTION_ROWS_SKIPPED",
+            f"{len(empty_description_refs)} row(s) with numeric values but an empty Description "
+            f"were not loaded: {', '.join(empty_description_refs)}",
+            severity=ValidationSeverity.INFO,
+        )
+
+    # --- header cross-check (non-fatal) ---
+    expected_cycle = uploaded_file.settlement_cycle.cycle_code if uploaded_file.settlement_cycle else None
+    if title_match is None:
+        _record_exception(
+            uploaded_file,
+            "NTSL_HEADER_NOT_FOUND",
+            "No title row matching 'as on DD-MM-YYYY ( <cycle> ' found -- business date and "
+            "cycle could not be cross-checked against the file's own header.",
+            severity=ValidationSeverity.WARNING,
+        )
+    else:
+        header_date_raw, header_cycle = title_match.group(1), title_match.group(2)
+        try:
+            header_date = datetime.strptime(header_date_raw, "%d-%m-%Y").date()
+        except ValueError:
+            header_date = None
+        mismatches = []
+        if header_date != uploaded_file.business_date:
+            mismatches.append(f"date {header_date_raw} vs business_date {uploaded_file.business_date}")
+        if header_cycle != expected_cycle:
+            mismatches.append(f"cycle {header_cycle} vs settlement_cycle {expected_cycle}")
+        if mismatches:
+            _record_exception(
+                uploaded_file,
+                "NTSL_HEADER_MISMATCH",
+                "NTSL title row disagrees with the UploadedFile: " + "; ".join(mismatches),
+                severity=ValidationSeverity.WARNING,
+            )
+
+    final_count = sum(1 for line in lines if line.is_final_settlement)
+    if final_count != 1:
+        _record_exception(
+            uploaded_file,
+            "NTSL_FINAL_SETTLEMENT_COUNT",
+            f"Expected exactly 1 'Final Settlement Amount' line, found {final_count}",
+            severity=ValidationSeverity.WARNING,
+        )
+
+    if lines:
+        NtslSettlementLine.objects.bulk_create(lines, ignore_conflicts=True, batch_size=_STAGING_BATCH_SIZE)
+    loaded_count = NtslSettlementLine.objects.filter(uploaded_file=uploaded_file).count()
+
+    uploaded_file.valid_record_count = loaded_count
+    uploaded_file.processing_status = ProcessingStatus.LOADED
+    uploaded_file.save(update_fields=["valid_record_count", "processing_status"])
+
+    return {"uploaded_file_id": uploaded_file_id, "loaded_count": loaded_count, "halted": False}

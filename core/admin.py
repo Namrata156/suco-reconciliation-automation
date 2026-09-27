@@ -11,5 +11,7 @@ class PaymentModuleAdmin(admin.ModelAdmin):
 
 @admin.register(SettlementCycle)
 class SettlementCycleAdmin(admin.ModelAdmin):
-    list_display = ("payment_module", "cycle_code", "cycle_type", "start_time", "end_time", "is_active")
+    list_display = (
+        "payment_module", "cycle_code", "cycle_type", "start_time", "end_time", "rtgs_settlement_time", "is_active"
+    )
     list_filter = ("payment_module", "cycle_type", "is_active")

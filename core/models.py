@@ -72,8 +72,18 @@ class PaymentModule(models.Model):
 
 
 class SettlementCycleType(models.TextChoices):
-    FINANCIAL = "FINANCIAL", "Financial"
-    NON_FINANCIAL = "NON_FINANCIAL", "Non-Financial"
+    """
+    What a settlement cycle settles, per the NPCI circular's "Annexure I --
+    Revised Settlement Cycles" (approved by the project owner 2026-09-27):
+    cycles 1-10 settle AUTH (authorised transactions) only, with no
+    disputes; DC1/DC2 are dispute-only settlement cycles. Both kinds are
+    real money settlements -- the previous FINANCIAL / NON_FINANCIAL
+    labels wrongly implied DC1/DC2 moved no money (renamed by
+    core/migrations/0003).
+    """
+
+    AUTH = "AUTH", "AUTH (authorised transactions only, no disputes)"
+    DISPUTE = "DISPUTE", "Disputes only"
 
 
 class SettlementCycle(models.Model):
@@ -85,13 +95,18 @@ class SettlementCycle(models.Model):
     GL Extract, DRC, Timeout, and Adjustment reports are single daily
     files, not cycle-wise).
 
-    Real sample data (14072026/) shows UPI settling in 10 numbered
-    financial cycles (1C-10C) plus 2 non-financial "DC" cycles
-    (DC1 00:00-16:00, DC2 16:00-00:00) that only appear in NTSL -- not the
-    "8 cycles" the spec/SOP states. This is a live open question
-    (TRACKER.md: "UPI cycle count contradicts sample data") -- cycle rows
-    are admin-editable data precisely so this can be corrected without a
-    code change once resolved, not hardcoded here.
+    UPI has 12 settlement cycles per the NPCI circular's "Annexure I --
+    Revised Settlement Cycles" (approved by the project owner 2026-09-27):
+    1C-10C are AUTH-only settlement cycles (no disputes), and DC1
+    (00:00-16:00) / DC2 (16:00-00:00) are dispute-only settlement cycles.
+    Only NTSL comes in all 12 cycles (its filenames carry "DC1"/"DC2");
+    the other cycle-wise NPCI files come in (a subset of) 1C-10C only -- see each
+    FileTypeConfig.cycle_set. The spec/SOP's "8 cycles" is stale (see
+    doubts.md / TRACKER.md).
+
+    Cycle rows are admin-editable reference data, not hardcoded. A fresh
+    DB gets them from `manage.py seed_settlement_cycles`; the 2026-09-27
+    correction of existing rows was applied by core/migrations/0003.
     """
 
     payment_module = models.ForeignKey(
@@ -101,6 +116,11 @@ class SettlementCycle(models.Model):
     cycle_type = models.CharField(max_length=20, choices=SettlementCycleType.choices)
     start_time = models.TimeField()
     end_time = models.TimeField()
+    rtgs_settlement_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="RTGS settlement time for this cycle, per NPCI Annexure I (e.g. 1C -> 04:00).",
+    )
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

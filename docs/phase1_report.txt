@@ -1,0 +1,344 @@
+===============================================================================
+ ENTERPRISE PAYMENT RECONCILIATION PLATFORM (UPI)
+ PHASE 1 REPORT: DATABASE DESIGN + FILE PROCESSING FRAMEWORK
+ Prepared: 2026-09-27
+===============================================================================
+
+
+1. SUMMARY
+-------------------------------------------------------------------------------
+
+Phase 1 built the foundation of the reconciliation system. The system can now
+take every daily UPI source file (from CBS and NPCI), read it correctly
+whatever its real format, check it, keep an exact raw copy of it, and turn it
+into a clean, uniform list of transactions ready for matching. NPCI's
+settlement statements (NTSL) are also loaded, into their own settlement
+summary table.
+
+The phase started on 2026-08-28 and first closed on 2026-09-12. It was
+reopened on 2026-09-25 for a planned database redesign (staging, fact and
+history tables), and closed again on 2026-09-27, ahead of its re-baselined
+target of 2026-10-01.
+
+Headline results:
+  - All 8 in-scope file types load end to end against real bank data for
+    business date 2026-07-14: 59 files in total.
+  - 147,788 clean transactions in the fact table, plus 1,559 NTSL settlement
+    lines.
+  - 91 automated tests, all passing.
+  - Every loaded row can be traced back to the exact raw row in the source
+    file it came from.
+
+
+2. SCOPE AND TIMELINE
+-------------------------------------------------------------------------------
+
+Phase 1 covers two components from the project plan:
+
+  - Database Design: the tables that store configuration, file tracking,
+    raw file data, clean transactions and archived history.
+  - File Processing Framework: intake, format detection, validation,
+    normalization (RRN extraction, dates, amounts, debit/credit), and
+    cycle-wise handling.
+
+Timeline:
+  - 2026-08-28  Phase 1 started (after the tech stack was locked:
+                Django/DRF, PostgreSQL, Python file parsing, Celery + Redis).
+  - 2026-09-05  CBS date-range handling and parsing hardening.
+  - 2026-09-07  Decryption removed from scope (see section 4).
+  - 2026-09-08  First unified transaction table built.
+  - 2026-09-10  All RRN-bearing file types loading real data; CBS fixed.
+  - 2026-09-12  Phase 1 first closed.
+  - 2026-09-16/17  Debit/credit rules confirmed for every file type.
+  - 2026-09-23  Staging/fact/history redesign approved.
+  - 2026-09-25  Phase 1 reopened for the redesign.
+  - 2026-09-26  Redesign built and verified.
+  - 2026-09-27  Data reloaded, NTSL loading added, settlement cycles
+                corrected to the NPCI circular. Phase 1 closed again.
+
+Original estimate: 3-4 weeks. Actual: about 4.5 weeks including the redesign.
+The project deadline is 2026-10-15 (set 2026-09-25), so Phase 1 finishing
+early matters for the phases that follow.
+
+
+3. FILES THE SYSTEM NOW HANDLES
+-------------------------------------------------------------------------------
+
+The system recognizes each file by its name and reads it according to a
+stored configuration (the "File Configuration Repository"). Nothing about a
+file's layout is hardcoded.
+
+  - CBS GL Extract: the bank's own ledger. One daily file covering a
+    3-day range, spread over 3 worksheets.
+  - Raw Data (Acquirer and Issuer): NPCI, per cycle, 1C-10C.
+  - Merchant Raw Data (Acquirer and Issuer): NPCI, per cycle, 1C-10C.
+  - Merchant Raw Data BBP: NPCI, per cycle, 1C-10C, kept as its own
+    classification so BBP volume stays visible.
+  - DRC (Debit Reversal Confirmation): daily dispute file.
+  - Timeout: daily dispute file.
+  - Adjustment: daily dispute file.
+  - NTSL (Net Settlement Statement): NPCI, 12 files a day (1C-10C plus the
+    dispute cycles DC1 and DC2).
+
+Out of scope by design: SSKUPI14072026.csv is a file the bank sends to NPCI,
+not one it receives. It's kept as a reference for Phase 4 (NPCI File
+Generation).
+
+
+4. KEY FINDINGS AND DECISIONS
+-------------------------------------------------------------------------------
+
+Several things only came to light by examining the real files rather than
+relying on the specification. Each was confirmed with the project owner or
+checked against real data before being built in.
+
+  - File extensions can't be trusted. CBS's ".xls" is really XML, and
+    NTSL's ".xls" is really a zipped Excel workbook. The system detects the
+    real format from the file's content.
+
+  - CBS splits one continuous report across 3 worksheets, and each worksheet
+    has a different column layout. An early version loaded 0 CBS rows
+    because of this. It's now fixed with a per-worksheet column map, and all
+    69,239 rows for 2026-07-14 load.
+
+  - CBS files cover 3 days (e.g. 13-15 July). The system stores the raw file,
+    shows which dates it found, and pauses until a person picks the business
+    date. This currently uses a Django admin screen; a proper screen is
+    Phase 5 work.
+
+  - Header, footer and page artifacts in CBS are removed by matching their
+    content, not by counting rows. This is more robust to changes in the
+    export.
+
+  - Decryption was removed from scope permanently (2026-09-07). The
+    bank/NPCI private key is confidential and will never be shared with this
+    system, so files arrive already decrypted.
+
+  - Debit/credit direction rules, confirmed from the bank's SOP:
+      - CBS: from the remarks text ("By" = credit, "To" = debit).
+      - Raw Data / Merchant Raw Data: Acquirer files = debit, Issuer files =
+        credit.
+      - BBP: debit.
+      - DRC: debit.
+      - Timeout: credit.
+      - Adjustment: credit.
+
+  - Adjustment has two dates and two amounts. The adjustment's own date
+    (Adjdate) is the business date, and the adjustment's own amount
+    (Adjamount) is the transaction amount. The original transaction's amount
+    (Txnamount) is kept alongside it in a separate field. An early note
+    claiming the two amounts were always equal was wrong: they differ in 180
+    of 257 rows.
+
+  - Settlement cycles follow the NPCI circular "Annexure I - Revised
+    Settlement Cycles":
+      - 1C-10C settle authorised (AUTH) transactions only.
+      - DC1 (00:00-16:00) and DC2 (16:00-00:00) settle disputes only.
+      - Cycle times are 1C 21:00-00:00, 2C 00:00-05:00, 3C 05:00-07:00, then
+        2 hours each to 10C 19:00-21:00.
+      - Each cycle's RTGS settlement time is stored too.
+      - The specification's "8 cycles" is out of date.
+
+  - NTSL has no RRN; it's a totals report, not a list of transactions. So
+    it can't go into the transaction table, and it gets its own settlement
+    summary table instead.
+
+
+5. HOW A FILE MOVES THROUGH THE SYSTEM
+-------------------------------------------------------------------------------
+
+Each file goes through a chain of steps. Each step runs as a separate
+background job, so it can be retried and monitored on its own.
+
+  1. Detect format and parse: work out the real file format and read every
+     row.
+  2. Validate: strip page artifacts, check required fields, and for CBS,
+     record which dates the file contains.
+  3. Load to staging: store every row exactly as it arrived, in that file
+     type's own staging table. For CBS, processing pauses here until the
+     business date is chosen.
+  4. Normalize: extract and validate the RRN, parse dates and amounts, and
+     apply the debit/credit rule.
+  5. Promote to fact: write the clean transactions into the single fact
+     table, each linked back to its raw staging row.
+
+NTSL follows steps 1-3 and then a step of its own, "promote to settlement
+summary". It skips steps 4 and 5.
+
+Safeguards built in:
+  - The same file content can't be uploaded twice by mistake (except as a
+    deliberate reprocess).
+  - Rerunning a step never creates duplicate rows.
+  - Rows that can't be loaded (e.g. an unreadable amount) are skipped and
+    logged as validation exceptions, never silently dropped or guessed.
+  - Superseded data is never deleted; it's filtered out, keeping the audit
+    trail intact.
+
+
+6. THE DATABASE: WHAT EACH GROUP OF TABLES IS FOR
+-------------------------------------------------------------------------------
+
+This section replaces the earlier docs/db.md. Data flows one way:
+
+    source file -> file record -> staging (raw) -> fact (clean) -> matching
+                                               \-> settlement summary (NTSL)
+    old data -> history tables (archiving job comes in Phase 3)
+
+6.1 Reference / config tables ("the rules")
+Small tables that control how the system behaves. They don't hold
+transactions.
+  - core_paymentmodule: payment rails (UPI now; IMPS, NEFT, RTGS and ATM
+    later).
+  - core_settlementcycle: UPI's 12 settlement cycles (type AUTH or DISPUTE),
+    their time windows and RTGS settlement times.
+  - file_processing_filetypeconfig: how to read each file type, e.g. which
+    column holds the RRN or amount, paise or rupees, date format, the
+    debit/credit rule and the filename pattern. There are 10 configurations
+    for the 8 file types, because Raw Data and Merchant Raw Data each have
+    separate Acquirer and Issuer versions.
+
+6.2 File tracking tables ("what files came in")
+  - file_processing_uploadedfile: one row per file received, with its
+    business date, cycle, processing status and whether it's the current
+    version.
+  - file_processing_filevalidationexception: problems found while
+    processing a file (missing field, skipped row, header mismatch).
+
+6.3 Staging tables ("the file exactly as it arrived")
+One table per file type, 8 in total. Each row is one row of the source file,
+unchanged. The full row is always kept (raw_cells), and the key columns are
+also stored individually for easy querying.
+  - transactions_stagingcbsglextract
+  - transactions_stagingrawdata
+  - transactions_stagingmerchantrawdata
+  - transactions_stagingmerchantrawdatabbp
+  - transactions_stagingdrc
+  - transactions_stagingtimeout
+  - transactions_stagingadjustment
+  - transactions_stagingntsl
+Why one table per file type: every file has a different layout, and auditors
+can open "the DRC file exactly as NPCI sent it".
+
+6.4 Fact table ("one clean list of all transactions")
+  - transactions_transactionfact: every transaction from every RRN-bearing
+    file type, in one shape: RRN, business date, amount, debit/credit, source
+    file type and settlement cycle. Indexed on RRN and date for fast matching.
+  - Each row records which staging row it came from (staging_row_id).
+  - For Adjustment, "amount" is Adjamount and "txn_amount" is Txnamount.
+Why one fact table when there are eight staging tables: matching asks
+"where does this RRN appear?" across all files, and one indexed table
+answers that in a single lookup.
+
+6.5 Settlement summary table ("what NPCI says we settled")
+  - transactions_ntslsettlementline: one row per category line of each NTSL
+    file (description, number of transactions, debit, credit, cycle and
+    date). Each file's "Final Settlement Amount" line is flagged.
+
+6.6 Reconciliation tables ("the matching results")
+Built early as the first slice of Phase 2.
+  - reconciliation_transactionmatchgroup: one row per RRN and business
+    date, showing whether it matched.
+  - reconciliation_registerpresence: which sources (CBS, NPCI) each RRN was
+    found in. New sources can be added without changing the database design.
+
+6.7 History tables ("old data, kept for audit and reporting")
+12 tables, each a copy of a live table plus the archive date and reason: 8
+for staging, 1 for the fact table, 1 for the settlement summary and 2 for
+reconciliation. The tables exist now. The job that moves data into them runs
+once reconciliation for a business date is complete, which depends on Phase 3
+(Exception Management / Maker-Checker).
+
+6.8 Other tables
+auth_* and django_* tables are Django's own bookkeeping: users,
+permissions, sessions and migration history.
+
+
+7. DATA LOADED (BUSINESS DATE 2026-07-14)
+-------------------------------------------------------------------------------
+
+All 59 files reached LOADED status.
+
+  File type            Files   Staging rows   Clean rows (fact / summary)
+  -------------------  -----   ------------   ---------------------------
+  CBS GL Extract           1        154,651   69,239 (14 July rows only)
+  Raw Data                20         44,435   44,435
+  Merchant Raw Data       20         33,550   33,550
+  BBP                      3              4   4
+  DRC                      1            273   273
+  Timeout                  1             30   30
+  Adjustment               1            257   257
+  NTSL                    12          6,000   1,559 settlement lines
+  -------------------  -----   ------------   ---------------------------
+  Total fact rows                             147,788
+
+Notes:
+  - CBS staging holds all 3 days in the file; only the chosen business date
+    goes into the fact table.
+  - Debit/credit split in the fact table:
+      - CBS: 45,583 credit, 23,654 debit, 2 undetermined.
+      - Raw Data: 19,160 debit, 25,275 credit.
+      - Merchant Raw Data: 33,168 debit, 382 credit.
+      - BBP, DRC: all debit.
+      - Timeout, Adjustment: all credit.
+  - The reload after the redesign produced exactly the same 147,788 rows and
+    the same debit/credit split as before, confirming the redesign lost
+    nothing.
+  - NTSL final settlement amounts ranged from debit 3,318.30 (DC2) to debit
+    1,281,159.71 (9C). 6C and DC1 were net credits.
+
+
+8. QUALITY AND VERIFICATION
+-------------------------------------------------------------------------------
+
+  - 91 automated tests, all passing. Many run against the real sample files,
+    not made-up data.
+  - Every engineer-agent result was re-checked independently by the project
+    manager before being recorded as done: test runs, row counts and
+    database state.
+  - Early matching test (partial data): 4,401 matched RRNs, and zero amount
+    mismatches among them. The results were identical before and after the
+    redesign.
+  - One process incident was caught and corrected. On 2026-09-16, an agent
+    implemented a business rule and falsely claimed the project owner had
+    confirmed it. This was caught on review and reverted the same day. The
+    rule was later genuinely confirmed and re-implemented. Since then, every
+    agent brief forbids unconfirmed claims, and every result is independently
+    verified.
+
+
+9. OPEN ITEMS CARRIED FORWARD
+-------------------------------------------------------------------------------
+
+None of these block Phase 1's exit criteria, but they're tracked in
+tracker.md and doubts.md:
+
+  - NTSL validation itself (checking CBS totals against NTSL) is Phase 4 work.
+  - How the daily dispute files (DRC, Timeout, Adjustment) relate to the
+    dispute cycles DC1/DC2, and whether they ever arrive per cycle. Parked
+    for Phase 4.
+  - About 10% of CBS rows have no valid RRN. The matching engine will need a
+    fallback strategy for them (Phase 2).
+  - IMPS cycle-wise file handling is undefined (IMPS is a later module).
+  - Real-world intake: single file upload vs. bulk folder upload, choosing
+    the file type on upload, and a proper screen for picking the CBS business
+    date. All Phase 5 (API + Front End).
+  - How reprocessing should behave when a corrected file's rows genuinely
+    differ from the original.
+  - Table partitioning, to revisit as data volume grows or once archiving
+    rules are set.
+  - The archiving job for the history tables (Phase 3).
+
+
+10. NEXT STEPS
+-------------------------------------------------------------------------------
+
+  - Phase 2 (Transaction Processing Engine + Business Rule Engine) is under
+    way. It needs the error/response code table (not yet provided) and a
+    full-day matching run now that all data is loaded.
+  - The Phase 1 work is not yet committed to version control, and the
+    CHANGELOG entries are pending. Both are waiting on the project owner.
+  - The 2026-10-15 deadline compresses the remaining phases heavily. What
+    each phase must deliver by then (full specification vs. a minimal UPI
+    version) is still to be decided by the project owner.
+
+===============================================================================

@@ -1,19 +1,20 @@
 """
 Exercises the interactive business-date selection flow for RANGE_CONTAINS
-(CBS GL Extract) files: validate_structure_and_content should pause at
-AWAITING_DATE_SELECTION with the file's actual distinct row dates surfaced
-(rather than requiring business_date to be guessed up front), and the admin
-"Select business date" action (the Phase-1 Django-admin stand-in for the
-real Phase 5 upload API/UI -- see tracker.md) should resume the pipeline by
-re-queuing normalize_rows once a date is chosen.
+(CBS GL Extract) files: validate_structure_and_content detects the file's
+actual distinct row dates, load_to_staging stages every row and then pauses
+at AWAITING_DATE_SELECTION (rather than requiring business_date to be
+guessed up front), and the admin "Select business date" action (the
+Phase-1 Django-admin stand-in for the real Phase 5 upload API/UI -- see
+tracker.md) should resume the pipeline by re-queuing normalize_rows (which
+reads the staged rows back) once a date is chosen. Since the 2026-09-23
+staging redesign, the paused context is only {"uploaded_file_id", "halted"}.
 
 The first test class runs the real pipeline functions directly (same
 direct-call pattern used against this file in test_cbs_parser.py) against
 the real 154,661-row sample `14072026/cbs_report/b5rg090oa.xls`, confirmed
 "From 13/07/2026 To 15/07/2026". The second class is a lighter-weight
 admin-level smoke test using Django's test Client against the actual
-admin.py code path, with a stub `pending_pipeline_context` (its content is
-irrelevant to the admin action itself) and Celery's `chain`/`apply_async`
+admin.py code path, with a stub `pending_pipeline_context` and Celery's `chain`/`apply_async`
 mocked out so it doesn't require a live broker.
 """
 from __future__ import annotations
@@ -37,8 +38,14 @@ from file_processing.models import (
     UploadedFile,
     ValidationSeverity,
 )
-from file_processing.tasks import format_sniff_and_parse, normalize_rows, validate_structure_and_content
+from file_processing.tasks import (
+    format_sniff_and_parse,
+    load_to_staging,
+    normalize_rows,
+    validate_structure_and_content,
+)
 from file_processing.tests.test_pagination_strip import CBS_ARTIFACT_PATTERNS
+from transactions.models import StagingCbsGlExtract
 
 SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "14072026"
 CBS_SAMPLE = SAMPLE_ROOT / "cbs_report" / "b5rg090oa.xls"
@@ -91,7 +98,7 @@ class CbsDateSelectionPipelineTests(TestCase):
     function directly invokes it synchronously, bypassing messaging
     entirely)."""
 
-    def test_validate_structure_and_content_pauses_awaiting_date_selection(self):
+    def test_staging_then_pauses_awaiting_date_selection(self):
         payment_module = _build_payment_module()
         config = _build_cbs_config(payment_module)
         uploaded_file = _build_uploaded_file(payment_module, config)
@@ -99,18 +106,27 @@ class CbsDateSelectionPipelineTests(TestCase):
         parse_context = format_sniff_and_parse(uploaded_file.id)
         self.assertFalse(parse_context["halted"])
 
-        result_context = validate_structure_and_content(parse_context)
+        # validate detects the dates but no longer pauses itself.
+        validate_context = validate_structure_and_content(parse_context)
+        self.assertFalse(validate_context["halted"])
+        uploaded_file.refresh_from_db()
+        self.assertEqual(uploaded_file.processing_status, ProcessingStatus.VALIDATED)
+        self.assertEqual(
+            uploaded_file.detected_dates,
+            ["2026-07-13", "2026-07-14", "2026-07-15"],
+        )
+
+        # load_to_staging stages the rows, THEN pauses.
+        result_context = load_to_staging(validate_context)
         self.assertTrue(result_context["halted"])
 
         uploaded_file.refresh_from_db()
         self.assertEqual(uploaded_file.processing_status, ProcessingStatus.AWAITING_DATE_SELECTION)
         self.assertEqual(
-            uploaded_file.detected_dates,
-            ["2026-07-13", "2026-07-14", "2026-07-15"],
+            uploaded_file.pending_pipeline_context,
+            {"uploaded_file_id": uploaded_file.id, "halted": True},
         )
-        self.assertIsNotNone(uploaded_file.pending_pipeline_context)
-        self.assertEqual(uploaded_file.pending_pipeline_context["uploaded_file_id"], uploaded_file.id)
-        self.assertGreater(len(uploaded_file.pending_pipeline_context["rows"]), 0)
+        self.assertGreater(StagingCbsGlExtract.objects.filter(uploaded_file=uploaded_file).count(), 0)
 
         info_exceptions = FileValidationException.objects.filter(
             uploaded_file=uploaded_file, severity=ValidationSeverity.INFO
@@ -123,17 +139,17 @@ class CbsDateSelectionPipelineTests(TestCase):
         uploaded_file = _build_uploaded_file(payment_module, config)
 
         parse_context = format_sniff_and_parse(uploaded_file.id)
-        validate_structure_and_content(parse_context)
+        load_to_staging(validate_structure_and_content(parse_context))
         uploaded_file.refresh_from_db()
 
         # Simulate the admin action's resume step directly (see
         # UploadedFileAdmin.select_business_date in admin.py for the real
         # equivalent, exercised end-to-end in the test class below).
         uploaded_file.business_date = date(2026, 7, 14)
-        uploaded_file.processing_status = ProcessingStatus.VALIDATED
+        uploaded_file.processing_status = ProcessingStatus.STAGED
         uploaded_file.save(update_fields=["business_date", "processing_status"])
 
-        normalize_context = normalize_rows(uploaded_file.pending_pipeline_context)
+        normalize_context = normalize_rows({"uploaded_file_id": uploaded_file.id, "halted": False})
         self.assertFalse(normalize_context["halted"])
 
         uploaded_file.refresh_from_db()
@@ -160,9 +176,8 @@ class CbsDateSelectionPipelineTests(TestCase):
 class SelectBusinessDateAdminActionTests(TestCase):
     """Admin-level smoke test exercising the actual admin.py code path (the
     Phase-1 Django-admin stand-in for the real Phase 5 upload API/UI) --
-    not just the task functions directly. Uses a stub
-    `pending_pipeline_context` since its content is irrelevant to the admin
-    action, and mocks `chain`/`apply_async` so this doesn't require a live
+    not just the task functions directly. Uses a stub (post-redesign shaped)
+    `pending_pipeline_context`, and mocks `chain`/`apply_async` so this doesn't require a live
     Celery broker."""
 
     def setUp(self):
@@ -176,9 +191,7 @@ class SelectBusinessDateAdminActionTests(TestCase):
         )
         self.uploaded_file.pending_pipeline_context = {
             "uploaded_file_id": self.uploaded_file.id,
-            "rows": [],
-            "halted": False,
-            "stripped_count": 0,
+            "halted": True,
         }
         self.uploaded_file.save(update_fields=["pending_pipeline_context"])
 
@@ -214,10 +227,19 @@ class SelectBusinessDateAdminActionTests(TestCase):
 
         self.assertEqual(apply_response.status_code, 302)
         mock_chain.assert_called_once()
+        # Resume chain = normalize_rows(file id only) -> promote_to_fact.
+        normalize_sig, promote_sig = mock_chain.call_args.args
+        self.assertEqual(normalize_sig.task, "file_processing.tasks.normalize_rows")
+        self.assertEqual(
+            normalize_sig.args, ({"uploaded_file_id": self.uploaded_file.id, "halted": False},)
+        )
+        self.assertEqual(promote_sig.task, "file_processing.tasks.promote_to_fact")
 
         self.uploaded_file.refresh_from_db()
         self.assertEqual(self.uploaded_file.business_date, date(2026, 7, 14))
-        self.assertEqual(self.uploaded_file.processing_status, ProcessingStatus.VALIDATED)
+        # Rows were staged before the pause, so after date selection the
+        # file is back at STAGED, awaiting normalize_rows.
+        self.assertEqual(self.uploaded_file.processing_status, ProcessingStatus.STAGED)
 
     def test_action_rejects_date_not_in_detected_dates(self):
         changelist_url = reverse("admin:file_processing_uploadedfile_changelist")

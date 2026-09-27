@@ -8,7 +8,7 @@ from file_processing.models import (
     ProcessingStatus,
     UploadedFile,
 )
-from file_processing.tasks import load_to_unified_table, normalize_rows
+from file_processing.tasks import normalize_rows, promote_to_fact
 
 
 @admin.register(FileTypeConfig)
@@ -78,12 +78,19 @@ class UploadedFileAdmin(admin.ModelAdmin):
                 )
                 return None
 
-            pending_context = uploaded_file.pending_pipeline_context
+            # Rows were already written to the staging table by
+            # load_to_staging before the pause, so the resumed chain only
+            # needs the file id -- normalize_rows reads the staged rows back.
+            # (Any legacy pre-staging payload still sitting in
+            # pending_pipeline_context is deliberately not forwarded.)
             uploaded_file.business_date = chosen_date
-            uploaded_file.processing_status = ProcessingStatus.VALIDATED
+            uploaded_file.processing_status = ProcessingStatus.STAGED
             uploaded_file.save(update_fields=["business_date", "processing_status"])
 
-            chain(normalize_rows.s(pending_context), load_to_unified_table.s()).apply_async()
+            chain(
+                normalize_rows.s({"uploaded_file_id": uploaded_file.id, "halted": False}),
+                promote_to_fact.s(),
+            ).apply_async()
 
             self.message_user(
                 request,

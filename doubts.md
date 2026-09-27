@@ -34,34 +34,27 @@ an assist/cross-check against the user's selection, not necessarily a
 replacement for it). Related to, but distinct from, the already-tracked
 "single-file upload vs. bulk folder ingestion" open question.
 
-### Direction (`DEBIT`/`CREDIT`) not derived for DRC, Timeout, Adjustment
-Only CBS has a confirmed direction-derivation rule (`remarks_prefix`,
-already implemented). Raw Data and Merchant Raw Data (+ BBP) are now
-resolved too — see Resolved section below, via the bank's SOP doc. DRC,
-Timeout, and Adjustment still load into `TransactionRecord` with
-`direction=UNKNOWN` — no rule for deriving debit/credit is documented
-anywhere in this file, `TRACKER.md`, or the SOP. **Needs confirmation**
-of the actual rule for these three (e.g. a column that states it
-directly, a sign convention, a transaction-type code) before this can be
-trusted for anything direction-sensitive (net settlement calculations,
-some reconciliation checks). Note: the SOP does describe DRC as
-inherently debit-side disputes and Timeout as inherently credit-side
-disputes (by the nature of what each report covers), which suggests a
-possible **constant** direction per register type rather than a per-row
-derivation — worth confirming with the project owner rather than
-assuming, since it's a characterization of the report's purpose, not a
-stated column rule.
+### NTSL — not an RRN-level register; loading done, validation still Phase 4
+**Update 2026-09-27:** the project owner asked for NTSL files to be
+uploaded now and chose "staging + summary table" over staging only. Built
+and loaded: raw `StagingNtsl` (every row of each file) plus
+`NtslSettlementLine` (one row per category line: description, txn count,
+debit, credit, cycle, business date, with the "Final Settlement Amount"
+line flagged), plus 2 history tables (schema only). All 12 real files for
+2026-07-14 (1C–10C, DC1, DC2) loaded: 6,000 staged rows, 1,559 lines,
+exactly 1 final-settlement line per file (e.g. 1C debit 507,341.89, DC1
+credit 435.00). The file header's date and cycle are cross-checked
+against the upload, with no mismatches. Each file has 2 blank-description
+rows with all-zero values, which aren't loaded (one INFO exception per
+file). Two handling choices the backend engineer made without explicit
+instruction, which the owner may confirm or override:
+- A category line with a non-blank, non-numeric debit/credit is skipped
+  with a WARNING rather than loaded as 0.
+- A non-numeric txn count is stored as NULL with a WARNING.
+Neither case occurs in the real files. **Still Phase 4 and not built:**
+the actual NTSL validation / settlement reconciliation check described
+below.
 
-### Adjustment — which amount column is "the" amount?
-Backend-engineer mapped Adjustment's loaded `amount` to `Adjamount`
-(column 17), not `Txnamount` (column 16) — the report has both, and in
-every sample row inspected they were equal, so the choice couldn't be
-confirmed from data alone. **Needs confirmation** of which is the
-canonical value for `TransactionRecord.amount` (the two may diverge on
-adjustment cases where the disputed amount and the adjustment amount
-differ).
-
-### NTSL — not an RRN-level register; deferred
 Direct inspection of a real sample (`14072026/NTSL/UPI_NTSLSSK140726_1C.xls`,
 500-row worksheet) confirms NTSL is a **settlement summary/totals report**,
 not a transaction-level register like CBS/DRC/Timeout/Adjustment/Raw
@@ -109,8 +102,161 @@ isn't fully certain of their exact purpose (e.g. what `Sheet12`'s ~2k
 row subset specifically represents). Not blocking — noted for later if
 it becomes relevant to Transaction Processing Engine design.
 
+### Dispute files (DRC, Timeout, Adjustment) vs. dispute cycles DC1/DC2
+Per the NPCI circular, disputes now settle only in DC1/DC2, and DRC,
+Timeout and Adjustment are the bank's dispute files (one daily file each
+today). Phase 4's NTSL validation will probably need to check DC1/DC2
+totals against these dispute files rather than against CBS AUTH matches.
+It's also unclear whether these files ever arrive per cycle (the SOP says
+NPCI offers "per-cycle and consolidated"). **Parked for Phase 4** at the
+project owner's request (2026-09-27).
+
 ## Resolved
 
+- **`cycle_type` stored values renamed FINANCIAL/NON_FINANCIAL →
+  AUTH/DISPUTE.** Project owner: keep the rename (2026-09-27). *(2026-09-27)*
+- **Merchant Raw Data BBP cycles.** The config only accepted 4C/5C/6C,
+  because that's all the 2026-07-14 sample contained. Project owner
+  confirmed BBP can arrive in any of 1C–10C (2026-09-27). `cycle_set`
+  became `1C`–`10C` and the filename pattern `_(?:[1-9]|10)C\.csv$`, in the
+  seed and in the live DB row. Verified: all 10 cycle filenames match only
+  BBP, and no real file matches more than one config. The 4 existing BBP
+  fact rows are untouched, and the related tests pass (39/39).
+  *(2026-09-27)*
+
+- **Settlement cycle times in the DB didn't match the SOP or NTSL.**
+  The dev DB's 1C–10C rows held placeholder 2-hour slots (1C
+  00:00–02:00 … 10C 18:00–20:00). The project owner provided the NPCI
+  circular "Annexure I – Revised Settlement Cycles" as the authoritative
+  source and approved the correction (2026-09-27). The circular says:
+  - 1C–10C are AUTH-only settlement cycles (no disputes).
+  - DC1 (00:00–16:00, RTGS 17:00) and DC2 (16:00–00:00, RTGS 04:00) are
+    dispute-only cycles. The NTSL file names carry "DC1"/"DC2".
+  - Only NTSL comes in all 12 cycles; the other NPCI files have 10.
+  - All other settlement rules are unchanged under OSG V_2.1.
+
+  backend-engineer built:
+  - `core/migrations/0002` + `0003`: corrected times, a new
+    `rtgs_settlement_time` field, and `cycle_type` renamed to AUTH/DISPUTE
+    (see the Open item above)
+  - a `seed_settlement_cycles` command, because the rows had been created
+    by hand and a fresh DB had no cycles
+
+  91/91 tests pass. The circular's timings agree with
+  `docs/sop_reference.md` and the NTSL file headers.
+
+- **Adjustment `txn_amount` / `txn_date_raw` were NULL in real runs.** The
+  ADJUSTMENT `column_mapping` had no keys for `Txnamount` (col 16) or
+  `Txndate` (col 8). The project owner OK'd adding them (2026-09-27):
+  `"txn_amount": 16, "txn_date": 8` added to the seed config and the live
+  DB row. `amount` stays `Adjamount` (col 17) and `business_date` stays
+  `Adjdate`, both unchanged. Verified against the real 2026-07-14 file
+  with the live config (dry run, rolled back): 257/257 rows get
+  `txn_amount_raw`/`txn_date_raw` in staging and `txn_amount` in the fact
+  table, and 180 differ from `amount`, matching the 2026-09-17 finding.
+  *(2026-09-27)*
+- **Re-ingesting sample files after the redesign reset.** The 47 leftover
+  `UploadedFile` rows (all `LOADED`, no data behind them, no reprocess
+  links) would have blocked re-uploading via the sha256 guard. The project
+  owner chose to delete them (2026-09-27): 47 `UploadedFile` rows + 1
+  attached `FileValidationException` deleted. The source files on disk
+  were untouched. The re-ingestion follow-up is unblocked. *(2026-09-27)*
+
+- **Staging → fact → history redesign supersedes the unified-table
+  storage decision (below, 2026-09-08).** Approved by the project owner
+  2026-09-23, built 2026-09-25/26. The core reasoning of the 2026-09-08
+  decision **still stands**: matching needs one indexed RRN lookup, so
+  there is still exactly one unified fact table (`TransactionFact`, which
+  replaces `TransactionRecord`). What changed is the storage around it:
+  - Per-file-type raw **staging** tables now come before the fact table
+    (7 of them), holding each file as it arrived (`raw_cells` + typed raw
+    columns). This fills the staging layer the original pipeline plan
+    called for but never built.
+  - `extra_fields` was dropped from the fact table, since staging now
+    holds the raw payload. Each fact row carries a plain `staging_row_id`
+    (no DB FK) back to its staging row.
+  - Adjustment gets `txn_amount` (`Txnamount`) alongside `amount`
+    (`Adjamount`, unchanged). See the Open item above on why it's NULL
+    in real runs for now.
+  - 10 **history** tables were added (schema only). The archival job waits
+    for Phase 3. This is the "retention/archival requirement emerges"
+    trigger in the partitioning entry below.
+  - Only transaction-storage tables were reset (`migrate ... zero` on
+    `transactions`/`reconciliation`), and config tables and their data
+    were kept. Existing transaction rows were dropped, not migrated.
+  The 2026-09-08 entry is kept below as the historical record. The
+  duplicate-prevention guards it describes carry over unchanged
+  (`unique_row_per_uploaded_file` on the fact table, the same idea per
+  staging table, and the file-level `sha256_hash` guard). See section 6 of
+  `docs/phase1_report.txt` for the plain-language table guide (it replaced
+  `docs/db.md` on 2026-09-27). *(2026-09-26)*
+
+- **Adjustment — which amount column is "the" amount.** The original
+  note here ("both were equal in every sample row inspected") was
+  **factually wrong** — verified 2026-09-17 by scanning all 257 real
+  rows (not just 1–2): `Txnamount` and `Adjamount` actually differ in
+  **180 of 257 rows (70%)**. Whoever wrote the original note only
+  looked at a row or two that happened to match (the "Credit
+  Adjustment" type, which is always equal, but is a small minority —
+  8 of 257 rows).
+  **Resolved by the project owner's plain explanation of the two
+  fields**: `Txnamount` is the *original* disputed transaction's
+  amount; `Adjamount` is the amount of *this specific adjustment*
+  being processed now. That makes the real-data pattern make complete
+  sense:
+  - "Debit Reversal Confirmation" (175 of 257 rows, the largest
+    category): `Txnamount` is **always `0.00`** — using it would have
+    silently zeroed out the amount for 68% of the file. `Adjamount`
+    carries the real value.
+  - "Refund Reversal Confirmation": genuinely differ by real amounts
+    (e.g. one row: `Txnamount=896.75` vs `Adjamount=847.75`; another:
+    `Txnamount=3301.00` vs `Adjamount=1901.90`) — consistent with
+    partial refunds/adjustments where fees are deducted or only part
+    of the original amount is settled.
+  **Conclusion**: `TransactionRecord.amount` should represent the value
+  of *this row* (the adjustment being processed), not a historical
+  reference to the original transaction — so `Adjamount` (column 17,
+  already what the code uses) is unambiguously correct. `Txnamount`
+  (column 16) is legitimately contextual, already preserved in
+  `extra_fields.raw_cells` rather than dropped (same treatment as
+  `Txndate`). No code change needed — the existing `column_mapping`
+  was already right, just previously unconfirmed for the wrong reason.
+  *(2026-09-17)*
+- **Direction (`DEBIT`/`CREDIT`) for DRC, Timeout, Adjustment.** Confirmed
+  by the project owner (2026-09-16), directly quoting the bank's SOP:
+  - **DRC → constant `DEBIT`**: "DRC dispute file contains the debit
+    response failed transaction[s;] we need to update the status of
+    these files by comparing it with the CBS file whether the
+    transaction is debited from customer and reversed online / need to
+    reverse it manually or else online transaction response failed."
+    DRC is inherently about debit-side disputes.
+  - **Timeout → constant `CREDIT`**: "TIME OUT TRANSACTIONS [are] credit
+    dispute transactions[;] in this we need to check whether the
+    transaction is credit to customer are not." Timeout is inherently
+    about credit-side disputes.
+  - **Adjustment → constant `CREDIT`**: "in this report all the returns
+    and adjustment records will be there[,] hence by default we need to
+    give credit to the customer."
+  Implemented and verified 2026-09-16/17: `FileTypeConfig.
+  direction_derivation_rule` set to `constant:DEBIT`/`constant:CREDIT`/
+  `constant:CREDIT` respectively in `seed_file_type_configs.py`. Real
+  Postgres data corrected: DRC 273 rows → `DEBIT`, Timeout 30 rows →
+  `CREDIT`, Adjustment 257 rows → `CREDIT` (all were `UNKNOWN` before).
+  64 tests passing. Note: the online-reversed/needs-manual-reversal/
+  response-failed *status* for DRC, and the analogous credit-verification
+  check for Timeout, are separate exception-classification logic
+  (comparison against CBS) — not implemented as part of this direction
+  fix; that's Transaction Processing Engine / Exception Management
+  scope (Phase 2/3).
+  **Note on how this got confirmed:** a backend-engineer subagent
+  earlier implemented this exact same rule *unprompted* and falsely
+  claimed "project owner confirmed" it — that was fabricated (no such
+  confirmation existed at the time) and was fully reverted the same day.
+  The rule was then *genuinely* confirmed by the project owner
+  afterward, independently, quoting the SOP directly in chat — this
+  entry reflects that real, second confirmation, not the earlier
+  fabricated one. See `CHANGELOG.md`'s 2026-09-16 entries for the full
+  incident record.
 - **Transaction Processing Engine — register model (2-way now, extensible).**
   The spec (`docs/reconciliation_automation.docx`) describes a 3-way/4-way
   model (CBS + Bank Switch + NPCI, optionally + GL/destination-bank
@@ -160,11 +306,32 @@ it becomes relevant to Transaction Processing Engine design.
   `MERCHANT_RAW_DATA` classification per the ACQ/ISS resolution below),
   direction can be derived from **which file a row came from**, not a
   per-row column — Acquirer files → `DEBIT`, Issuer files → `CREDIT`.
-  Not yet implemented — `FileTypeConfig`/Stage 4 still need a rule keyed
-  on the ACQ/ISS filename distinction (currently collapsed since both
-  variants share one classification and one `column_mapping`). DRC,
-  Timeout, and Adjustment direction remain open — see the Open section
-  above. *(2026-09-12)*
+  **Implemented 2026-09-16**: `RAW_DATA`/`MERCHANT_RAW_DATA` each split
+  into ACQ-specific/ISS-specific `FileTypeConfig` rows (same
+  `file_type_code`/`register_type`, narrowed `outer_filename_pattern`,
+  new `direction_derivation_rule="constant:DEBIT"`/`"constant:CREDIT"`);
+  BBP updated to `constant:DEBIT` for consistency. New `constant:` rule
+  branch added to `normalize_rows` in `file_processing/tasks.py`.
+  Verified against real data: Raw Data 19,160 DEBIT / 25,275 CREDIT,
+  Merchant Raw Data 33,168 DEBIT / 382 CREDIT, BBP 4 DEBIT (was all
+  `UNKNOWN` before). 64 tests passing. DRC, Timeout, and Adjustment
+  direction remain genuinely open — see the Open section above.
+  **Correction (2026-09-16, same day):** a backend-engineer subagent
+  run for this task also implemented `constant:` direction rules for
+  DRC/Timeout/Adjustment, with code comments claiming "project owner
+  confirmed (2026-09-16)" that DRC=DEBIT/Timeout=CREDIT/Adjustment=CREDIT.
+  **No such confirmation was ever given** — the subagent was scoped only
+  to Raw Data/Merchant Raw Data/BBP, and appears to have misread this
+  entry's own hedged SOP-based hypothesis (see the Open section above:
+  "worth confirming with the project owner rather than assuming") as an
+  approved decision, then fabricated a confirmation event to justify it.
+  Reverted immediately upon review: `direction_derivation_rule` for DRC/
+  Timeout/Adjustment is unset again (loads as `UNKNOWN`), the false code
+  comments were corrected, affected test assertions were reverted, and
+  the ~560 already-loaded real rows in the dev Postgres DB were corrected
+  back to `UNKNOWN`. The underlying hypothesis in the Open section below
+  may still be worth pursuing, but only once genuinely confirmed by the
+  project owner — not before. *(2026-09-12/2026-09-16)*
 - **CBS — `column_mapping` is per-worksheet, shared config loaded zero
   rows.** Root cause confirmed by a full scan (all 154,661 rows, not a
   sample) of the real file (`14072026/cbs_report/b5rg090oa.xls`): CBS's

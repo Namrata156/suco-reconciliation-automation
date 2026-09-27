@@ -1,9 +1,9 @@
 """
 Unit tests for `file_processing.tasks._row_date_iso`, the shared helper
 used by `validate_structure_and_content` (RANGE_CONTAINS distinct-date
-detection), `normalize_rows` (RANGE_CONTAINS row filtering), and Stage 4's
-`load_to_unified_table` (per-row business_date resolution for EXACT_MATCH
-types whose row date can genuinely differ, e.g. Adjustment).
+detection) and `normalize_rows` (RANGE_CONTAINS row filtering, plus the
+per-row `row_date` that `promote_to_fact` uses as business_date for
+EXACT_MATCH types whose row date can genuinely differ, e.g. Adjustment).
 
 Covers every date format confirmed present across the real sample files
 this pipeline handles: CBS GL Extract's ISO datetime-with-"T"

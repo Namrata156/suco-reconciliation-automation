@@ -3,13 +3,11 @@
 (`FileTypeConfig`), file intake/lifecycle tracking (`UploadedFile`), and the
 spec's "File Validation Exception Queue" (`FileValidationException`).
 
-Field lists per the approved plan (Phase 1 §2). `transactions.TransactionRecord`
-(the unified transaction table) now lives in the separate `transactions`
-app -- see that app's models.py -- per the project owner's confirmed
-design direction ("Create the TransactionRecord Schema" plan). Populating
-it from a given source file's normalized rows
-(`file_processing.tasks.load_to_unified_table`) remains a deliberate stub;
-only the schema itself was in scope for that plan.
+Field lists per the approved plan (Phase 1 §2). Transaction storage lives
+in the separate `transactions` app (per-file-type staging tables ->
+`TransactionFact` -> history tables, schema redesign approved 2026-09-23 --
+see `transactions/models/`), populated by `file_processing.tasks`'
+`load_to_staging` and `promote_to_fact` stages.
 """
 from __future__ import annotations
 
@@ -197,6 +195,7 @@ class ProcessingStatus(models.TextChoices):
     PARSED = "PARSED", "Parsed"
     VALIDATED = "VALIDATED", "Validated"
     VALIDATION_FAILED = "VALIDATION_FAILED", "Validation Failed"
+    STAGED = "STAGED", "Staged (raw rows written to the per-file-type staging table)"
     AWAITING_DATE_SELECTION = (
         "AWAITING_DATE_SELECTION",
         "Awaiting business date selection (RANGE_CONTAINS file types only)",
