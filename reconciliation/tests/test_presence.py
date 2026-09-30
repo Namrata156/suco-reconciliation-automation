@@ -42,6 +42,8 @@ from file_processing.tests.test_pagination_strip import CBS_ARTIFACT_PATTERNS
 from reconciliation.models import ProcessingStatus, RegisterPresence, TransactionMatchGroup
 from reconciliation.presence import DEFAULT_PRESENCE_LEGS, build_presence_matrix
 from transactions.models import TransactionFact
+from transactions.models.history import StagingRawDataHistory
+from transactions.models.staging import StagingRawData
 
 SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
 CBS_SAMPLE = Path(__file__).resolve().parents[2] / "14072026" / "cbs_report" / "b5rg090oa.xls"
@@ -411,7 +413,10 @@ class BuildPresenceMatrixUnitTests(TestCase):
         npci_file = self._uploaded_file(payment_module, RegisterType.RAW_DATA, "npci")
 
         self._record(payment_module, cbs_file, RegisterType.CBS_GL_EXTRACT, "100000000001", "10.00")
-        self._record(payment_module, npci_file, RegisterType.RAW_DATA, "100000000001", "10.00")
+        # Opposite direction to CBS: the normal real-data pairing.
+        self._record(
+            payment_module, npci_file, RegisterType.RAW_DATA, "100000000001", "10.00", direction=Direction.CREDIT
+        )
 
         result = build_presence_matrix(payment_module, BUSINESS_DATE)
         self.assertEqual(result.matched, 1)
@@ -550,3 +555,178 @@ class BuildPresenceMatrixUnitTests(TestCase):
         build_presence_matrix(payment_module, BUSINESS_DATE)
         group = TransactionMatchGroup.objects.get(rrn="100000000007")
         self.assertEqual(group.settlement_cycle, cycle)
+
+
+class Step1CorrectionsTests(TestCase):
+    """Phase 2 Step 1 (2026-09-30): leading-zero recovery, direction check,
+    CBS reversals, superseded groups and NPCI response codes."""
+
+    _uploaded_file = BuildPresenceMatrixUnitTests._uploaded_file
+    _record = BuildPresenceMatrixUnitTests._record
+
+    def setUp(self):
+        self.payment_module = _payment_module()
+        self.cbs_file = self._uploaded_file(self.payment_module, RegisterType.CBS_GL_EXTRACT, "s1cbs")
+        self.npci_file = self._uploaded_file(self.payment_module, RegisterType.RAW_DATA, "s1npci")
+
+    def _cbs(self, rrn, amount="10.00", row_ref="1", **overrides):
+        return self._record(
+            self.payment_module, self.cbs_file, RegisterType.CBS_GL_EXTRACT, rrn, amount, row_ref, **overrides
+        )
+
+    def _npci(self, rrn, amount="10.00", row_ref="1", response_code=None, archived=False, **overrides):
+        staging_row_id = None
+        if response_code is not None:
+            staging = StagingRawData.objects.create(
+                uploaded_file=self.npci_file,
+                row_number=int(row_ref),
+                row_reference=f"sheet:{row_ref}",
+                raw_cells={"4": rrn, "5": response_code},
+            )
+            staging_row_id = staging.id
+            if archived:
+                StagingRawDataHistory.objects.create(
+                    original_id=staging.id,
+                    uploaded_file=self.npci_file,
+                    row_number=staging.row_number,
+                    row_reference=staging.row_reference,
+                    raw_cells=staging.raw_cells,
+                    created_at=staging.created_at,
+                )
+                staging.delete()
+        overrides.setdefault("direction", Direction.CREDIT)
+        return self._record(
+            self.payment_module,
+            self.npci_file,
+            RegisterType.RAW_DATA,
+            rrn,
+            amount,
+            row_ref,
+            staging_row_id=staging_row_id,
+            **overrides,
+        )
+
+    def test_cbs_rrn_missing_leading_zeros_matches_npci(self):
+        self._cbs("4383934640", rrn_valid=False)  # CBS dropped "00"
+        self._npci("004383934640")
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        self.assertEqual(result.matched, 1)
+        self.assertEqual(result.per_leg_zero_padded_counts["CBS"], 1)
+        group = TransactionMatchGroup.objects.get(rrn="004383934640")
+        cbs_fact = group.register_presences.get(leg="CBS").transaction_record
+        self.assertEqual(cbs_fact.rrn, "4383934640")  # loaded data untouched
+        self.assertFalse(cbs_fact.rrn_valid)
+
+    def test_zero_padding_only_applies_to_cbs_digit_values(self):
+        self._cbs("not-an-rrn", rrn_valid=False)
+        self._cbs("1234567", row_ref="2", rrn_valid=False)  # too short to be a lost-zero RRN
+        self._npci("4383934640", rrn_valid=False)  # NPCI keeps RRNs as text: never padded
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+        self.assertEqual(result.total_match_groups, 0)
+
+    def test_direction_match(self):
+        self._cbs("200000000001", direction=Direction.DEBIT)
+        self._npci("200000000001", direction=Direction.CREDIT)
+        self._cbs("200000000002", row_ref="2", direction=Direction.DEBIT)
+        self._npci("200000000002", row_ref="2", direction=Direction.DEBIT)
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        opposite = TransactionMatchGroup.objects.get(rrn="200000000001")
+        same = TransactionMatchGroup.objects.get(rrn="200000000002")
+        self.assertTrue(opposite.direction_match)
+        self.assertEqual(opposite.processing_status, ProcessingStatus.MATCHED)
+        self.assertFalse(same.direction_match)
+        self.assertEqual(same.processing_status, ProcessingStatus.PENDING_RULE_EVALUATION)
+        self.assertEqual(result.direction_mismatches, 1)
+
+    def test_cbs_reversal_pair_keeps_original_leg(self):
+        # NPCI CREDIT pairs with CBS DEBIT (the original); CBS CREDIT is the reversal.
+        self._cbs("300000000001", direction=Direction.CREDIT)
+        original = self._cbs("300000000001", row_ref="2", direction=Direction.DEBIT)
+        self._npci("300000000001", direction=Direction.CREDIT)
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = TransactionMatchGroup.objects.get(rrn="300000000001")
+        self.assertTrue(group.cbs_reversed)
+        self.assertTrue(group.direction_match)
+        self.assertEqual(group.register_presences.get(leg="CBS").transaction_record_id, original.id)
+        self.assertEqual(group.processing_status, ProcessingStatus.PENDING_RULE_EVALUATION)
+        self.assertEqual(result.cbs_reversed, 1)
+
+    def test_same_direction_cbs_duplicate_is_not_a_reversal(self):
+        self._cbs("300000000002", direction=Direction.DEBIT)
+        self._cbs("300000000002", row_ref="2", direction=Direction.DEBIT)
+
+        build_presence_matrix(self.payment_module, BUSINESS_DATE)
+        self.assertFalse(TransactionMatchGroup.objects.get(rrn="300000000002").cbs_reversed)
+
+    def test_group_missing_from_rebuild_is_superseded_then_reinstated(self):
+        fact = self._cbs("400000000001")
+        build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        # A corrected file no longer carries the RRN.
+        self.cbs_file.is_current = False
+        self.cbs_file.save(update_fields=["is_current"])
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = TransactionMatchGroup.objects.get(rrn="400000000001")
+        self.assertTrue(group.is_superseded)
+        self.assertIsNotNone(group.superseded_at)
+        self.assertEqual(result.superseded, 1)
+
+        # A rerun doesn't count it again; the RRN coming back clears the flag.
+        self.assertEqual(build_presence_matrix(self.payment_module, BUSINESS_DATE).superseded, 0)
+        self.cbs_file.is_current = True
+        self.cbs_file.save(update_fields=["is_current"])
+        build_presence_matrix(self.payment_module, BUSINESS_DATE)
+        group.refresh_from_db()
+        self.assertFalse(group.is_superseded)
+        self.assertIsNone(group.superseded_at)
+        self.assertTrue(TransactionFact.objects.filter(pk=fact.pk).exists())
+
+    def test_npci_response_code_read_from_staging_and_history(self):
+        self._cbs("500000000001")
+        self._npci("500000000001", response_code="00")
+        self._npci("500000000002", row_ref="2", response_code="Z9")  # declined, not in CBS
+        self._npci("500000000003", row_ref="3", response_code="ZM", archived=True)
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        def code(rrn, leg="NPCI"):
+            return RegisterPresence.objects.get(match_group__rrn=rrn, leg=leg).response_code
+
+        self.assertEqual(code("500000000001"), "00")
+        self.assertEqual(code("500000000002"), "Z9")
+        self.assertEqual(code("500000000003"), "ZM")  # staging row archived to history
+        self.assertEqual(code("500000000001", leg="CBS"), "")
+        self.assertEqual(result.matched, 1)
+        self.assertEqual(result.npci_only_response_codes, {"Z9": 1, "ZM": 1})
+
+    def test_non_success_response_code_needs_rule_evaluation(self):
+        self._cbs("500000000004")
+        self._npci("500000000004", response_code="RB")
+
+        build_presence_matrix(self.payment_module, BUSINESS_DATE)
+        group = TransactionMatchGroup.objects.get(rrn="500000000004")
+        self.assertEqual(group.processing_status, ProcessingStatus.PENDING_RULE_EVALUATION)
+
+    def test_rerun_with_corrections_is_idempotent(self):
+        self._cbs("600000000001", direction=Direction.CREDIT)
+        self._cbs("600000000001", row_ref="2", direction=Direction.DEBIT)
+        self._npci("600000000001", response_code="00")
+        self._cbs("6000000002", row_ref="3", rrn_valid=False)
+        self._npci("006000000002", row_ref="2", response_code="00")
+
+        fields = ("id", "rrn", "direction_match", "cbs_reversed", "is_superseded", "processing_status")
+        first = build_presence_matrix(self.payment_module, BUSINESS_DATE).as_dict()
+        snapshot = list(TransactionMatchGroup.objects.order_by("rrn").values(*fields))
+        second = build_presence_matrix(self.payment_module, BUSINESS_DATE).as_dict()
+
+        self.assertEqual(first, second)
+        self.assertEqual(snapshot, list(TransactionMatchGroup.objects.order_by("rrn").values(*fields)))
+        self.assertEqual(RegisterPresence.objects.count(), 4)

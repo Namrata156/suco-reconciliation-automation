@@ -111,7 +111,39 @@ It's also unclear whether these files ever arrive per cycle (the SOP says
 NPCI offers "per-cycle and consolidated"). **Parked for Phase 4** at the
 project owner's request (2026-09-27).
 
+### NPCI direction labels (Acquirer/Issuer) may be reversed
+Phase 1 labels NPCI files per the SOP note in `docs/sop_reference.md`:
+Acquirer → DEBIT, Issuer → CREDIT. On 2026-09-30 the project owner
+explained it the other way round: the remitter/issuer side debits the
+customer, and the beneficiary/acquirer side credits them. Real data can't
+settle this alone. On all 3 loaded dates, every CBS↔NPCI pair (~61K a day)
+carries **opposite** direction labels, which fits either reading
+depending on whether CBS (GL 1535) is read from the bank's side or the
+customer's.
+Reconciliation doesn't depend on the answer: `direction_match` only
+checks that the two sides are opposite (`reconciliation/presence.py`).
+But the NPCI `direction` shown in reports would be backwards if the
+owner's reading is right. **Needs confirmation from ops**, not blocking
+Phase 2. Phase 1 was deliberately not changed (owner, 2026-09-30:
+corrections belong in reconciliation).
+
 ## Resolved
+
+- **~10% of CBS rows "fail RRN validation"** — resolved 2026-09-30.
+  These are CBS dropping leading zeros: every one of them is all digits
+  and 8–11 long (e.g. remarks `By UPI/4383934640/...`). Zero-padded to 12,
+  they match NPCI for 6,803 of 6,805 rows (14 Jul) and 7,201 of 7,253
+  (26 Sep). Per the owner's decision (2026-09-30), the padding is applied
+  at match time in `reconciliation/presence.py` (`match_key`). The loaded
+  `TransactionFact` rows keep the CBS value as-is. No fallback key is
+  needed.
+- **NPCI transactions absent from CBS** — explained 2026-09-30. Raw Data
+  raw cell `"5"` is the NPCI response code. `00` (success) is on 99.8% of
+  the RRNs found in CBS, and the RRNs missing from CBS carry decline codes
+  (`XB`, `Z9`, `01`, `ZM`, ...). So these are declined transactions where
+  no money moved. The code is now recorded on
+  `RegisterPresence.response_code` for the Business Rule Engine. The
+  meaning of each code is still the open error/response-code table gap.
 
 - **`cycle_type` stored values renamed FINANCIAL/NON_FINANCIAL →
   AUTH/DISPUTE.** Project owner: keep the rename (2026-09-27). *(2026-09-27)*

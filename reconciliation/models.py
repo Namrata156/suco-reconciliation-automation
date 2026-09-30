@@ -91,9 +91,38 @@ class TransactionMatchGroup(models.Model):
         help_text=(
             "Spec says 'if applicable'; TransactionFact has no transaction-status "
             "field today, so this stays None for this slice (documented as N/A, not "
-            "silently dropped)."
+            "silently dropped). The NPCI side's status is recorded on "
+            "RegisterPresence.response_code instead (CBS carries no status)."
         ),
     )
+    direction_match = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text=(
+            "True when the CBS and NPCI legs carry OPPOSITE directions -- the normal "
+            "pairing on real data (CBS GL 1535 vs NPCI's labelling, 100% of ~61K "
+            "pairs/day, profiled 2026-09-30). None when either leg is absent or "
+            "UNKNOWN."
+        ),
+    )
+    cbs_reversed = models.BooleanField(
+        default=False,
+        help_text=(
+            "CBS holds both a CREDIT and a DEBIT of the same amount for this RRN -- "
+            "the transaction was reversed in CBS (the manual sheet's 'rev' check). "
+            "The CBS presence row points at the original leg, not the reversal."
+        ),
+    )
+    is_superseded = models.BooleanField(
+        default=False,
+        help_text=(
+            "Set when a rebuild for this business date no longer finds this RRN in "
+            "any current file (e.g. a corrected file dropped it). Kept, not deleted, "
+            "for audit (project owner decision 2026-09-30); cleared if the RRN "
+            "reappears."
+        ),
+    )
+    superseded_at = models.DateTimeField(null=True, blank=True)
     error_code = models.CharField(
         max_length=50,
         blank=True,
@@ -167,6 +196,15 @@ class RegisterPresence(models.Model):
     # (avoids a join for every report query).
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     direction = models.CharField(max_length=10, blank=True)
+    response_code = models.CharField(
+        max_length=10,
+        blank=True,
+        help_text=(
+            "NPCI response code of the matched row ('00' = success), read from the "
+            "source row's raw cells -- see reconciliation.presence."
+            "NPCI_RESPONSE_CODE_CELL. Blank for legs that carry no response code (CBS)."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -208,6 +246,10 @@ class TransactionMatchGroupHistory(models.Model):
     )
     amount_match = models.BooleanField(null=True, blank=True)
     status_match = models.BooleanField(null=True, blank=True)
+    direction_match = models.BooleanField(null=True, blank=True)
+    cbs_reversed = models.BooleanField(default=False)
+    is_superseded = models.BooleanField(default=False)
+    superseded_at = models.DateTimeField(null=True, blank=True)
     error_code = models.CharField(max_length=50, blank=True)
     processing_status = models.CharField(max_length=30, choices=ProcessingStatus.choices)
     created_at = models.DateTimeField(help_text="Copied from the live row")
@@ -240,6 +282,7 @@ class RegisterPresenceHistory(models.Model):
     )
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     direction = models.CharField(max_length=10, blank=True)
+    response_code = models.CharField(max_length=10, blank=True)
     created_at = models.DateTimeField(help_text="Copied from the live row")
     updated_at = models.DateTimeField(help_text="Copied from the live row")
 
