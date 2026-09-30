@@ -189,9 +189,9 @@ class StagingSchemaTests(TestCase):
 
 
 class HistorySchemaTests(TestCase):
-    """History tables are schema-only (no archival job yet). They must NOT
-    carry the live tables' unique constraints, so the same logical row can
-    be archived more than once."""
+    """History tables must NOT carry the live tables' unique constraints, so
+    the same logical row can be archived more than once. The archival job
+    itself is covered by test_archival.py."""
 
     def setUp(self):
         self.payment_module = _build_payment_module()

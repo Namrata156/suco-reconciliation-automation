@@ -43,7 +43,7 @@ from reconciliation.models import ProcessingStatus, RegisterPresence, Transactio
 from reconciliation.presence import DEFAULT_PRESENCE_LEGS, build_presence_matrix
 from transactions.models import TransactionFact
 
-SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files"
+SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
 CBS_SAMPLE = Path(__file__).resolve().parents[2] / "14072026" / "cbs_report" / "b5rg090oa.xls"
 BUSINESS_DATE = date(2026, 7, 14)
 

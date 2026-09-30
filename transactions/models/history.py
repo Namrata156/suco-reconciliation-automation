@@ -1,13 +1,17 @@
 """
-History layer (schema only): one `<Model>History` table per live staging
-table plus `TransactionFactHistory` and `NtslSettlementLineHistory`
-(NTSL tables added 2026-09-27). Reconciliation's two history tables
-live in `reconciliation/models.py`.
+History layer: one `<Model>History` table per live staging table plus
+`TransactionFactHistory` and `NtslSettlementLineHistory` (NTSL tables added
+2026-09-27). Reconciliation's two history tables live in
+`reconciliation/models.py`.
 
-Schema redesign approved 2026-09-23 (tracker.md "Schema Redesign"). This
-module adds the TABLES only. The archival job itself (copy live rows here,
-then remove them from the live table once reconciliation for a business
-date is complete) is Phase 3 work and is deliberately not built -- see
+Schema redesign approved 2026-09-23 (tracker.md "Schema Redesign").
+Staging archival was pulled forward from Phase 3 at the project owner's
+request (decided 2026-09-28): `transactions.services.archival` copies live
+staging rows whose file's business date is older than the latest loaded
+business date into the matching table below (`HISTORY_MODEL_BY_STAGING_MODEL`),
+then deletes them from staging. It runs manually via the
+`archive_older_business_dates` management command. The fact, NTSL
+settlement and reconciliation history tables are still schema-only -- see
 tracker.md Open Questions ("Archival job trigger").
 
 Conventions for every history table:
@@ -37,6 +41,15 @@ from transactions.models.staging import (
     DisputeReportRawFields,
     NtslRawFields,
     RawDataRawFields,
+    StagingAdjustment,
+    StagingCbsGlExtract,
+    StagingDrc,
+    StagingMerchantRawData,
+    StagingMerchantRawDataBbp,
+    StagingNtsl,
+    StagingRawData,
+    StagingRowBase,
+    StagingTimeout,
 )
 
 
@@ -104,6 +117,21 @@ class StagingAdjustmentHistory(StagingHistoryBase, AdjustmentRawFields):
 class StagingNtslHistory(StagingHistoryBase, NtslRawFields):
     class Meta(StagingHistoryBase.Meta):
         pass
+
+
+# Live staging table -> its History mirror. Used by
+# transactions.services.archival (copy target) and
+# TransactionFact.staging_row() (lineage lookup after a row is archived).
+HISTORY_MODEL_BY_STAGING_MODEL: dict[type[StagingRowBase], type[StagingHistoryBase]] = {
+    StagingCbsGlExtract: StagingCbsGlExtractHistory,
+    StagingRawData: StagingRawDataHistory,
+    StagingMerchantRawData: StagingMerchantRawDataHistory,
+    StagingMerchantRawDataBbp: StagingMerchantRawDataBbpHistory,
+    StagingDrc: StagingDrcHistory,
+    StagingTimeout: StagingTimeoutHistory,
+    StagingAdjustment: StagingAdjustmentHistory,
+    StagingNtsl: StagingNtslHistory,
+}
 
 
 class NtslSettlementLineHistory(ArchivalFields, NtslSettlementLineColumns):

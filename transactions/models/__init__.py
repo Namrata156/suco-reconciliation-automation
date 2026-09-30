@@ -10,6 +10,7 @@ be silently skipped by makemigrations.
 """
 from transactions.models.fact import TransactionFact, TransactionFactColumns
 from transactions.models.history import (
+    HISTORY_MODEL_BY_STAGING_MODEL,
     NtslSettlementLineHistory,
     StagingAdjustmentHistory,
     StagingCbsGlExtractHistory,
@@ -50,6 +51,7 @@ __all__ = [
     "TransactionFact",
     "NtslSettlementLineColumns",
     "NtslSettlementLine",
+    "HISTORY_MODEL_BY_STAGING_MODEL",
     "StagingCbsGlExtractHistory",
     "StagingRawDataHistory",
     "StagingMerchantRawDataHistory",

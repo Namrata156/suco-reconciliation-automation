@@ -144,10 +144,21 @@ class TransactionFact(TransactionFactColumns):
         return f"{self.source_register_type}:{self.rrn or self.row_reference} ({self.business_date})"
 
     def staging_row(self):
-        """Resolves staging_row_id to its staging-table row, or None."""
+        """Resolves staging_row_id to its staging-table row, or None. Once
+        the staging row has been archived (transactions.services.archival),
+        falls back to its History copy (matched on original_id)."""
+        from transactions.models.history import HISTORY_MODEL_BY_STAGING_MODEL
         from transactions.models.staging import STAGING_MODEL_BY_REGISTER_TYPE
 
         staging_model = STAGING_MODEL_BY_REGISTER_TYPE.get(self.source_register_type)
         if staging_model is None or self.staging_row_id is None:
             return None
-        return staging_model.objects.filter(pk=self.staging_row_id).first()
+        live = staging_model.objects.filter(pk=self.staging_row_id).first()
+        if live is not None:
+            return live
+        return (
+            HISTORY_MODEL_BY_STAGING_MODEL[staging_model]
+            .objects.filter(original_id=self.staging_row_id)
+            .order_by("-archived_at")
+            .first()
+        )

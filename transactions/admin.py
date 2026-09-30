@@ -3,7 +3,9 @@ history tables,
 matching the admin-first, read-only convention used by
 `reconciliation/admin.py` (no upload API/frontend exists yet). Rows in
 these tables are only ever written by the pipeline (file_processing.tasks)
-or, for history tables, by the Phase 3 archival job -- never by hand."""
+or, for staging history tables, by the archival job
+(transactions.services.archival, pulled forward from Phase 3) -- never by
+hand."""
 from __future__ import annotations
 
 from django.contrib import admin
