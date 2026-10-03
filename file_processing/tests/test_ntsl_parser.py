@@ -11,8 +11,9 @@ from django.test import SimpleTestCase
 
 from file_processing.parsers.ntsl_ooxml import parse_ooxml_workbook
 
-SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "14072026"
-NTSL_SAMPLE = SAMPLE_ROOT / "NTSL" / "UPI_NTSLSSK140726_1C.xls"
+# Moved from the old top-level 14072026/NTSL/ folder (2026-10-02); same file, same SHA-256.
+SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
+NTSL_SAMPLE = SAMPLE_ROOT / "UPI_NTSLSSK140726_1C.xls"
 
 
 class NtslOoxmlParserTests(SimpleTestCase):

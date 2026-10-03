@@ -11,9 +11,11 @@ from django.test import SimpleTestCase
 
 from file_processing.parsers.sniff import ContainerKind, PayloadKind, sniff_path
 
-SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "14072026"
-CBS_SAMPLE = SAMPLE_ROOT / "cbs_report" / "b5rg090oa.xls"
-NTSL_SAMPLE = SAMPLE_ROOT / "NTSL" / "UPI_NTSLSSK140726_1C.xls"
+# Samples moved from the old top-level 14072026/ folder (2026-10-02); same
+# files, same SHA-256. The CBS file was b5rg090oa.xls.
+SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
+CBS_SAMPLE = SAMPLE_ROOT / "cbs_14072026.xls"
+NTSL_SAMPLE = SAMPLE_ROOT / "UPI_NTSLSSK140726_1C.xls"
 
 
 class SniffRealSampleFilesTests(SimpleTestCase):

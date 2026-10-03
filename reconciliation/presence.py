@@ -17,12 +17,11 @@ real scale (tens of thousands of distinct valid RRNs per business day),
 a per-row loop was measured to take several minutes against the real
 sample data.
 
-2026-09-30 (Phase 2 Step 1): four corrections found by profiling the real
-data for 2026-07-14 / 09-25 / 09-26. All of them live here, in the
-reconciliation layer -- the loaded TransactionFact rows are never modified
-(project owner decision 2026-09-30):
-  - Leading zeros: CBS drops them from ~7K RRNs/day (8-11 digit values);
-    zero-padded to 12 at match time, they match NPCI for 99%+ of rows.
+2026-09-30 (Phase 2 Step 1): corrections found by profiling the real data
+for 2026-07-14 / 09-25 / 09-26. (CBS's missing leading zeros were first
+padded here at match time; since 2026-10-02 they are restored at extraction
+instead -- file_processing.tasks._extract_cbs_rrn -- so only valid RRNs are
+matched here.)
   - Direction: CBS and NPCI legs are always labelled with OPPOSITE
     directions (100% of ~61K pairs/day) -> `direction_match`.
   - Reversals: a CBS CREDIT + DEBIT of the same amount on one RRN is a
@@ -41,7 +40,6 @@ from datetime import date
 from typing import Iterable
 
 from django.db import transaction as db_transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from core.models import Direction, PaymentModule, RegisterType
@@ -76,12 +74,6 @@ _NPCI_LEG_PRIORITY = [
     RegisterType.MERCHANT_RAW_DATA_BBP,
 ]
 
-# Leading-zero recovery (see module docstring). Only CBS stores RRNs as
-# numbers; every other source keeps them as text.
-RRN_DIGITS = 12
-_ZERO_PAD_MIN_DIGITS = 8
-_ZERO_PAD_REGISTER_TYPES = {RegisterType.CBS_GL_EXTRACT}
-
 # The two legs direction_match / cbs_reversed are defined between.
 _CBS_LEG = "CBS"
 _NPCI_LEG = "NPCI"
@@ -107,7 +99,6 @@ class PresenceMatrixResult:
     per_leg_row_counts: dict[str, int] = field(default_factory=dict)
     per_leg_duplicate_rrn_counts: dict[str, int] = field(default_factory=dict)
     leg_collision_counts: dict[str, int] = field(default_factory=dict)
-    per_leg_zero_padded_counts: dict[str, int] = field(default_factory=dict)
     matched: int = 0
     pending_rule_evaluation: int = 0
     unmatched: int = 0
@@ -127,7 +118,6 @@ class PresenceMatrixResult:
             "per_leg_row_counts": self.per_leg_row_counts,
             "per_leg_duplicate_rrn_counts": self.per_leg_duplicate_rrn_counts,
             "leg_collision_counts": self.leg_collision_counts,
-            "per_leg_zero_padded_counts": self.per_leg_zero_padded_counts,
             "matched": self.matched,
             "pending_rule_evaluation": self.pending_rule_evaluation,
             "unmatched": self.unmatched,
@@ -148,22 +138,6 @@ def _priority_pick(records: list[TransactionFact], priority: list[str]) -> Trans
             if record.source_register_type == register_type:
                 return record
     return records[0]
-
-
-def match_key(record: TransactionFact) -> str | None:
-    """The RRN this record matches on, or None if it can't be matched.
-    Valid RRNs are used as-is; a CBS RRN that lost its leading zeros (all
-    digits, 8-11 long) is zero-padded back to 12."""
-    if record.rrn_valid:
-        return record.rrn
-    rrn = record.rrn or ""
-    if (
-        record.source_register_type in _ZERO_PAD_REGISTER_TYPES
-        and rrn.isdigit()
-        and _ZERO_PAD_MIN_DIGITS <= len(rrn) < RRN_DIGITS
-    ):
-        return rrn.zfill(RRN_DIGITS)
-    return None
 
 
 def _is_reversal_pair(records: list[TransactionFact]) -> bool:
@@ -220,10 +194,10 @@ def _build_leg_index(
     payment_module: PaymentModule,
     business_date_: date,
     register_types: list[str],
-) -> tuple[dict[str, list[TransactionFact]], int, int, int]:
-    """Returns ({match key: [TransactionFact, ...]}, duplicate_rrn_count,
-    collision_count, zero_padded_count) for one leg. Which candidate is
-    used is decided by the caller (reversal handling needs the other leg).
+) -> tuple[dict[str, list[TransactionFact]], int, int]:
+    """Returns ({rrn: [TransactionFact, ...]}, duplicate_rrn_count,
+    collision_count) for one leg. Which candidate is used is decided by
+    the caller (reversal handling needs the other leg).
 
     duplicate_rrn_count: how many distinct RRNs had more than one candidate
     row within this leg (whether from one register type appearing twice, or
@@ -231,7 +205,6 @@ def _build_leg_index(
     collision_count: specifically how many of those were cross-register-type
     collisions (i.e. would matter for _priority_pick), a subset of interest
     for a leg aggregating multiple RegisterTypes (e.g. "NPCI").
-    zero_padded_count: rows matched only thanks to leading-zero recovery.
     """
     # No select_related("uploaded_file") here deliberately: this code never
     # dereferences record.uploaded_file itself (uploaded_file__is_current is
@@ -245,25 +218,17 @@ def _build_leg_index(
     # {"uploaded_file_id", "halted"} dict, but uploaded files created before
     # the redesign may still carry the old large payload, so the join stays
     # avoided.
-    # rrn_valid=False rows are only fetched for register types where
-    # leading-zero recovery applies; match_key() decides which are usable.
     queryset = TransactionFact.objects.filter(
-        Q(rrn_valid=True) | Q(source_register_type__in=_ZERO_PAD_REGISTER_TYPES),
         payment_module=payment_module,
         business_date=business_date_,
+        rrn_valid=True,
         source_register_type__in=register_types,
         uploaded_file__is_current=True,
     )
 
     by_rrn: dict[str, list[TransactionFact]] = {}
-    zero_padded_count = 0
     for record in queryset:
-        key = match_key(record)
-        if key is None:
-            continue
-        if not record.rrn_valid:
-            zero_padded_count += 1
-        by_rrn.setdefault(key, []).append(record)
+        by_rrn.setdefault(record.rrn, []).append(record)
 
     duplicate_rrn_count = 0
     collision_count = 0
@@ -274,7 +239,7 @@ def _build_leg_index(
             if len(distinct_register_types) > 1:
                 collision_count += 1
 
-    return by_rrn, duplicate_rrn_count, collision_count, zero_padded_count
+    return by_rrn, duplicate_rrn_count, collision_count
 
 
 @db_transaction.atomic
@@ -305,14 +270,11 @@ def build_presence_matrix(
 
     candidate_rrns: set[str] = set()
     for leg_name, register_types in resolved_legs.items():
-        by_rrn, dup_count, collision_count, zero_padded = _build_leg_index(
-            payment_module, business_date_, register_types
-        )
+        by_rrn, dup_count, collision_count = _build_leg_index(payment_module, business_date_, register_types)
         leg_candidates[leg_name] = by_rrn
         result.per_leg_row_counts[leg_name] = len(by_rrn)
         result.per_leg_duplicate_rrn_counts[leg_name] = dup_count
         result.leg_collision_counts[leg_name] = collision_count
-        result.per_leg_zero_padded_counts[leg_name] = zero_padded
         candidate_rrns |= by_rrn.keys()
 
     response_codes = _response_codes(

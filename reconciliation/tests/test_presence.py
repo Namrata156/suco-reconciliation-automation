@@ -46,7 +46,8 @@ from transactions.models.history import StagingRawDataHistory
 from transactions.models.staging import StagingRawData
 
 SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
-CBS_SAMPLE = Path(__file__).resolve().parents[2] / "14072026" / "cbs_report" / "b5rg090oa.xls"
+# Formerly 14072026/cbs_report/b5rg090oa.xls -- same file (same SHA-256), renamed.
+CBS_SAMPLE = SAMPLE_ROOT / "cbs_14072026.xls"
 BUSINESS_DATE = date(2026, 7, 14)
 
 
@@ -558,8 +559,9 @@ class BuildPresenceMatrixUnitTests(TestCase):
 
 
 class Step1CorrectionsTests(TestCase):
-    """Phase 2 Step 1 (2026-09-30): leading-zero recovery, direction check,
-    CBS reversals, superseded groups and NPCI response codes."""
+    """Phase 2 Step 1 (2026-09-30): direction check, CBS reversals,
+    superseded groups and NPCI response codes. (Leading-zero recovery moved
+    to extraction on 2026-10-02 -- see file_processing/tests/test_cbs_parser.py.)"""
 
     _uploaded_file = BuildPresenceMatrixUnitTests._uploaded_file
     _record = BuildPresenceMatrixUnitTests._record
@@ -605,27 +607,6 @@ class Step1CorrectionsTests(TestCase):
             staging_row_id=staging_row_id,
             **overrides,
         )
-
-    def test_cbs_rrn_missing_leading_zeros_matches_npci(self):
-        self._cbs("4383934640", rrn_valid=False)  # CBS dropped "00"
-        self._npci("004383934640")
-
-        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
-
-        self.assertEqual(result.matched, 1)
-        self.assertEqual(result.per_leg_zero_padded_counts["CBS"], 1)
-        group = TransactionMatchGroup.objects.get(rrn="004383934640")
-        cbs_fact = group.register_presences.get(leg="CBS").transaction_record
-        self.assertEqual(cbs_fact.rrn, "4383934640")  # loaded data untouched
-        self.assertFalse(cbs_fact.rrn_valid)
-
-    def test_zero_padding_only_applies_to_cbs_digit_values(self):
-        self._cbs("not-an-rrn", rrn_valid=False)
-        self._cbs("1234567", row_ref="2", rrn_valid=False)  # too short to be a lost-zero RRN
-        self._npci("4383934640", rrn_valid=False)  # NPCI keeps RRNs as text: never padded
-
-        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
-        self.assertEqual(result.total_match_groups, 0)
 
     def test_direction_match(self):
         self._cbs("200000000001", direction=Direction.DEBIT)
@@ -719,7 +700,7 @@ class Step1CorrectionsTests(TestCase):
         self._cbs("600000000001", direction=Direction.CREDIT)
         self._cbs("600000000001", row_ref="2", direction=Direction.DEBIT)
         self._npci("600000000001", response_code="00")
-        self._cbs("6000000002", row_ref="3", rrn_valid=False)
+        self._cbs("006000000002", row_ref="3")
         self._npci("006000000002", row_ref="2", response_code="00")
 
         fields = ("id", "rrn", "direction_match", "cbs_reversed", "is_superseded", "processing_status")

@@ -41,7 +41,8 @@ from file_processing.tasks import (
 )
 from transactions.models import NtslSettlementLine, StagingNtsl, TransactionFact
 
-NTSL_ROOT = Path(__file__).resolve().parents[2] / "14072026" / "NTSL"
+# Moved from the old top-level 14072026/NTSL/ folder (2026-10-02); same files, same SHA-256.
+NTSL_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
 NTSL_1C = NTSL_ROOT / "UPI_NTSLSSK140726_1C.xls"
 NTSL_DC1 = NTSL_ROOT / "UPI_NTSLSSK140726_DC1.xls"
 

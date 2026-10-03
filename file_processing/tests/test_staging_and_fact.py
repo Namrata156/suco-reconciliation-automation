@@ -60,7 +60,8 @@ from transactions.models import (
 )
 
 SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
-CBS_SAMPLE = Path(__file__).resolve().parents[2] / "14072026" / "cbs_report" / "b5rg090oa.xls"
+# Formerly 14072026/cbs_report/b5rg090oa.xls -- same file (same SHA-256), renamed.
+CBS_SAMPLE = SAMPLE_ROOT / "cbs_14072026.xls"
 
 
 def _build_payment_module() -> PaymentModule:

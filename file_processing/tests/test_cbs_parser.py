@@ -19,8 +19,9 @@ from django.test import SimpleTestCase
 from file_processing.parsers.cbs_spreadsheetml import parse_spreadsheetml
 from file_processing.tasks import _CBS_REMARKS_RE, _extract_cbs_rrn
 
-SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "14072026"
-CBS_SAMPLE = SAMPLE_ROOT / "cbs_report" / "b5rg090oa.xls"
+# Formerly 14072026/cbs_report/b5rg090oa.xls -- same file (same SHA-256), renamed.
+SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
+CBS_SAMPLE = SAMPLE_ROOT / "cbs_14072026.xls"
 
 
 class CbsSpreadsheetmlParserTests(SimpleTestCase):
@@ -41,7 +42,7 @@ class CbsSpreadsheetmlParserTests(SimpleTestCase):
         remarks_row = next(r for r in rows if r.cells.get(3, "").startswith(("By UPI", "To UPI")))
         self.assertIn("UPI/", remarks_row.cells[3])
 
-    def test_rrn_extraction_flags_non_12_digit_rrn_without_crashing(self):
+    def test_every_upi_remarks_rrn_in_sample_is_valid_after_zero_padding(self):
         rows = list(parse_spreadsheetml(CBS_SAMPLE))
         remarks_by_row = [
             (row.worksheet_name, row.row_number, row.cells.get(3))
@@ -50,27 +51,31 @@ class CbsSpreadsheetmlParserTests(SimpleTestCase):
         ]
         self.assertGreater(len(remarks_by_row), 0)
 
-        valid_count = 0
-        invalid_count = 0
-        found_invalid_example = False
+        # ~10% of this sample's remarks carry RRNs with their leading zeros
+        # dropped (8-11 digits); extraction restores them, so none is left
+        # invalid.
+        short_in_remarks = 0
         for _ws, _rn, remarks in remarks_by_row:
             direction, rrn, rrn_valid = _extract_cbs_rrn(remarks, expected_digits=12)
             self.assertIn(direction, ("CREDIT", "DEBIT"))
-            self.assertIsNotNone(rrn)
-            if rrn_valid:
-                valid_count += 1
-            else:
-                invalid_count += 1
-                found_invalid_example = True
+            self.assertTrue(rrn_valid, remarks)
+            self.assertEqual(len(rrn), 12)
+            if rrn not in remarks:
+                short_in_remarks += 1
+        self.assertGreater(short_in_remarks / len(remarks_by_row), 0.05)
 
-        self.assertTrue(found_invalid_example, "expected at least one non-12-digit RRN row in this sample")
-        # Confirmed directly against this sample: ~9.86% invalid in the
-        # first worksheet alone; assert the overall rate stays in a
-        # sane band (not exactly pinned, to avoid over-fitting the test to
-        # one measurement) rather than crashing on those rows.
-        invalid_rate = invalid_count / (valid_count + invalid_count)
-        self.assertGreater(invalid_rate, 0.05)
-        self.assertLess(invalid_rate, 0.20)
+    def test_leading_zeros_restored_only_for_8_to_11_digit_rrns(self):
+        cases = {
+            "By UPI/4383934640/8867042497-2@ybl/Payment from PhonePe": ("004383934640", True),
+            "To UPI/71131310561/7349090632@ybl/Payment from PhonePe": ("071131310561", True),
+            "By UPI/12345678/x@ybl/y": ("000012345678", True),
+            "By UPI/1234567/x@ybl/y": ("1234567", False),  # too short to be a lost-zero RRN
+            "By UPI/ABC123456789/x@ybl/y": ("ABC123456789", False),
+            "By UPI/1234567890123/x@ybl/y": ("1234567890123", False),  # too long, never trimmed
+        }
+        for remarks, (expected_rrn, expected_valid) in cases.items():
+            _direction, rrn, rrn_valid = _extract_cbs_rrn(remarks, expected_digits=12)
+            self.assertEqual((rrn, rrn_valid), (expected_rrn, expected_valid), remarks)
 
     def test_direction_derivation_matches_by_to_prefix(self):
         credit_direction, rrn, valid = _extract_cbs_rrn(
@@ -84,8 +89,8 @@ class CbsSpreadsheetmlParserTests(SimpleTestCase):
             "To UPI/3354926952/7411691215-5@ybl/Paid via Navi UPI", expected_digits=12
         )
         self.assertEqual(debit_direction, "DEBIT")
-        self.assertEqual(rrn2, "3354926952")
-        self.assertFalse(valid2)  # only 10 digits, not the expected 12
+        self.assertEqual(rrn2, "003354926952")  # CBS dropped the leading zeros
+        self.assertTrue(valid2)
 
     def test_remarks_regex_ignores_non_upi_remarks(self):
         self.assertIsNone(_CBS_REMARKS_RE.match("Interest Credit"))

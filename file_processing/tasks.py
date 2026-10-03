@@ -544,6 +544,15 @@ def load_to_staging(context: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Stage 4: normalize_rows
 # ---------------------------------------------------------------------------
+# CBS writes RRNs into its remarks as numbers, dropping leading zeros
+# (`By UPI/4383934640/...` is RRN 004383934640). Profiled 2026-09-30: every
+# short CBS RRN is all digits and 8-11 long, and padded back to 12 they match
+# NPCI for 6,803 of 6,805 rows (14 Jul) and 7,201 of 7,253 (26 Sep). Padded
+# here, at extraction, at the project owner's request (2026-10-02); the raw
+# remarks stay unchanged in staging.
+_CBS_MIN_UNPADDED_RRN_DIGITS = 8
+
+
 def _extract_cbs_rrn(remarks: str | None, expected_digits: int) -> tuple[str | None, bool, str | None]:
     """Returns (direction_hint, rrn, rrn_valid) style tuple for CBS remarks.
     See module-level _CBS_REMARKS_RE docstring."""
@@ -553,6 +562,8 @@ def _extract_cbs_rrn(remarks: str | None, expected_digits: int) -> tuple[str | N
     if not m:
         return None, False, None
     prefix, rrn = m.group(1), m.group(2)
+    if rrn.isdigit() and _CBS_MIN_UNPADDED_RRN_DIGITS <= len(rrn) < expected_digits:
+        rrn = rrn.zfill(expected_digits)
     rrn_valid = bool(re.fullmatch(rf"\d{{{expected_digits}}}", rrn))
     direction = Direction.CREDIT if prefix == "By" else Direction.DEBIT
     return direction, rrn, rrn_valid

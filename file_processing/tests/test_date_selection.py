@@ -47,8 +47,9 @@ from file_processing.tasks import (
 from file_processing.tests.test_pagination_strip import CBS_ARTIFACT_PATTERNS
 from transactions.models import StagingCbsGlExtract
 
-SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "14072026"
-CBS_SAMPLE = SAMPLE_ROOT / "cbs_report" / "b5rg090oa.xls"
+# Formerly 14072026/cbs_report/b5rg090oa.xls -- same file (same SHA-256), renamed.
+SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
+CBS_SAMPLE = SAMPLE_ROOT / "cbs_14072026.xls"
 
 # CBS_ARTIFACT_PATTERNS is imported from test_pagination_strip (the
 # canonical reference list for CBS's FileTypeConfig.pagination_artifact_
