@@ -43,7 +43,7 @@ from reconciliation.models import ProcessingStatus, RegisterPresence, Transactio
 from reconciliation.presence import DEFAULT_PRESENCE_LEGS, build_presence_matrix
 from transactions.models import TransactionFact
 from transactions.models.history import StagingRawDataHistory
-from transactions.models.staging import StagingRawData
+from transactions.models.staging import StagingAdjustment, StagingDrc, StagingRawData, StagingTimeout
 
 SAMPLE_ROOT = Path(__file__).resolve().parents[2] / "sample_decrypted_files" / "14072026"
 # Formerly 14072026/cbs_report/b5rg090oa.xls -- same file (same SHA-256), renamed.
@@ -711,3 +711,224 @@ class Step1CorrectionsTests(TestCase):
         self.assertEqual(first, second)
         self.assertEqual(snapshot, list(TransactionMatchGroup.objects.order_by("rrn").values(*fields)))
         self.assertEqual(RegisterPresence.objects.count(), 4)
+
+
+class Step2OnUsAndOverlayTests(TestCase):
+    """Phase 2 Step 2 (2026-10-03): on-us payments vs CBS reversals, and the
+    DRC / Timeout / Adjustment dispute overlays."""
+
+    _uploaded_file = BuildPresenceMatrixUnitTests._uploaded_file
+    _record = BuildPresenceMatrixUnitTests._record
+
+    STAGING = {
+        RegisterType.RAW_DATA: StagingRawData,
+        RegisterType.DRC: StagingDrc,
+        RegisterType.TIMEOUT: StagingTimeout,
+        RegisterType.ADJUSTMENT: StagingAdjustment,
+    }
+
+    def setUp(self):
+        self.payment_module = _payment_module()
+        self.files = {
+            rt: self._uploaded_file(self.payment_module, rt, f"s2{rt.lower()}")
+            for rt in (
+                RegisterType.CBS_GL_EXTRACT,
+                RegisterType.RAW_DATA,
+                RegisterType.DRC,
+                RegisterType.TIMEOUT,
+                RegisterType.ADJUSTMENT,
+            )
+        }
+        self._row = 0
+
+    def _fact(self, register_type, rrn, direction, amount="10.00", cells=None, **overrides):
+        self._row += 1
+        if cells is not None:
+            staging = self.STAGING[register_type].objects.create(
+                uploaded_file=self.files[register_type],
+                row_number=self._row,
+                row_reference=f":{self._row}",
+                raw_cells=cells,
+            )
+            overrides["staging_row_id"] = staging.id
+        return self._record(
+            self.payment_module,
+            self.files[register_type],
+            register_type,
+            rrn,
+            amount,
+            str(self._row),
+            direction=direction,
+            **overrides,
+        )
+
+    def _cbs(self, rrn, direction, **kw):
+        return self._fact(RegisterType.CBS_GL_EXTRACT, rrn, direction, **kw)
+
+    def _npci(self, rrn, direction, **kw):
+        return self._fact(RegisterType.RAW_DATA, rrn, direction, **kw)
+
+    def _drc(self, rrn, remitter="SSK", code="'102", **kw):
+        cells = {"6": code, "7": f"'{rrn}", "9": remitter, "10": "AXB"}
+        return self._fact(RegisterType.DRC, rrn, Direction.DEBIT, cells=cells, **kw)
+
+    def _timeout(self, rrn, beneficiary="SSK", **kw):
+        cells = {"6": "'RB", "7": f"'{rrn}", "9": "AXB", "10": beneficiary}
+        return self._fact(RegisterType.TIMEOUT, rrn, Direction.CREDIT, cells=cells, **kw)
+
+    def _adjustment(self, rrn, txn_date, adj_date=BUSINESS_DATE, **kw):
+        cells = {"4": "Credit Adjustment", "5": "SSK", "7": "00", "8": txn_date, "10": f"'{rrn}"}
+        return self._fact(RegisterType.ADJUSTMENT, rrn, Direction.CREDIT, cells=cells, business_date=adj_date, **kw)
+
+    def _group(self, rrn, business_date=BUSINESS_DATE):
+        return TransactionMatchGroup.objects.get(rrn=rrn, business_date=business_date)
+
+    def _presence(self, rrn, leg, business_date=BUSINESS_DATE):
+        return RegisterPresence.objects.get(match_group__rrn=rrn, match_group__business_date=business_date, leg=leg)
+
+    # --- on-us vs reversal ------------------------------------------------
+    def test_on_us_pair_on_both_sides_is_matched_not_reversed(self):
+        cbs_debit = self._cbs("700000000001", Direction.DEBIT)
+        cbs_credit = self._cbs("700000000001", Direction.CREDIT)
+        npci_acq = self._npci("700000000001", Direction.DEBIT)
+        npci_iss = self._npci("700000000001", Direction.CREDIT)
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = self._group("700000000001")
+        self.assertTrue(group.is_on_us)
+        self.assertFalse(group.cbs_reversed)
+        self.assertTrue(group.direction_match)
+        self.assertEqual(group.processing_status, ProcessingStatus.MATCHED)
+        cbs = self._presence("700000000001", "CBS")
+        npci = self._presence("700000000001", "NPCI")
+        self.assertEqual((cbs.transaction_record_id, cbs.paired_transaction_record_id), (cbs_credit.id, cbs_debit.id))
+        self.assertEqual((npci.transaction_record_id, npci.paired_transaction_record_id), (npci_acq.id, npci_iss.id))
+        self.assertEqual((result.on_us, result.cbs_reversed, result.matched), (1, 0, 1))
+
+    def test_on_us_with_one_cbs_side_missing_needs_rule_evaluation(self):
+        self._cbs("700000000002", Direction.CREDIT)
+        self._npci("700000000002", Direction.DEBIT)
+        self._npci("700000000002", Direction.CREDIT)
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = self._group("700000000002")
+        self.assertTrue(group.is_on_us)
+        self.assertEqual(group.processing_status, ProcessingStatus.PENDING_RULE_EVALUATION)
+        self.assertEqual(result.on_us_incomplete, 1)
+
+    def test_failed_on_us_payment_with_cbs_pair_is_a_reversal(self):
+        # Matches ops' manual sheet: DRC eff + rev for on-us RRNs whose NPCI
+        # rows carry failure codes (R9 on both sides).
+        # The CBS row pairing with NPCI's acquirer (DEBIT) row is the original.
+        original = self._cbs("700000000004", Direction.CREDIT)
+        self._cbs("700000000004", Direction.DEBIT)
+        self._npci("700000000004", Direction.DEBIT, cells={"5": "R9"})
+        self._npci("700000000004", Direction.CREDIT, cells={"5": "R9"})
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = self._group("700000000004")
+        self.assertTrue(group.is_on_us)
+        self.assertTrue(group.cbs_reversed)
+        self.assertEqual(group.processing_status, ProcessingStatus.PENDING_RULE_EVALUATION)
+        self.assertEqual(self._presence("700000000004", "CBS").transaction_record_id, original.id)
+        self.assertEqual((result.on_us, result.cbs_reversed), (0, 1))
+
+    def test_cbs_pair_with_single_npci_row_is_a_reversal(self):
+        self._cbs("700000000003", Direction.CREDIT)
+        original = self._cbs("700000000003", Direction.DEBIT)
+        self._npci("700000000003", Direction.CREDIT)
+
+        build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = self._group("700000000003")
+        self.assertTrue(group.cbs_reversed)
+        self.assertFalse(group.is_on_us)
+        self.assertEqual(self._presence("700000000003", "CBS").transaction_record_id, original.id)
+
+    # --- dispute overlays -------------------------------------------------
+    def test_drc_attaches_with_ssk_side_and_cleaned_code(self):
+        self._cbs("800000000001", Direction.DEBIT)
+        self._npci("800000000001", Direction.CREDIT)
+        self._drc("800000000001")
+        self._cbs("800000000002", Direction.DEBIT)
+        self._npci("800000000002", Direction.CREDIT)
+        self._drc("800000000002", remitter="CNB")
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        ssk = self._presence("800000000001", "DRC")
+        other = self._presence("800000000002", "DRC")
+        self.assertTrue(ssk.present)
+        self.assertTrue(ssk.ssk_side)
+        self.assertEqual(ssk.response_code, "102")  # leading apostrophe stripped
+        self.assertFalse(other.ssk_side)
+        self.assertEqual(result.overlays["DRC"]["ssk_side"], 1)
+        self.assertEqual(result.overlays["DRC"]["other_bank_side"], 1)
+        # Overlays don't change the CBS-vs-NPCI outcome.
+        self.assertEqual(self._group("800000000001").processing_status, ProcessingStatus.MATCHED)
+        # And groups without a dispute row get no overlay presence at all.
+        self.assertFalse(RegisterPresence.objects.filter(leg="TIMEOUT").exists())
+
+    def test_drc_only_rrn_gets_its_own_unmatched_group(self):
+        self._drc("800000000003")  # not effected in CBS (SOP code 104)
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        group = self._group("800000000003")
+        self.assertEqual(group.processing_status, ProcessingStatus.UNMATCHED)
+        self.assertFalse(self._presence("800000000003", "CBS").present)
+        self.assertTrue(self._presence("800000000003", "DRC").present)
+        self.assertEqual(result.overlays["DRC"]["overlay_only_groups"], 1)
+
+    def test_timeout_ssk_side_is_the_beneficiary_column(self):
+        self._timeout("800000000004", beneficiary="SSK")
+        self._timeout("800000000005", beneficiary="HDFC")
+
+        build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        self.assertTrue(self._presence("800000000004", "TIMEOUT").ssk_side)
+        self.assertFalse(self._presence("800000000005", "TIMEOUT").ssk_side)
+
+    def test_adjustment_links_to_its_original_transaction_date(self):
+        earlier = date(2026, 7, 13)
+        self._cbs("900000000001", Direction.DEBIT, business_date=earlier)
+        self._npci("900000000001", Direction.CREDIT, business_date=earlier)
+        adjustment = self._adjustment("900000000001", txn_date="13-07-2026")
+
+        today = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+        self.assertFalse(TransactionMatchGroup.objects.filter(rrn="900000000001", business_date=BUSINESS_DATE).exists())
+        self.assertEqual(today.overlays["ADJUSTMENT"].get("attached", 0), 0)
+
+        result = build_presence_matrix(self.payment_module, earlier)
+        presence = self._presence("900000000001", "ADJUSTMENT", business_date=earlier)
+        self.assertEqual(presence.transaction_record_id, adjustment.id)
+        self.assertEqual(presence.dispute_type, "Credit Adjustment")
+        self.assertFalse(presence.original_not_loaded)
+        self.assertEqual(result.overlays["ADJUSTMENT"]["linked_to_txn_date"], 1)
+
+    def test_adjustment_for_unloaded_date_is_flagged_on_its_own_date(self):
+        self._cbs("900000000002", Direction.DEBIT)  # makes BUSINESS_DATE a loaded date
+        self._adjustment("900000000003", txn_date="09-07-2026")  # 9 Jul is not loaded
+
+        result = build_presence_matrix(self.payment_module, BUSINESS_DATE)
+
+        presence = self._presence("900000000003", "ADJUSTMENT")
+        self.assertTrue(presence.original_not_loaded)
+        self.assertEqual(result.overlays["ADJUSTMENT"]["original_not_loaded"], 1)
+
+    def test_rebuild_replaces_overlays_without_duplicates(self):
+        self._cbs("800000000006", Direction.DEBIT)
+        self._npci("800000000006", Direction.CREDIT)
+        self._drc("800000000006")
+        self._drc("800000000006")  # same RRN twice in the DRC file
+
+        first = build_presence_matrix(self.payment_module, BUSINESS_DATE).as_dict()
+        second = build_presence_matrix(self.payment_module, BUSINESS_DATE).as_dict()
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["overlays"]["DRC"]["duplicates"], 1)
+        self.assertEqual(RegisterPresence.objects.filter(leg="DRC").count(), 1)
+        self.assertEqual(RegisterPresence.objects.count(), 3)  # CBS + NPCI + DRC

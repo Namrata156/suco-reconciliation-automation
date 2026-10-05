@@ -108,9 +108,19 @@ class TransactionMatchGroup(models.Model):
     cbs_reversed = models.BooleanField(
         default=False,
         help_text=(
-            "CBS holds both a CREDIT and a DEBIT of the same amount for this RRN -- "
-            "the transaction was reversed in CBS (the manual sheet's 'rev' check). "
-            "The CBS presence row points at the original leg, not the reversal."
+            "CBS holds both a CREDIT and a DEBIT of the same amount for this RRN, and "
+            "NPCI either holds no issuer+acquirer pair for it or holds a failed one "
+            "(non-00 codes) -- the transaction was reversed in CBS (the manual "
+            "sheet's 'rev' check). The CBS presence row points at the original leg, "
+            "not the reversal."
+        ),
+    )
+    is_on_us = models.BooleanField(
+        default=False,
+        help_text=(
+            "Payer and payee both bank with SSK: NPCI holds an issuer (CREDIT) + "
+            "acquirer (DEBIT) pair for this RRN. CBS then legitimately holds a "
+            "CREDIT + DEBIT pair too -- not a reversal (added 2026-10-03)."
         ),
     )
     is_superseded = models.BooleanField(
@@ -205,6 +215,37 @@ class RegisterPresence(models.Model):
             "NPCI_RESPONSE_CODE_CELL. Blank for legs that carry no response code (CBS)."
         ),
     )
+    paired_transaction_record = models.ForeignKey(
+        TransactionFact,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="paired_register_presences",
+        help_text=(
+            "On-us only: the second row of this leg's pair (CBS DEBIT row / NPCI "
+            "issuer row), so both rows stay traceable. transaction_record holds the "
+            "CBS CREDIT / NPCI acquirer row."
+        ),
+    )
+    # Dispute overlay legs (DRC / TIMEOUT / ADJUSTMENT) only -- see
+    # reconciliation.presence.DEFAULT_OVERLAY_LEGS. Overlay presence rows
+    # exist only where the dispute file carries the RRN.
+    ssk_side = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text=(
+            "True when SSK is the side the SOP actions: DRC Remitter, Timeout "
+            "Beneficiary, Adjustment Remitter. False = the other bank's case."
+        ),
+    )
+    dispute_type = models.CharField(max_length=50, blank=True, help_text="Adjustment's Adjtype")
+    original_not_loaded = models.BooleanField(
+        default=False,
+        help_text=(
+            "Adjustment whose original transaction date (Txndate) has no loaded CBS "
+            "data -- attached to its Adjdate's group instead."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -248,6 +289,7 @@ class TransactionMatchGroupHistory(models.Model):
     status_match = models.BooleanField(null=True, blank=True)
     direction_match = models.BooleanField(null=True, blank=True)
     cbs_reversed = models.BooleanField(default=False)
+    is_on_us = models.BooleanField(default=False)
     is_superseded = models.BooleanField(default=False)
     superseded_at = models.DateTimeField(null=True, blank=True)
     error_code = models.CharField(max_length=50, blank=True)
@@ -283,6 +325,10 @@ class RegisterPresenceHistory(models.Model):
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     direction = models.CharField(max_length=10, blank=True)
     response_code = models.CharField(max_length=10, blank=True)
+    paired_transaction_record_id = models.BigIntegerField(null=True, blank=True)
+    ssk_side = models.BooleanField(null=True, blank=True)
+    dispute_type = models.CharField(max_length=50, blank=True)
+    original_not_loaded = models.BooleanField(default=False)
     created_at = models.DateTimeField(help_text="Copied from the live row")
     updated_at = models.DateTimeField(help_text="Copied from the live row")
 
