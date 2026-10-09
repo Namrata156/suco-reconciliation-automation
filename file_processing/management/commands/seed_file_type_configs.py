@@ -85,6 +85,16 @@ _HT_FT_ARTIFACT_PATTERNS = [r"^HT\b", r"^FT\b"]
 
 _CYCLES_1_TO_10 = [f"{n}C" for n in range(1, 11)]
 
+# DRC and Timeout (identical layout): col 9 "Remitter", col 10 "Beneficiary"
+# -- same cells reconciliation.presence reads for ssk_side. See
+# file_processing.tasks._direction_from_ssk_party. Since 2026-10-08.
+DISPUTE_SSK_PARTY_RULE = "ssk_party:remitter_col=9,beneficiary_col=10,bank_code=SSK"
+# Adjustment: col 5 "Remitter", col 6 "Beneficiery" (NPCI's spelling), with
+# the side -> direction mapping mirrored (see the ADJUSTMENT entry below).
+ADJUSTMENT_SSK_PARTY_RULE = (
+    "ssk_party:remitter_col=5,beneficiary_col=6,bank_code=SSK,remitter=CREDIT,beneficiary=DEBIT"
+)
+
 _CONFIGS = [
     dict(
         file_type_code="CBS_GL_EXTRACT",
@@ -264,11 +274,21 @@ _CONFIGS = [
         # *status* itself (determined by comparing against CBS) is
         # exception-classification logic, not a direction rule -- not
         # implemented here; see doubts.md.
+        # SUPERSEDED 2026-10-08 (project owner approval, "option 1", relayed
+        # to backend-engineer in the task brief that day): the constant DEBIT
+        # rule above is replaced by a per-row `ssk_party:` rule. Why: the DRC
+        # file lists both sides' cases, not only SSK-as-payer -- real data has
+        # Remitter (col 9) != SSK on 8 of 273 rows (14 Jul), 6 of 44 (25 Sep),
+        # 6 of 11 (26 Sep); on those rows SSK is the Beneficiary, so a
+        # constant DEBIT mislabelled them. Now: Remitter == SSK -> DEBIT,
+        # else Beneficiary (col 10) == SSK -> CREDIT, else UNKNOWN (logged
+        # as DIRECTION_UNRESOLVED). Existing DB rows changed by data
+        # migration file_processing 0007 (this command is create-only).
         column_mapping={"rrn": 7, "date": 3, "amount": 13},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("1"),
-        direction_derivation_rule="constant:DEBIT",
+        direction_derivation_rule=DISPUTE_SSK_PARTY_RULE,
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=[],
         date_validation_mode="EXACT_MATCH",
@@ -290,11 +310,19 @@ _CONFIGS = [
         # the credit actually reached the customer is a separate
         # verification/exception-classification check, not implemented
         # here; see doubts.md.
+        # SUPERSEDED 2026-10-08 (project owner approval, "option 1", relayed
+        # to backend-engineer in the task brief that day): the constant
+        # CREDIT rule above is replaced by the same per-row `ssk_party:` rule
+        # as DRC. Why: the Timeout file lists both sides' cases -- real data
+        # has SSK as Remitter (col 9), not Beneficiary (col 10), on 10 of 30
+        # rows (14 Jul) and all 6 rows on each of 25 and 26 Sep, so a
+        # constant CREDIT mislabelled them. Existing DB rows changed by data
+        # migration file_processing 0007 (this command is create-only).
         column_mapping={"rrn": 7, "date": 3, "amount": 13},
         required_columns=["rrn"],
         amount_source_fields=["amount"],
         amount_scale_factor=Decimal("1"),
-        direction_derivation_rule="constant:CREDIT",
+        direction_derivation_rule=DISPUTE_SSK_PARTY_RULE,
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=[],
         date_validation_mode="EXACT_MATCH",
@@ -319,10 +347,23 @@ _CONFIGS = [
         # confirmation quoting the SOP): "in this report all the returns
         # and adjustment records will be there[,] hence by default we
         # need to give credit to the customer" -- constant CREDIT.
+        # SUPERSEDED 2026-10-08 (project owner approval in chat after seeing
+        # the data, relayed to backend-engineer by the coordinator that day):
+        # the constant CREDIT rule above is replaced by a per-row `ssk_party:`
+        # rule MIRRORED from DRC/Timeout's. An adjustment moves money back to
+        # the payer, so Remitter (col 5) == SSK -> CREDIT (SSK's customer
+        # refunded/credited); else Beneficiery (col 6, NPCI's spelling) ==
+        # SSK -> DEBIT (money taken back from SSK's payee); else UNKNOWN. Why:
+        # the constant mislabelled the Beneficiery=SSK rows -- 7 of 255
+        # (14 Jul), 4 of 92 (25 Sep), 9 of 75 (26 Sep), all "Debit/Refund
+        # Reversal Confirmation" or "RET". Confirmation types get a direction
+        # by side like any other Adjtype; the rule engine handles them by
+        # type. Existing DB rows changed by data migration file_processing
+        # 0008 (this command is create-only).
         column_mapping={"rrn": 10, "date": 3, "amount": 17, "txn_amount": 16, "txn_date": 8},
         required_columns=["rrn", "date"],
         amount_source_fields=["amount"],
-        direction_derivation_rule="constant:CREDIT",
+        direction_derivation_rule=ADJUSTMENT_SSK_PARTY_RULE,
         amount_scale_factor=Decimal("1"),
         rrn_expected_digit_length=12,
         pagination_artifact_patterns=[],

@@ -532,6 +532,30 @@ class BuildPresenceMatrixUnitTests(TestCase):
         )
         self.assertEqual(RegisterPresence.objects.filter(match_group__payment_module=payment_module).count(), 2)
 
+    def test_rerun_refreshes_updated_at_on_upserted_rows(self):
+        from datetime import datetime, timezone as dt_timezone
+
+        payment_module = _payment_module()
+        cbs_file = self._uploaded_file(payment_module, RegisterType.CBS_GL_EXTRACT, "cbs")
+        npci_file = self._uploaded_file(payment_module, RegisterType.RAW_DATA, "npci")
+        self._record(payment_module, cbs_file, RegisterType.CBS_GL_EXTRACT, "100000000016", "3.00")
+        self._record(
+            payment_module, npci_file, RegisterType.RAW_DATA, "100000000016", "3.00", direction=Direction.CREDIT
+        )
+        build_presence_matrix(payment_module, BUSINESS_DATE)
+
+        stale = datetime(2026, 1, 1, tzinfo=dt_timezone.utc)
+        TransactionMatchGroup.objects.filter(payment_module=payment_module).update(updated_at=stale)
+        RegisterPresence.objects.filter(match_group__payment_module=payment_module).update(updated_at=stale)
+
+        build_presence_matrix(payment_module, BUSINESS_DATE)
+
+        group = TransactionMatchGroup.objects.get(payment_module=payment_module)
+        self.assertGreater(group.updated_at, stale)
+        self.assertFalse(
+            RegisterPresence.objects.filter(match_group=group, updated_at__lte=stale).exists()
+        )
+
     def test_settlement_cycle_derived_from_present_leg_not_matching_key(self):
         from core.models import SettlementCycle
 

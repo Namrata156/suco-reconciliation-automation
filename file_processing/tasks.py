@@ -582,10 +582,10 @@ def _extract_generic_rrn(raw_value: Any, expected_digits: int) -> tuple[str | No
     the `remarks_prefix` direction_derivation_rule mechanism): the RRN is
     read directly from `column_mapping["rrn"]`'s position -- no
     regex/description parsing needed, unlike CBS's remarks field. Used by
-    the `constant:` direction path -- every one of the six in-scope
-    non-CBS file types now sets `constant:` (Raw Data ACQ/ISS, Merchant
-    Raw Data ACQ/ISS, Merchant Raw Data BBP resolved 2026-09-12; DRC,
-    Timeout, Adjustment resolved 2026-09-16, see doubts.md) -- and, if a
+    the `constant:` direction path (Raw Data ACQ/ISS, Merchant Raw Data
+    ACQ/ISS, Merchant Raw Data BBP resolved 2026-09-12, see doubts.md), the
+    `ssk_party:` path (DRC, Timeout and Adjustment -- `constant:` from
+    2026-09-16 until superseded 2026-10-08) -- and, if a
     future file type is added with no `direction_derivation_rule` set at
     all, the generic fallback path that leaves direction at
     Direction.UNKNOWN."""
@@ -594,6 +594,74 @@ def _extract_generic_rrn(raw_value: Any, expected_digits: int) -> tuple[str | No
     cleaned = _LEADING_APOSTROPHE_RE.sub("", str(raw_value)).strip()
     rrn_valid = bool(re.fullmatch(rf"\d{{{expected_digits}}}", cleaned))
     return cleaned, rrn_valid
+
+
+# `ssk_party:` direction rule -- per-row direction from which party column
+# names this bank (added 2026-10-08 for DRC and Timeout, whose files carry
+# rows from both sides; extended the same day to Adjustment with the
+# mapping mirrored; see seed_file_type_configs.py). Format:
+#   ssk_party:remitter_col=<n>,beneficiary_col=<n>,bank_code=<code>
+#             [,remitter=<DEBIT|CREDIT>,beneficiary=<DEBIT|CREDIT>]
+# (1-based column keys, same as FileTypeConfig.column_mapping). Per row:
+# remitter cell == bank_code -> the `remitter` direction; else beneficiary
+# cell == bank_code -> the `beneficiary` direction; else UNKNOWN, logged as
+# a DIRECTION_UNRESOLVED warning. Defaults remitter=DEBIT (this bank's
+# customer paid), beneficiary=CREDIT (this bank's customer received) -- the
+# DRC/Timeout mapping, so their rule strings carry no mapping keys.
+# Adjustment sets remitter=CREDIT,beneficiary=DEBIT: an adjustment moves
+# money back to the payer, away from the payee.
+SSK_PARTY_RULE_PREFIX = "ssk_party:"
+_SSK_PARTY_REQUIRED_KEYS = ("remitter_col", "beneficiary_col", "bank_code")
+_SSK_PARTY_MAPPING_DEFAULTS = {"remitter": Direction.DEBIT, "beneficiary": Direction.CREDIT}
+_SSK_PARTY_MAPPING_VALUES = (Direction.DEBIT, Direction.CREDIT)
+
+
+def _parse_ssk_party_rule(rule: str) -> dict[str, str]:
+    """Parses an `ssk_party:` rule into {remitter_col, beneficiary_col,
+    bank_code, remitter, beneficiary} (the last two defaulted). A malformed
+    rule is a configuration error and raises ValueError rather than
+    silently loading every row as UNKNOWN."""
+    if not rule.startswith(SSK_PARTY_RULE_PREFIX):
+        raise ValueError(f"Not an ssk_party rule: {rule!r}")
+    params: dict[str, str] = {}
+    for part in rule[len(SSK_PARTY_RULE_PREFIX):].split(","):
+        key, sep, value = part.partition("=")
+        if not sep or not key.strip() or not value.strip():
+            raise ValueError(f"Malformed ssk_party rule segment {part!r} in {rule!r}")
+        params[key.strip()] = value.strip()
+    allowed = (*_SSK_PARTY_REQUIRED_KEYS, *_SSK_PARTY_MAPPING_DEFAULTS)
+    missing = [k for k in _SSK_PARTY_REQUIRED_KEYS if k not in params]
+    unexpected = [k for k in params if k not in allowed]
+    if missing or unexpected:
+        raise ValueError(f"ssk_party rule {rule!r}: missing {missing}, unexpected {unexpected}")
+    for side, default in _SSK_PARTY_MAPPING_DEFAULTS.items():
+        params[side] = params.get(side, default).upper()
+        if params[side] not in _SSK_PARTY_MAPPING_VALUES:
+            raise ValueError(f"ssk_party rule {rule!r}: {side} must be DEBIT or CREDIT")
+    if params["remitter"] == params["beneficiary"]:
+        # Same direction for both sides is a constant: rule, not a party rule.
+        raise ValueError(f"ssk_party rule {rule!r}: remitter and beneficiary map to the same direction")
+    return params
+
+
+def _party_cell(value: Any) -> str:
+    """Party cell text with whitespace and the leading "force text"
+    apostrophe removed -- same cleaning as
+    reconciliation.presence._clean_cell, so ssk_side and direction agree on
+    what "SSK" means."""
+    return _LEADING_APOSTROPHE_RE.sub("", str(value or "").strip()).strip()
+
+
+def _direction_from_ssk_party(cells: dict[str, Any], params: dict[str, str]) -> str:
+    """DEBIT / CREDIT / UNKNOWN for one row under a parsed `ssk_party:`
+    rule. The remitter check runs first, so an on-us row (bank_code on both
+    sides) takes the remitter direction."""
+    bank_code = params["bank_code"]
+    if _party_cell(cells.get(params["remitter_col"])) == bank_code:
+        return params["remitter"]
+    if _party_cell(cells.get(params["beneficiary_col"])) == bank_code:
+        return params["beneficiary"]
+    return Direction.UNKNOWN
 
 
 @shared_task
@@ -620,6 +688,13 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
     normalized_rows = []
     valid_count = 0
     rejected_count = 0
+    direction_unresolved_count = 0
+    # Parsed once per file (raises on a malformed rule -- a config error).
+    ssk_party_params = (
+        _parse_ssk_party_rule(config.direction_derivation_rule)
+        if config.direction_derivation_rule.startswith(SSK_PARTY_RULE_PREFIX)
+        else None
+    )
 
     for staging_row in staged_rows.iterator(chunk_size=_STAGING_BATCH_SIZE):
         cells = staging_row.raw_cells
@@ -671,6 +746,31 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
                     cells.get(rrn_col), config.rrn_expected_digit_length
                 )
             direction = config.direction_derivation_rule.split(":", 1)[1].strip()
+        elif ssk_party_params is not None:
+            # Per-row direction from the remitter/beneficiary party columns
+            # (DRC, Timeout and -- mirrored -- Adjustment since 2026-10-08;
+            # see _direction_from_ssk_party
+            # and seed_file_type_configs.py for why the constant rule was
+            # superseded).
+            rrn_col = str(config.column_mapping.get("rrn", ""))
+            if rrn_col:
+                rrn, rrn_valid = _extract_generic_rrn(
+                    cells.get(rrn_col), config.rrn_expected_digit_length
+                )
+            direction = _direction_from_ssk_party(cells, ssk_party_params)
+            if direction == Direction.UNKNOWN:
+                direction_unresolved_count += 1
+                _record_exception(
+                    uploaded_file,
+                    "DIRECTION_UNRESOLVED",
+                    f"Neither Remitter (col {ssk_party_params['remitter_col']}="
+                    f"{_party_cell(cells.get(ssk_party_params['remitter_col']))!r}) nor Beneficiary "
+                    f"(col {ssk_party_params['beneficiary_col']}="
+                    f"{_party_cell(cells.get(ssk_party_params['beneficiary_col']))!r}) is "
+                    f"{ssk_party_params['bank_code']}; direction left UNKNOWN",
+                    severity=ValidationSeverity.WARNING,
+                    row_reference=row_ref,
+                )
         elif config.direction_derivation_rule.startswith("remarks_prefix"):
             remarks_val = cells.get(remarks_col)
             direction_hint, rrn, rrn_valid = _extract_cbs_rrn(
@@ -705,8 +805,9 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
             # `direction_derivation_rule` set at all -- every one of the
             # six in-scope non-CBS file types now sets `constant:` (Raw
             # Data ACQ/ISS, Merchant Raw Data ACQ/ISS, Merchant Raw Data
-            # BBP resolved 2026-09-12; DRC, Timeout, Adjustment resolved
-            # 2026-09-16, see doubts.md), so this branch is currently a
+            # BBP resolved 2026-09-12, see doubts.md) or `ssk_party:` (DRC,
+            # Timeout, Adjustment -- constant from 2026-09-16, per-row since
+            # 2026-10-08), so this branch is currently a
             # defensive fallback for a not-yet-configured file type, not a
             # live path.
             rrn_col = str(config.column_mapping.get("rrn", ""))
@@ -780,6 +881,8 @@ def normalize_rows(context: dict[str, Any]) -> dict[str, Any]:
         "uploaded_file_id": uploaded_file_id,
         "rows": normalized_rows,
         "halted": False,
+        # Rows an `ssk_party:` rule could not resolve (0 for other rules).
+        "direction_unresolved_count": direction_unresolved_count,
     }
 
 
@@ -819,7 +922,8 @@ def promote_to_fact(context: dict[str, Any]) -> dict[str, Any]:
 
     `direction` is carried over as whatever `normalize_rows` resolved: CBS's
     `remarks_prefix` rule, a whole-file `constant:DEBIT`/`constant:CREDIT`
-    rule, or `Direction.UNKNOWN` for any type with no
+    rule, a per-row `ssk_party:` rule (DRC/Timeout; UNKNOWN when neither
+    party is this bank), or `Direction.UNKNOWN` for any type with no
     `direction_derivation_rule` set at all.
 
     Uses `bulk_create(..., ignore_conflicts=True)` against

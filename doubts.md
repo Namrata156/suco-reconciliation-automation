@@ -315,6 +315,35 @@ corrections belong in reconciliation).
   entry reflects that real, second confirmation, not the earlier
   fabricated one. See `CHANGELOG.md`'s 2026-09-16 entries for the full
   incident record.
+  **Superseded 2026-10-08 (project owner): direction is now derived per
+  row, not per file.** Each file carries rows from both sides. Real data
+  (14 Jul / 25 Sep / 26 Sep):
+  - Timeout: 22 rows have Remitter = SSK.
+  - DRC: 20 rows have Remitter ≠ SSK.
+  - Adjustment: 20 of 424 rows have Beneficiery = SSK.
+
+  The constants above therefore mislabelled 62 rows. NPCI's own process
+  confirms the two-sided reading. For deemed-approved (RB) timeouts, the
+  beneficiary bank sends TCC/RET and the remitter bank must not reverse
+  its customer (NPCI UPI Circular 17, OC 93 FY19-20, OC 213 FY24-25).
+
+  New rule `ssk_party` (`file_processing/tasks.py`) reads the file's
+  Remitter/Beneficiary columns:
+  - **DRC / Timeout** (cols 9/10): Remitter = SSK → `DEBIT`;
+    Beneficiary = SSK → `CREDIT`.
+  - **Adjustment** (cols 5/6, mirrored): Remitter = SSK → `CREDIT`
+    (money comes back to the payer); Beneficiery = SSK → `DEBIT`.
+    Confirmation types (Debit/Refund Reversal Confirmation, TCC) also get
+    a direction by side. The rule engine excludes them by type (R07a).
+  - Neither side SSK → `UNKNOWN` (0 rows in real data).
+
+  The SOP quotes above remain true for SSK's *own* side of each file.
+  They just don't cover the other bank's rows. Migrations
+  `file_processing` 0007 (DRC/Timeout) and 0008 (Adjustment). Existing
+  rows were corrected by `recompute_ssk_party_directions`. Caveat for the
+  rule engine: `ssk_side = False` on an overlay means "SSK is the other
+  party", not "SSK not involved". See `CHANGELOG.md` 2026-10-08 and
+  `tracker.md` Open Questions.
 - **Transaction Processing Engine — register model (2-way now, extensible).**
   The spec (`docs/reconciliation_automation.docx`) describes a 3-way/4-way
   model (CBS + Bank Switch + NPCI, optionally + GL/destination-bank

@@ -576,6 +576,11 @@ def build_presence_matrix(
                 "is_superseded",
                 "superseded_at",
                 "processing_status",
+                # auto_now is only applied to the INSERT values; without this
+                # an upserted row kept its first-build updated_at forever
+                # (found 2026-10-08: groups rebuilt 2026-10-04 still showed
+                # 2026-09-30..10-03).
+                "updated_at",
             ],
             batch_size=500,
         )
@@ -628,6 +633,7 @@ def build_presence_matrix(
                 "amount",
                 "direction",
                 "response_code",
+                "updated_at",  # see the TransactionMatchGroup upsert above
             ],
             batch_size=500,
         )

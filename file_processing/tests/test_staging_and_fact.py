@@ -22,6 +22,7 @@ through the fact's staging row (`TransactionFact.staging_row()`).
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -46,6 +47,10 @@ from file_processing.tasks import (
     normalize_rows,
     promote_to_fact,
     validate_structure_and_content,
+)
+from file_processing.management.commands.seed_file_type_configs import (
+    ADJUSTMENT_SSK_PARTY_RULE,
+    DISPUTE_SSK_PARTY_RULE,
 )
 from file_processing.tests.test_pagination_strip import CBS_ARTIFACT_PATTERNS
 from transactions.models import (
@@ -318,14 +323,16 @@ def _dispute_config(payment_module, *, file_type_code, register_type, direction_
 class DrcLoadTests(TestCase):
     """Named header row; RRN col 7 (leading apostrophe stripped at
     normalization, kept verbatim in staging), "TXN Date" col 3 (DD/MM/YYYY),
-    Amount col 13 (plain rupee decimal, not paise). Direction: confirmed by
-    project owner (2026-09-16, quoting the SOP) -- constant DEBIT."""
+    Amount col 13 (plain rupee decimal, not paise). Direction: constant DEBIT
+    from 2026-09-16, superseded 2026-10-08 (project owner approval) by the
+    per-row ssk_party rule -- Remitter (col 9) SSK -> DEBIT, Beneficiary
+    (col 10) SSK -> CREDIT."""
 
     def test_loads_all_data_rows_with_apostrophe_stripped_rrn(self):
         payment_module = _build_payment_module()
         config = _dispute_config(
             payment_module, file_type_code="DRC", register_type=RegisterType.DRC,
-            direction_rule="constant:DEBIT",
+            direction_rule=DISPUTE_SSK_PARTY_RULE,
         )
         sample = SAMPLE_ROOT / "Debit Reversal Confirmation Report__SSK_2026-07-14.csv"
         uploaded_file = _build_uploaded_file(payment_module, config, sample)
@@ -355,7 +362,11 @@ class DrcLoadTests(TestCase):
         self.assertTrue(first.rrn_valid)
         self.assertEqual(first.amount, Decimal("1.00"))
         self.assertEqual(first.direction, Direction.DEBIT)
-        self.assertTrue(all(r.direction == Direction.DEBIT for r in records))
+        # 265 rows with Remitter=SSK, 8 with Beneficiary=SSK, none unresolved.
+        self.assertEqual(
+            Counter(records.values_list("direction", flat=True)),
+            Counter({Direction.DEBIT: 265, Direction.CREDIT: 8}),
+        )
         # "TXN Date" resolves to 2026-07-14 for every row (confirmed constant),
         # matching the file-level business_date entered at upload.
         self.assertEqual(first.business_date, date(2026, 7, 14))
@@ -363,14 +374,15 @@ class DrcLoadTests(TestCase):
 
 
 class TimeoutLoadTests(TestCase):
-    """Identical column layout to DRC. Direction: confirmed by project
-    owner (2026-09-16, quoting the SOP) -- constant CREDIT."""
+    """Identical column layout to DRC. Direction: constant CREDIT from
+    2026-09-16, superseded 2026-10-08 (project owner approval) by the same
+    per-row ssk_party rule as DRC."""
 
     def test_loads_all_data_rows(self):
         payment_module = _build_payment_module()
         config = _dispute_config(
             payment_module, file_type_code="TIMEOUT", register_type=RegisterType.TIMEOUT,
-            direction_rule="constant:CREDIT",
+            direction_rule=DISPUTE_SSK_PARTY_RULE,
         )
         sample = SAMPLE_ROOT / "UPI Time Out Cases Report_SSK_2026-07-14.csv"
         uploaded_file = _build_uploaded_file(payment_module, config, sample)
@@ -384,7 +396,16 @@ class TimeoutLoadTests(TestCase):
         records = TransactionFact.objects.filter(uploaded_file=uploaded_file)
         self.assertEqual(records.count(), 30)
         self.assertTrue(all(r.source_register_type == RegisterType.TIMEOUT for r in records))
-        self.assertTrue(all(r.direction == Direction.CREDIT for r in records))
+        # 20 rows with Beneficiary=SSK, 10 with Remitter=SSK.
+        self.assertEqual(
+            Counter(records.values_list("direction", flat=True)),
+            Counter({Direction.CREDIT: 20, Direction.DEBIT: 10}),
+        )
+        self.assertFalse(
+            FileValidationException.objects.filter(
+                uploaded_file=uploaded_file, rule_code="DIRECTION_UNRESOLVED"
+            ).exists()
+        )
 
 
 class AdjustmentLoadTests(TestCase):
@@ -393,7 +414,9 @@ class AdjustmentLoadTests(TestCase):
     nominal upload-time business_date. Txndate (col 8) is not a canonical
     fact field; it is retained in the staging row's raw_cells. Amount: the
     fact's `amount` is Adjamount (col 17, resolved 2026-09-17). Direction:
-    constant CREDIT (project owner, 2026-09-16, quoting the SOP)."""
+    constant CREDIT (project owner, 2026-09-16, quoting the SOP) until
+    superseded 2026-10-08 by the mirrored per-row ssk_party rule --
+    Remitter (col 5) SSK -> CREDIT, Beneficiery (col 6) SSK -> DEBIT."""
 
     def _build_config(self, payment_module: PaymentModule, *, column_mapping) -> FileTypeConfig:
         return FileTypeConfig.objects.create(
@@ -407,7 +430,7 @@ class AdjustmentLoadTests(TestCase):
             required_columns=["rrn", "date"],
             amount_source_fields=["amount"],
             amount_scale_factor=Decimal("1"),
-            direction_derivation_rule="constant:CREDIT",
+            direction_derivation_rule=ADJUSTMENT_SSK_PARTY_RULE,
             rrn_expected_digit_length=12,
             pagination_artifact_patterns=[],
             date_validation_mode=DateValidationMode.EXACT_MATCH,
@@ -444,7 +467,12 @@ class AdjustmentLoadTests(TestCase):
         self.assertEqual(first.rrn, "619507519732")  # leading "'" stripped
         self.assertEqual(first.business_date, date(2026, 7, 14))  # row's own Adjdate
         self.assertEqual(first.direction, Direction.CREDIT)
-        self.assertTrue(all(r.direction == Direction.CREDIT for r in records))
+        # Mirrored rule: 250 rows Remitter=SSK -> CREDIT (incl. both 15 Jul
+        # rows), 7 Beneficiery=SSK -> DEBIT, none unresolved.
+        self.assertEqual(
+            Counter(records.values_list("direction", flat=True)),
+            Counter({Direction.CREDIT: 250, Direction.DEBIT: 7}),
+        )
         # Txndate (raw cell "8") is retained (now in staging), not dropped.
         self.assertEqual(first.staging_row().raw_cells["8"], "14-07-2026")
         # No txn_amount mapping in this config -> txn_amount not populated.

@@ -6,6 +6,68 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-08
+
+- **Changed: DRC / Timeout direction is now derived per row, not a
+  per-file constant** (project owner approved "option 1", 2026-10-08).
+  Both files carry rows from both sides, so the 2026-09-16
+  `constant:DEBIT` (DRC) / `constant:CREDIT` (Timeout) rules mislabelled
+  42 of 370 rows. New `direction_derivation_rule` kind
+  `ssk_party:remitter_col=9,beneficiary_col=10,bank_code=SSK` in
+  `normalize_rows` (`file_processing/tasks.py`): Remitter = SSK → DEBIT,
+  else Beneficiary = SSK → CREDIT, else UNKNOWN + `DIRECTION_UNRESOLVED`
+  warning. Seed updated; `file_processing/migrations/0007_drc_timeout_ssk_party_direction.py`
+  switches the live DRC/TIMEOUT config rows. Adjustment unchanged
+  (`constant:CREDIT`; 20 of 424 rows have Remitter ≠ SSK — left as an
+  owner decision).
+  Existing data fixed without re-ingest by new command
+  `recompute_ssk_party_directions` (`--dry-run`; reads source cells via
+  `TransactionFact.staging_row()`, history fallback): 42 rows updated,
+  0 UNKNOWN, idempotent. After: DRC 265 D/8 C, 38/6, 5/6; Timeout
+  20 C/10 D, 0/6 D, 0/6 D (14 Jul / 25 Sep / 26 Sep).
+  Presence matrix rebuilt for all 3 dates — bucket counts unchanged
+  (only overlay directions moved). Also fixed: the matrix upsert never
+  refreshed `updated_at`, so group timestamps looked stale; it is now
+  in both upsert field lists (`reconciliation/presence.py`). The
+  2026-10-03 timestamps did not mean the data was stale — the
+  on-us/reversal fields were already current.
+  New tests: `test_ssk_party_direction.py`,
+  `test_recompute_ssk_party_directions.py`; real-file assertions updated
+  in `test_staging_and_fact.py` and `test_presence.py`.
+  `python manage.py test`: **139 tests, OK** (PM re-ran on Postgres).
+
+- **Changed: Adjustment direction is now derived per row too, mirrored**
+  (project owner chose the "mirror rule by side" option, 2026-10-08).
+  The `ssk_party` rule now takes explicit side→direction mappings.
+  ADJUSTMENT uses
+  `ssk_party:remitter_col=5,beneficiary_col=6,bank_code=SSK,remitter=CREDIT,beneficiary=DEBIT`.
+  - Remitter = SSK → CREDIT, because in an adjustment the money comes
+    back to the payer.
+  - Beneficiery = SSK → DEBIT.
+  - Confirmation types get a direction by side, with no Adjtype
+    special-casing.
+  - DRC/TIMEOUT config strings are unchanged.
+
+  `file_processing/migrations/0008_adjustment_ssk_party_direction.py`
+  switches the live config. Existing rows were corrected by
+  `recompute_ssk_party_directions`: 20 rows CREDIT → DEBIT, and 0
+  UNKNOWN.
+
+  | Business date | DEBIT | CREDIT |
+  |---|---|---|
+  | 14 Jul | 7 | 248 |
+  | 15 Jul | 0 | 2 |
+  | 25 Sep | 4 | 88 |
+  | 26 Sep | 9 | 66 |
+
+  Presence matrix overlays were rebuilt. Adjustment overlays attach by
+  Txndate, which gives 7 / 8 / 5 DEBIT overlays on the three matrix
+  dates, all `ssk_side = False`. The backend-engineer subagent stalled
+  before reporting back, so PM verified migration, config, fact and
+  overlay counts directly in Postgres. `python manage.py test`: **146
+  tests, OK** (PM re-ran on Postgres). `doubts.md` direction entry
+  marked superseded.
+
 ## 2026-09-16
 
 - **Added: direction derivation for Raw Data, Merchant Raw Data, and
