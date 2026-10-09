@@ -1,0 +1,77 @@
+================================================================================
+ BANK HOLIDAYS - KARNATAKA (RBI BENGALURU REGIONAL OFFICE) - 2026
+ Working-day calendar for rule deadlines (T+1, T+n)
+================================================================================
+
+Source     : Reserve Bank of India, Holiday Matrix
+             https://www.rbi.org.in/Scripts/HolidayMatrixDisplay.aspx
+             Regional office = Bengaluru, Month = All, Year = 2026
+             "Holiday under Negotiable Instruments Act"
+Retrieved  : 2026-10-10 by PM (RBI page "last updated Oct 09, 2026")
+Decision   : project owner, 2026-10-10:
+             - Use Karnataka.
+             - Seed from RBI's published list.
+             - Ops confirms the list once a year and adds any bank-specific
+               or late-announced holiday. RBI sometimes adds holidays at
+               short notice.
+Status     : NOT YET CONFIRMED BY OPS.
+
+WORKING-DAY RULE (owner, 2026-10-10)
+------------------------------------
+A day is NOT a working day if it is:
+  - a Sunday,
+  - the 2nd or 4th Saturday of the month (RBI: "All scheduled and
+    non-scheduled banks will observe public holiday on second and fourth
+    Saturdays"), or
+  - a holiday in the list below.
+
+"T+n" = the n-th working day after the transaction / business date T. If
+T falls just before a non-working day, the deadline moves to the next
+actual working day.
+  Example: T = Fri 9 Oct 2026. Sat 10 Oct is a non-working day (2nd
+  Saturday, and also Mahalaya Amavasye) and Sun 11 Oct is Sunday, so
+  T+1 = Mon 12 Oct 2026.
+Calendar-day TATs (7 / 35 days) are NOT shifted. That is the reading in
+rule table v3.1, and it is still to be confirmed by the owner.
+
+NEGOTIABLE INSTRUMENTS ACT HOLIDAYS - BENGALURU 2026 (22 days)
+--------------------------------------------------------------
+  Date        Day  Holiday
+  2026-01-15  Thu  Uttarayana Punyakala / Makara Sankranti
+  2026-01-26  Mon  Republic Day
+  2026-03-19  Thu  Ugadi Festival
+  2026-03-21  Sat  Ramzan-Id (Id-Ul-Fitr)
+  2026-03-30  Mon  Mahavir Jayanti
+  2026-04-01  Wed  Banks' closing of yearly accounts
+  2026-04-03  Fri  Good Friday
+  2026-04-14  Tue  Dr. Babasaheb Ambedkar Jayanti
+  2026-04-20  Mon  Basava Jayanti / Akshaya Tritiya
+  2026-05-01  Fri  May Day (Labour Day)
+  2026-05-28  Thu  Bakri ID (Id-Uz-Zuha)
+  2026-06-26  Fri  Muharram
+  2026-08-15  Sat  Independence Day
+  2026-08-26  Wed  Id-E-Milad (Milad-un-Nabi)
+  2026-09-14  Mon  Ganesh Chaturthi / Varasiddhi Vinayaka Vrata
+  2026-10-02  Fri  Mahatma Gandhi Jayanti
+  2026-10-10  Sat  Mahalaya Amavasye (also 2nd Saturday)
+  2026-10-20  Tue  Mahanavami / Ayudhapooja
+  2026-10-21  Wed  Vijaya Dasami
+  2026-11-10  Tue  Deepavali (Bali Pratipada)
+  2026-11-27  Fri  Kanakadasa Jayanthi
+  2026-12-25  Fri  Christmas
+
+  RBI's matrix lists the combined names for several states on each date.
+  The names above are shortened to the Karnataka festival, and the dates
+  are exactly as RBI lists them for Bengaluru.
+
+NOTES
+-----
+  - 2027: RBI has not published it yet (its year list stops at 2026).
+    Deadlines that cross into 2027 can only skip Sundays and 2nd/4th
+    Saturdays until it is added. The system should warn about this rather
+    than silently assume.
+  - Earlier years: deadlines for older data (e.g. 2025 transactions in
+    late adjustments) need the 2025 list too. It is available from the
+    same RBI page with Year = 2025.
+  - Third-party sites gave conflicting dates (e.g. Ugadi 19 vs 20 Mar,
+    Mahavir Jayanti 30 vs 31 Mar). RBI's own page is the source used here.
