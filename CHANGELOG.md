@@ -6,6 +6,36 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-09
+
+- **Added: Business Rule Engine rule repository (Phase 2 Step 3).** New
+  `rule_engine` app. It stores the approved rule table v3.1
+  (`docs/phase2_rule_table_v3_approved.txt`) as data:
+  - **`RuleSet`.** Status is draft / active / retired, with one active
+    set per payment module (DB constraint). Active and retired sets can't
+    be edited or deleted, through any ORM path. A change means a new
+    version.
+  - **`Rule`.** 24 rules in evaluation order, each with:
+    - a JSON condition, checked against a 16-fact vocabulary when saved
+      (`rule_engine/conditions.py`)
+    - status category, priority and the maker-facing reason text
+    - deadline type: days (working or calendar), varies by Adjtype
+      (`RuleTat` rows), or next business date's load. R05 has a 16:00
+      cutoff, and R02/R05/R12 are flagged for RBI compensation.
+  - **`ResponseCode`.** 16 rows: DRC 102/103/104, TCC 102/103, RET 115 plus
+    7 RET reasons whose numbers are unknown, RRC 501, NPCI 00 and RB.
+  - **`AgeingBucket`.** 6 rows.
+
+  Seeding: migration `rule_engine` 0002 plus the `seed_rule_sets` command,
+  both reading `rule_engine/seed_data/v3_1.py` (idempotent). The admin is
+  read-only. `docs/phase2_rule_table_v3_1_reference.sql` is the
+  acceptance oracle for Step 4. The seeded conditions match it on all
+  233,081 groups, and the expected counts are kept in
+  `v3_1.EXPECTED_COUNTS`.
+
+  The evaluator and results table are not built yet (Step 4).
+  `python manage.py test`: **204 tests, OK** (PM re-ran on Postgres).
+
 ## 2026-10-08
 
 - **Changed: DRC / Timeout direction is now derived per row, not a

@@ -5,6 +5,8 @@ Phase 1 apps: `core` + `file_processing` + `transactions` (Database
 Design + File Processing Framework). `reconciliation` (Transaction
 Processing Engine, Phase 2, first slice: 2-way presence matching) added
 2026-09-14 -- see claude.md / TRACKER.md for the full phase plan.
+`rule_engine` (Business Rule Engine, Phase 2 Step 3: versioned rule
+repository, response codes, ageing buckets) added 2026-10-09.
 
 All environment-specific values (DB credentials, Celery/Redis URLs, secret
 key) are read from environment variables with local-dev-only fallbacks.
@@ -49,6 +51,7 @@ INSTALLED_APPS = [
     "file_processing",
     "transactions",
     "reconciliation",
+    "rule_engine",
 ]
 
 MIDDLEWARE = [
