@@ -170,6 +170,66 @@ that component's design starts.
   doesn't exist, invalid beneficiary details, credit freezed, beneficiary
   bank unable to credit, or "any other reason").
 
+## Ops reason-code note (printed sheet, shared 2026-10-07)
+
+Transcribed from `docs/reconciliation_note_photo.jpeg`, ops' printed
+cheat sheet. "Eff" / "rev" are the manual sheet's lookup columns: a number
+means the RRN was found (in CBS / in the reversal sheet), `#N/A` means not
+found.
+
+**DRC report**
+
+| Eff | rev | Flag | Code | Reason |
+|---|---|---|---|---|
+| found | found | DRC | 102 | Online reverse |
+| found | #N/A | DRC | 103 | Manually credited |
+| #N/A | #N/A | DRC | 104 | Not effected to CBS |
+
+**Adjustment report** (SSK side), with turnaround time (TAT):
+- Credit Adjustment (SSK): T+1
+- Online Refund (SSK): T+1
+- RET (SSK): same-date return, mark the colour; T+1
+- Wrong chargeback raise and representment: 35 TAT
+- Fraud chargeback raise and representment: 35 TAT
+- Deferred chargeback raise and representment: T+1
+- Chargeback raise: 7 TAT
+- Reply flag **RRC**, code **501**, reason "manually credited"
+
+**Timeout (TMT) report**
+
+| Eff | rev | Flag | Code | Reason |
+|---|---|---|---|---|
+| found | #N/A | TCC | 102 | Online credited |
+| found | found | TCC | 102 | Online credited (check before) |
+| #N/A | #N/A | RET | 115 | Account doesn't exist |
+
+**Handwritten at the bottom:** "TD 2%", "BD 8%". The meaning isn't confirmed
+yet; possibly NPCI's limits for technical / business decline rates (see
+`docs/phase2_rule_table_draft_v2.txt`, Q6).
+
+## Regulatory deadlines (NPCI / RBI, researched 2026-10-08/09)
+
+These are not in the bank's SOP. They come from public circulars and were
+adopted in rule table v3 (`docs/phase2_rule_table_v3_approved.txt`).
+
+- **RB = "deemed approved".**
+  - When the beneficiary bank times out, NPCI settles the credit anyway.
+  - The remitter must NOT reverse its customer for RB.
+  - The beneficiary bank must confirm by T+1 with TCC 102/103, or return
+    the money with RET.
+  - Sources: NPCI UPI Circular 17 (2017), OC 79 FY16-17.
+- **RET deadline:** by 4 pm. Otherwise NPCI debits the beneficiary bank.
+  Source: NPCI OC 93 FY19-20.
+- **Failed UPI transfers** (RBI/2019-20/67, 20 Sep 2019):
+  - Customer debited, beneficiary not credited: the beneficiary bank
+    reverses by T+1, with ₹100 per day compensation after that (row 4a).
+  - Merchant payments: T+5 (row 4b).
+- **Customer chargeback window:** 45 days. Source: NPCI OC 198 FY23-24.
+- **Chargebacks are decided automatically** from the beneficiary bank's
+  TCC/RET (since February 2025). Source: NPCI OC 213 FY24-25.
+- **Re-presentment deadline:** not public (it's in member-only circulars).
+  It is set to 35 days, from ops' note, and is unverified.
+
 ## Chargebacks
 
 - **Raising a chargeback (outward)**: search the transaction, choose

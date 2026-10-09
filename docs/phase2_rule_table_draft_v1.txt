@@ -1,0 +1,320 @@
+================================================================================
+ UPI RECONCILIATION - BUSINESS RULE TABLE
+ DRAFT v1 - AWAITING PROJECT OWNER APPROVAL
+================================================================================
+
+Date drafted   : 2026-10-05
+Phase / step   : Phase 2 (Business Rule Engine), Step 3
+Data used      : the 3 business dates loaded so far
+                 - 14 July 2026      (sample_decrypted_files/14072026/)
+                 - 25 September 2026 (sample_decrypted_files/25092026/)
+                 - 26 September 2026 (sample_decrypted_files/26092026/)
+Status         : NOT APPROVED. No rule code has been written. Every rule
+                 below needs the project owner's OK or correction first.
+
+HOW TO READ THIS
+----------------
+- Each transaction (one RRN on one business date) is checked against the
+  rules from top to bottom. The FIRST rule that fits wins.
+- "Status" uses the spec's own categories (docs/reconciliation_automation.docx,
+  Business Rule Engine > Exception and Action Classification): Reconciled,
+  Exception, Pending Investigation, Reversal Required, Adjustment Required,
+  Manual Credit Required, Return Required, Chargeback Required,
+  No Financial Action Required.
+- "Source":
+    SOP      = taken from the bank's SOP (docs/sop_reference.md)
+    Spec     = taken from the requirements document's pattern table
+    PROPOSED = my suggestion; needs the project owner's decision
+- "Counts" = how many transactions fall into the rule on
+  14 Jul / 25 Sep / 26 Sep, from the real loaded data.
+- Every final action still goes through Maker-Checker (Phase 3). The rules
+  only RECOMMEND an action.
+
+GLOSSARY
+--------
+On-us            : payer and payee both bank with SSK. NPCI shows two rows
+                   (issuer + acquirer) and CBS shows a credit and a debit.
+                   This is normal, not a reversal.
+Reversed         : CBS debited the customer and then credited the same amount
+                   back (same RRN), and NPCI does not show a successful on-us
+                   pair. (Matches ops' "rev" check in the manual sheet.)
+SSK side         : the side of a dispute the SOP says SSK must act on -
+                   DRC: Remitter = SSK; Timeout: Beneficiary = SSK;
+                   Adjustment: Remitter = SSK.
+Declined code    : NPCI response code other than "00" on a transaction that
+                   never reached CBS (e.g. Z9, XB, 01, ZM). No money moved.
+Original not     : an Adjustment whose original transaction date (Txndate)
+loaded             has not been loaded into the system yet.
+
+================================================================================
+ THE RULES (checked in this order)
+================================================================================
+
+R01  DRC - debited and already reversed
+     When     : DRC row (SSK = Remitter); transaction IS in CBS and IS reversed
+     Status   : No Financial Action Required
+     Action   : Update the DRC in the NPCI portal
+     Priority : Low
+     Code     : 102 (customer account reversed online)
+     Counts   : 143 / 32 / 4
+     Source   : SOP
+
+R02  DRC - debited but NOT reversed
+     When     : DRC row (SSK = Remitter); transaction IS in CBS, NOT reversed
+     Status   : Reversal Required
+     Action   : Reverse the customer manually, then update the DRC
+     Priority : HIGH
+     Code     : 103 (reversed manually post reconciliation)
+     Counts   : 6 / 0 / 0
+     Source   : SOP
+
+R03  DRC - never reached CBS
+     When     : DRC row (SSK = Remitter); transaction NOT in CBS
+     Status   : No Financial Action Required (customer was never debited)
+     Action   : Update the DRC in the NPCI portal
+     Priority : Medium
+     Code     : 104 (not effected to CBS / online response failed)
+     Counts   : 116 / 6 / 1
+     Source   : SOP
+
+R04  Timeout - credited in CBS
+     When     : Timeout row (SSK = Beneficiary); transaction IS in CBS
+     Status   : No Financial Action Required
+     Action   : Update TCC in the NPCI portal
+     Priority : Low
+     Code     : TCC 102 (already credited online)
+     Counts   : 2 / 0 / 0
+     Source   : SOP
+
+R05  Timeout - NOT credited in CBS
+     When     : Timeout row (SSK = Beneficiary); transaction NOT in CBS
+     Status   : Manual Credit Required  (or Return Required - see Question 1)
+     Action   : Credit the customer manually, then TCC 103;
+                OR return to the remitter with RET + reason
+     Priority : HIGH
+     Code     : TCC 103 / RET
+     Counts   : 18 / 0 / 0
+     Source   : SOP - default action to be decided (Question 1)
+
+R06  Adjustment - RET or Credit Adjustment
+     When     : Adjustment row, type "RET" or "Credit Adjustment", SSK = Remitter
+     Status   : Manual Credit Required
+     Action   : Credit the customer manually
+     Priority : HIGH
+     Code     : 501 (manually credited to customer post reconciliation)
+     Counts   : 8 / 19 / 7
+                (of which "original not loaded": 7 / 13 / 0)
+     Source   : SOP
+
+R07  Adjustment - any other type
+     When     : Adjustment row of any other type, SSK = Remitter
+     Status   : No Financial Action Required,
+                EXCEPT complaint / chargeback types -> Pending Investigation
+     Action   : None - information only (NPCI's record of an action already
+                taken); complaint / chargeback types go to manual review
+     Priority : Low (complaint / chargeback: Medium)
+     Code     : -
+     Counts   : 238 / 54 / 24
+                14 Jul: Debit Reversal Confirmation 168, Refund Reversal
+                        Confirmation 53, Online Refund 8, TCC 6,
+                        Complaint Raise 1, Re-presentment Raise 1,
+                        Fraud Chargeback Representment 1
+                25 Sep: Refund Reversal Confirmation 22, Debit Reversal
+                        Confirmation 16, Online Refund 9, TCC 6,
+                        Wrong Credit Chargeback Raise 1
+                26 Sep: Refund Reversal Confirmation 16, TCC 4,
+                        Online Refund 3, Response to Complaint 1
+     Source   : PROPOSED (Question 2)
+
+R08  Dispute that is the other bank's side only
+     When     : Only a dispute file carries the RRN, and SSK is not the side
+                that acts (not in CBS, not in NPCI)
+     Status   : No Financial Action Required
+     Action   : None - the other bank acts
+     Priority : Low
+     Code     : -
+     Counts   : 4 / 2 / 1
+     Source   : PROPOSED (Question 2)
+
+R09  Matched
+     When     : In CBS and NPCI, amounts and directions agree, NPCI code 00
+                (includes on-us payments where both sides match)
+     Status   : Reconciled
+     Action   : None
+     Priority : -
+     Code     : -
+     Counts   : 67,992 / 70,958 / 68,560
+                (of which on-us: 794 / 836 / 775)
+     Source   : Spec
+
+R10  Reversed in CBS but not in the DRC file
+     When     : CBS shows debit + reversal; no DRC row for the RRN
+     Status   : No Financial Action Required
+     Action   : None - customer was refunded online
+     Priority : Low
+     Code     : -
+     Counts   : 69 / 143 / 88
+     Source   : PROPOSED (Question 2)
+
+R11  In NPCI only - declined
+     When     : In NPCI, not in CBS; NPCI code is not 00 (Z9, XB, 01, ...)
+     Status   : No Financial Action Required
+     Action   : None - no money moved
+     Priority : -
+     Code     : -
+     Counts   : 8,749 / 7,861 / 7,367
+     Source   : PROPOSED (Question 2)
+
+R12  In NPCI only - successful
+     When     : In NPCI, not in CBS; NPCI code is 00
+     Status   : Adjustment Required
+     Action   : Pass an adjustment entry in CBS (money moved, customer
+                account not updated)
+     Priority : HIGH
+     Code     : -
+     Counts   : 1 / 11 / 0
+     Source   : Spec
+
+R13  In CBS only
+     When     : In CBS, not in NPCI
+     Status   : Reversal Required (spec)  -  or Pending Investigation
+                (my suggestion, see Question 3)
+     Action   : Reverse / refund the customer
+     Priority : HIGH
+     Code     : -
+     Counts   : 1 / 10 / 578
+     Source   : Spec - but see Question 3 (26 Sep spike unexplained)
+
+R14  On-us, one CBS side missing
+     When     : NPCI shows a successful on-us pair, CBS shows only one side
+     Status   : Exception
+     Action   : Manual investigation (one customer was not posted)
+     Priority : HIGH
+     Code     : -
+     Counts   : 0 / 0 / 0
+     Source   : PROPOSED
+
+R15  Amount mismatch
+     When     : In CBS and NPCI, amounts differ
+     Status   : Exception
+     Action   : Manual investigation
+     Priority : HIGH
+     Code     : -
+     Counts   : 0 / 0 / 0
+     Source   : Spec
+
+R16  Direction mismatch
+     When     : In CBS and NPCI, debit/credit sides do not pair as expected
+     Status   : Exception
+     Action   : Manual investigation
+     Priority : HIGH
+     Code     : -
+     Counts   : 0 / 0 / 0
+     Source   : PROPOSED
+
+R17  In both, but NPCI code is not 00
+     When     : In CBS and NPCI; NPCI response code is not 00 (e.g. RB)
+     Status   : Pending Investigation
+     Action   : Manual review
+     Priority : Medium
+     Code     : -
+     Counts   : 7 / 0 / 1   (all code RB)
+     Source   : Spec ("transaction contains an unmapped error code")
+
+R99  Anything else
+     When     : No rule above fits
+     Status   : Pending Investigation
+     Action   : Manual review
+     Priority : Medium
+     Code     : -
+     Counts   : 0 / 0 / 0
+     Source   : Spec
+
+================================================================================
+ SUMMARY - transactions per rule
+================================================================================
+
+  Rule  Short name                          14 Jul    25 Sep    26 Sep
+  ----  ---------------------------------  --------  --------  --------
+  R01   DRC, debited + reversed (102)           143        32         4
+  R02   DRC, debited, not reversed (103)          6         0         0
+  R03   DRC, never reached CBS (104)            116         6         1
+  R04   Timeout, credited (TCC 102)               2         0         0
+  R05   Timeout, not credited                    18         0         0
+  R06   Adjustment RET / Credit Adj (501)         8        19         7
+  R07   Adjustment, other types                 238        54        24
+  R08   Other bank's dispute only                 4         2         1
+  R09   Matched (incl. on-us)                67,992    70,958    68,560
+  R10   Reversed, not in DRC                     69       143        88
+  R11   NPCI only, declined                   8,749     7,861     7,367
+  R12   NPCI only, success (00)                   1        11         0
+  R13   CBS only                                  1        10       578
+  R14   On-us, one CBS side missing               0         0         0
+  R15   Amount mismatch                           0         0         0
+  R16   Direction mismatch                        0         0         0
+  R17   In both, NPCI code not 00                 7         0         1
+  R99   Anything else                             0         0         0
+  ----  ---------------------------------  --------  --------  --------
+        TOTAL transactions                   77,354    79,096    76,631
+
+  Check: for 14 Jul, the DRC (R01-R03) and Timeout (R04-R05) results agree
+  RRN-by-RRN with ops' manual_reconciliation_sheet.xlsx (drc: 265 of 265,
+  tmt: 20 of 20).
+
+================================================================================
+ DECISIONS NEEDED FROM THE PROJECT OWNER
+================================================================================
+
+Q1. R05 - Timeout not credited in CBS (18 on 14 Jul).
+    What should the default action be?
+      (a) Credit the customer manually, then TCC 103
+      (b) Return to the remitter with RET + reason
+      (c) No default - ops chooses each time
+    Answer:
+
+Q2. R07, R08, R10, R11 - do you agree these need NO financial action?
+    Together about 9,000 transactions a day, mostly R11 (declined in NPCI,
+    never reached CBS).
+      R07 Adjustment, other types (complaint / chargeback types to review)
+      R08 Other bank's dispute only
+      R10 Reversed in CBS, not in DRC
+      R11 NPCI only, declined
+    Answer:
+
+Q3. R13 - In CBS only.
+    The spec says "reverse / refund the customer". But on 26 Sep there are
+    578 such transactions (1 on 14 Jul, 10 on 25 Sep), and the cause is not
+    yet explained. Telling ops to refund 578 customers on a guess is risky.
+    My suggestion: Pending Investigation until the 26 Sep spike is
+    explained. Which do you want?
+      (a) Reversal Required (as the spec says)
+      (b) Pending Investigation (my suggestion)
+    Answer:
+
+Q4. R17 - What does NPCI response code "RB" mean for your bank?
+    If it means "deemed approved", these transactions could be Reconciled
+    instead of Pending Investigation.
+    Answer:
+
+Q5. Priorities and deadlines (ageing).
+    (a) Are the High / Medium / Low priorities above correct?
+    (b) Do you have NPCI turnaround times (TAT) for DRC, TCC and RET
+        updates? The spec asks for an ageing requirement per rule. I have
+        left these blank rather than guess.
+    Answer:
+
+================================================================================
+ WHAT HAPPENS AFTER APPROVAL
+================================================================================
+
+Step 3  Build the rule table as data, not code: a versioned rule set that
+        the system reads (spec: Rule Repository, Rule Versioning). Changing
+        a rule later means a new version, not a code change. Also a
+        response-code table holding the codes named in the SOP.
+Step 4  Rule evaluator: applies the approved rules to every transaction of a
+        business date and records status, action, priority, reason, code
+        and the rule version used. One command runs a whole day.
+Step 5  Run it on the 3 loaded dates, check against ops' manual sheet,
+        update the tracker.
+
+================================================================================

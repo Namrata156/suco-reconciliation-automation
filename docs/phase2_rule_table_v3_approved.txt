@@ -1,0 +1,549 @@
+================================================================================
+ UPI RECONCILIATION - BUSINESS RULE TABLE
+ v3 - APPROVED 2026-10-09 (project owner)
+ v3.1 amendment - APPROVED 2026-10-09 (project owner): Q7 and Q8 decided,
+                  new rules R06b and R07x. See "v3.1 AMENDMENT" below.
+================================================================================
+
+v3.1 AMENDMENT (2026-10-09)
+---------------------------
+  - Q7 decided -> new rule R06b. A refund, RET or credit adjustment where
+    CBS already shows the money back is NEVER credited automatically. It
+    goes to maker-checker review with the reason shown.
+    Carry-forward: raise this again in Phase 3 (Maker-Checker design). The
+    question is whether the checker can approve "reply RRC 501 without
+    crediting" as a standard outcome.
+  - Q8 decided -> new rule R07x. Any chargeback-type adjustment older than
+    35 days, counted from the ORIGINAL transaction date (Txndate) to the
+    adjustment date, becomes Exception / HIGH and goes to the top of the
+    queue and the report.
+    For now "bring it to the user's notice" means the status, priority and
+    reason only. Real alerts (dashboard banner, email) come with Exception
+    Management (Phase 3) and the Front End (Phase 5).
+    The 35-day figure itself is still to be confirmed with ops.
+  - Counts: R06 16 / 28 / 10 -> 16 / 28 / 9;  R06b 0 / 0 / 1;
+            R07b 2 / 1 / 0  -> 1 / 1 / 0;   R07x 1 / 0 / 0.
+    Totals unchanged.
+
+Date approved  : 2026-10-09 (answers given 2026-10-08/09).
+                 v1 (2026-10-05) and v2 (2026-10-07) are kept as history.
+Phase / step   : Phase 2 (Business Rule Engine). Unblocks Step 3.
+Data used      : the 3 business dates loaded so far, after the 2026-10-08
+                 per-row direction fix and matrix rebuild:
+                 - 14 July 2026      (sample_decrypted_files/14072026/)
+                 - 25 September 2026 (sample_decrypted_files/25092026/)
+                 - 26 September 2026 (sample_decrypted_files/26092026/)
+Status         : APPROVED. No rule code has been written yet. Step 3 builds
+                 this table as data (a versioned rule set), not code.
+                 Q7 and Q8 were decided in v3.1. One check with ops is
+                 still pending (Q8's actual deadline). It doesn't block
+                 Step 3.
+
+WHAT CHANGED SINCE v2
+---------------------
+  - Q1-Q6 answered (see DECISIONS below). Q4 was answered 2026-10-08.
+  - R04c NEW: Timeout where SSK is the REMITTER -> no financial action.
+    Under NPCI's deemed-approved (RB) process, the remitter bank waits for
+    the beneficiary bank's TCC or RET. R04c is checked AFTER the Adjustment
+    rules, so a RET that comes back for such a transaction still reaches R06.
+  - R05: RET is pre-filled with code 115. The maker may change it.
+  - R13: Pending Investigation plus a next-day re-check (it was "Reversal
+    Required" in the spec).
+  - R17: its v2 transactions (7 / 0 / 1) are exactly the R04c cases. R17
+    now catches other non-00 codes only (0 / 0 / 0 today).
+  - Turnaround times (TAT) filled in from the NPCI/RBI circulars. A new
+    AGEING section is added.
+  - Counts recomputed after the 2026-10-08 direction fix. Every rule except
+    R04c and R17 has the same count as in v2.
+
+HOW TO READ THIS
+----------------
+- Each transaction (one RRN on one business date) is checked against the
+  rules from top to bottom. The FIRST rule that fits wins.
+- "Status" uses the spec's own categories (docs/reconciliation_automation.docx,
+  Business Rule Engine > Exception and Action Classification).
+- "Source": SOP = docs/sop_reference.md, Ops note =
+  docs/reconciliation_note_photo.jpeg, Spec = requirements doc,
+  NPCI / RBI = circulars listed under SOURCES, Owner = project owner's
+  decision.
+- "TAT" = turnaround time (deadline), counted from the business date.
+  "T+1" = next working day.
+- "Counts" = transactions per rule on 14 Jul / 25 Sep / 26 Sep.
+- Every final action still goes through Maker-Checker (Phase 3). The rules
+  only RECOMMEND an action.
+
+GLOSSARY
+--------
+On-us            : payer and payee both bank with SSK.
+Reversed         : CBS debited the customer and then credited the same amount
+                   back (same RRN). This matches ops' "rev" check.
+Eff / rev        : ops' manual-sheet columns. Eff = found in CBS. Rev = found
+                   in the reversal sheet.
+SSK side         : the party the SOP says SSK acts on:
+                     DRC        : Remitter = SSK
+                     Timeout    : Beneficiary = SSK
+                     Adjustment : Remitter = SSK
+                   In the system this is RegisterPresence.ssk_side.
+                   ssk_side = False means "SSK is the OTHER party". It does
+                   NOT mean "SSK not involved". Example: all 12 Timeout rows
+                   on 25/26 Sep have SSK as the remitter.
+Deemed approved  : NPCI response code RB. The beneficiary bank timed out and
+                   NPCI settled the credit anyway. The remitter must NOT
+                   reverse its customer. The beneficiary bank confirms with
+                   TCC or returns with RET.
+Declined code    : NPCI response code other than "00" on a transaction that
+                   never reached CBS (e.g. Z9, XB, 01, ZM). No money moved.
+
+================================================================================
+ THE RULES (checked in this order)
+================================================================================
+
+R01  DRC - debited and already reversed            (ops: Eff=yes, rev=yes)
+     When     : DRC row (SSK = Remitter); in CBS AND reversed
+     Status   : No Financial Action Required
+     Action   : Update the DRC in the NPCI portal
+     Priority : Low
+     Code     : 102 (online reverse)
+     TAT      : T+1
+     Counts   : 143 / 32 / 4
+     Source   : SOP + Ops note; TAT: NPCI Circular 17, Owner (Q5)
+
+R02  DRC - debited but NOT reversed                (ops: Eff=yes, rev=#N/A)
+     When     : DRC row (SSK = Remitter); in CBS, NOT reversed
+     Status   : Reversal Required
+     Action   : Reverse the customer manually, then update the DRC
+     Priority : HIGH
+     Code     : 103 (manually credited)
+     TAT      : T+1. RBI: Rs 100 per day compensation to the customer
+                after T+1.
+     Counts   : 6 / 0 / 0
+     Source   : SOP + Ops note; TAT: RBI/2019-20/67, Owner (Q5)
+
+R03  DRC - never reached CBS                       (ops: Eff=#N/A, rev=#N/A)
+     When     : DRC row (SSK = Remitter); NOT in CBS
+     Status   : No Financial Action Required (customer was never debited)
+     Action   : Update the DRC in the NPCI portal
+     Priority : Medium
+     Code     : 104 (not effected to CBS)
+     TAT      : T+1
+     Counts   : 116 / 6 / 1
+     Source   : SOP + Ops note; TAT: Owner (Q5)
+
+R04a Timeout - credited in CBS                     (ops: Eff=yes, rev=#N/A)
+     When     : Timeout row (SSK = Beneficiary); in CBS, NOT reversed
+     Status   : No Financial Action Required
+     Action   : Update TCC in the NPCI portal
+     Priority : Low
+     Code     : TCC 102 (online credited)
+     TAT      : T+1
+     Counts   : 2 / 0 / 0
+     Source   : SOP + Ops note; TAT: NPCI Circular 17
+
+R04b Timeout - credited in CBS AND reversed        (ops: Eff=yes, rev=yes)
+     When     : Timeout row (SSK = Beneficiary); in CBS AND reversed
+     Status   : Pending Investigation
+     Action   : Check the customer's account first, then update TCC 102
+     Priority : Medium
+     Code     : TCC 102 (after checking)
+     TAT      : T+1
+     Counts   : 0 / 0 / 0
+     Source   : Ops note
+
+R05  Timeout - NOT credited in CBS                 (ops: Eff=#N/A, rev=#N/A)
+     When     : Timeout row (SSK = Beneficiary); NOT in CBS
+     Status   : Return Required
+     Action   : Return to the remitter: RET with a reason. The system
+                pre-fills 115. The maker may choose another SOP reason
+                (account closed, NRI account, party instructions, invalid
+                beneficiary details, credit freezed, beneficiary bank
+                unable to credit, any other reason). The checker approves.
+     Priority : HIGH
+     Code     : RET 115 (account does not exist) - default, editable
+     TAT      : T+1, RET by 4 pm. Otherwise NPCI debits SSK. RBI: Rs 100
+                per day compensation after T+1.
+     Counts   : 18 / 0 / 0
+     Source   : Ops note, Owner (Q1); TAT: NPCI OC 93, RBI/2019-20/67
+
+R06b Adjustment - credit due, but CBS already shows the money back  NEW v3.1
+     When     : Adjustment row of type "Credit Adjustment", "Online Refund"
+                or "RET", SSK = Remitter, AND CBS already shows the
+                reversal for the RRN (debit + credit back)
+     Status   : Pending Investigation
+     Action   : Maker checks the customer's account. No automatic credit.
+                Reason shown to the maker: "RET/refund received, but CBS
+                already shows the reversal. Verify before crediting, or the
+                customer is paid twice."
+                The maker either credits and replies RRC 501, or replies
+                RRC 501 without crediting. The checker approves.
+     Priority : HIGH
+     Code     : RRC 501
+     TAT      : T+1
+     Counts   : 0 / 0 / 1
+                26 Sep: RRN 264950354228, Rs 200, a remitter-side Timeout
+                (RB). CBS shows "To UPI" Rs 200 and "By UPI" Rs 200 on the
+                same day, and the RET arrived the same day.
+     Phase 3  : Raise again in the Maker-Checker design. Can "reply without
+                crediting" become a standard, checker-approved outcome?
+     Source   : Owner (Q7)
+
+R06  Adjustment - Credit Adjustment, Online Refund or RET (SSK = Remitter)
+     When     : Adjustment row of type "Credit Adjustment", "Online Refund"
+                or "RET", SSK = Remitter (and not R06b)
+     Status   : Manual Credit Required
+     Action   : Credit the customer manually, then reply to NPCI with flag
+                RRC. For RET: return on the same date and mark the colour in
+                the working sheet.
+     Priority : HIGH
+     Code     : RRC 501 (manually credited)
+     TAT      : T+1
+     Counts   : 16 / 28 / 9   (v3: 16 / 28 / 10; one case moved to R06b)
+                (of which "original not loaded": 8 / 16 / 0)
+     Note     : A RET here can answer a remitter-side Timeout (code RB).
+                Example: 25 Sep RRN 762101454563, Rs 1,000. CBS shows the
+                payment and no money back, so a manual credit is correct.
+     Source   : SOP + Ops note
+
+R07a Adjustment - confirmation of an action already taken
+     When     : Adjustment row of type "Debit Reversal Confirmation",
+                "Refund Reversal Confirmation" or "TCC", SSK = Remitter
+     Status   : No Financial Action Required
+     Action   : None - this is NPCI's record of an action already taken
+     Priority : Low
+     Code     : -
+     TAT      : -
+     Counts   : 227 / 44 / 20
+     Source   : Owner (Q2)
+
+R07x Adjustment - chargeback older than 35 days                 NEW v3.1
+     When     : Adjustment row of a chargeback / representment type,
+                SSK = Remitter, AND (Adjdate - Txndate) > 35 days
+     Status   : Exception
+     Action   : Bring to the user's notice, at the top of the queue and in
+                the report. Reason shown: "Dispute is N days past the
+                original transaction (limit 35). Check whether the response
+                deadline has already passed."
+                Then handle as R07b (accept / represent / escalate).
+     Priority : HIGH
+     Code     : -
+     TAT      : T+1 (first review)
+     Counts   : 1 / 0 / 0
+                14 Jul: Re-presentment Raise, Rs 199, bank ARL,
+                Txndate 3 Jun -> 41 days.
+     Note     : The age is counted from the original transaction (Txndate),
+                not from the date the adjustment arrived. That way a stale
+                dispute can't look fresh. The 35-day limit is from ops'
+                note and is still to be confirmed with ops (Q8).
+     Alerting : For now this means status + priority + reason only. Real
+                notifications come with Phase 3 (Exception Management) and
+                Phase 5 (Front End).
+     Source   : Owner (Q8)
+
+R07b Adjustment - chargeback
+     When     : Adjustment row of a chargeback / representment type,
+                SSK = Remitter, 35 days old or less (otherwise R07x)
+     Status   : Chargeback Required
+     Action   : Raise or respond to the chargeback (accept or represent) in
+                the NPCI portal
+     Priority : HIGH
+     Code     : -
+     TAT      : by type -
+                  Wrong chargeback raise and representment   : 35 days (ops note)
+                  Fraud chargeback raise and representment   : 35 days (ops note)
+                  Deferred chargeback raise and representment: T+1     (ops note)
+                  Chargeback raise                           : 7 days  (ops note)
+                  Re-presentment Raise                       : 35 days (Owner, Q5c;
+                                       UNVERIFIED - no public NPCI figure,
+                                       confirm with ops, see Q8)
+                Customer's own window to raise a chargeback: 45 days
+                (NPCI OC 198 FY23-24).
+                Since 2025 NPCI decides chargebacks automatically from the
+                beneficiary bank's TCC/RET (NPCI OC 213 FY24-25).
+     Counts   : 1 / 1 / 0   (v3: 2 / 1 / 0; one case moved to R07x)
+                14 Jul: Fraud Chargeback Representment, 10 days
+                25 Sep: Wrong Credit Chargeback Raise, 13 days
+     Source   : Ops note, NPCI
+
+R07c Adjustment - complaint or any other type
+     When     : Adjustment row of a complaint type ("Complaint Raise",
+                "Response to Complaint") or any type not listed above,
+                SSK = Remitter
+     Status   : Pending Investigation
+     Action   : Manual review
+     Priority : Medium
+     Code     : -
+     TAT      : T+1 (first review)
+     Counts   : 1 / 0 / 1
+     Source   : Owner (Q2, Q5)
+
+R04c Timeout - SSK is the REMITTER                                     NEW
+     When     : Timeout row where SSK is the remitter (ssk_side = False),
+                and no earlier rule fits
+     Status   : No Financial Action Required
+     Action   : None. Do NOT reverse the customer (code RB = deemed
+                approved). Wait for the beneficiary bank's TCC or RET. A
+                RET arrives later in the Adjustment file -> R06.
+     Priority : Low
+     Code     : -
+     TAT      : -
+     Counts   : 7 / 0 / 1   (all NPCI code RB; these were R17 in v2)
+     Note     : Checked AFTER R06-R07c on purpose. Remitter-side timeouts
+                that already have a TCC (3 / 5 / 4) go to R07a. Those with
+                a RET (0 / 1 / 1) go to R06.
+     Source   : NPCI Circular 17, NPCI OC 213; Owner (Q2, Q4)
+
+R08  Dispute that is only the other bank's side
+     When     : Only a dispute file carries the RRN, SSK is not the side
+                that acts, and the RRN is in neither CBS nor NPCI
+     Status   : No Financial Action Required
+     Action   : None - the other bank acts
+     Priority : Low
+     Counts   : 4 / 2 / 1
+     Source   : Owner (Q2)
+
+R09  Matched
+     When     : In CBS and NPCI, amounts and directions agree, NPCI code 00
+                (includes on-us payments where both sides match)
+     Status   : Reconciled
+     Action   : None
+     Counts   : 67,992 / 70,958 / 68,560
+     Source   : Spec
+
+R10  Reversed in CBS but not in the DRC file
+     When     : CBS shows a debit and its reversal; no DRC row for the RRN
+     Status   : No Financial Action Required
+     Action   : None - the customer was refunded online
+     Priority : Low
+     Counts   : 69 / 143 / 88
+     Source   : Owner (Q2)
+
+R11  In NPCI only - declined
+     When     : In NPCI, not in CBS; NPCI code is not 00
+     Status   : No Financial Action Required
+     Action   : None - no money moved
+     Counts   : 8,749 / 7,861 / 7,367
+     Source   : Owner (Q2)
+
+R12  In NPCI only - successful
+     When     : In NPCI, not in CBS; NPCI code is 00
+     Status   : Adjustment Required
+     Action   : Pass an adjustment entry in CBS (money moved, but the
+                customer's account was not updated)
+     Priority : HIGH
+     TAT      : T+1. RBI: Rs 100 per day compensation after T+1 (UPI 4a);
+                T+5 for merchant payments (UPI 4b).
+     Counts   : 1 / 11 / 0
+     Source   : Spec; TAT: RBI/2019-20/67
+
+R13  In CBS only                                                  CHANGED
+     When     : In CBS, not in NPCI
+     Status   : Pending Investigation
+     Action   : Re-check against the NEXT business date's NPCI files once
+                they are loaded.
+                - Found there      -> treat as matched (late-cycle
+                                      transaction).
+                - Still missing    -> escalate to Reversal Required
+                                      (refund the customer), HIGH, T+1
+                                      from escalation.
+     Priority : Medium (until escalated)
+     TAT      : next business date's load
+     Counts   : 1 / 10 / 578
+     Evidence : On 26 Sep, all 62 CBS-only RRNs that carry a date code are
+                day 270 (27 Sep), and none are day 269 (26 Sep). Matched
+                transactions on 26 Sep are 4,042 day-269 RRNs. 27 Sep is not
+                loaded yet, and only 11 of the 584 appear in NPCI on another
+                loaded date. Both 25 and 26 Sep lack the Merchant Raw Data
+                ISS 2C file, but 25 Sep has only 10 CBS-only, so that file
+                is not the cause.
+     Build note: the next-day re-check needs cross-date matching, which is
+                not built yet (Phase 2 Step 4).
+     Source   : Owner (Q3)
+
+R14  On-us, one CBS side missing
+     When     : NPCI shows a successful on-us pair, CBS shows only one side
+     Status   : Exception
+     Action   : Manual investigation
+     Priority : HIGH
+     TAT      : T+1
+     Counts   : 0 / 0 / 0
+
+R15  Amount mismatch
+     When     : In CBS and NPCI, amounts differ
+     Status   : Exception
+     Action   : Manual investigation
+     Priority : HIGH
+     TAT      : T+1
+     Counts   : 0 / 0 / 0
+     Source   : Spec
+
+R16  Direction mismatch
+     When     : In CBS and NPCI, the debit/credit sides do not pair as
+                expected
+     Status   : Exception
+     Action   : Manual investigation
+     Priority : HIGH
+     TAT      : T+1
+     Counts   : 0 / 0 / 0
+
+R17  In both, but NPCI code is not 00                              CHANGED
+     When     : In CBS and NPCI; NPCI code is not 00, and no earlier rule
+                fits. RB (deemed approved) cases are caught earlier by
+                R04a / R04c / R06 / R07a.
+     Status   : Pending Investigation
+     Action   : Manual review
+     Priority : Medium
+     TAT      : T+1
+     Counts   : 0 / 0 / 0
+     Source   : Spec
+
+R99  Anything else
+     When     : No rule above fits
+     Status   : Pending Investigation
+     Action   : Manual review
+     Priority : Medium
+     TAT      : T+1
+     Counts   : 0 / 0 / 0
+     Source   : Spec
+
+================================================================================
+ SUMMARY - transactions per rule (recomputed 2026-10-09)
+================================================================================
+
+  Rule  Short name                          14 Jul    25 Sep    26 Sep
+  ----  ---------------------------------  --------  --------  --------
+  R01   DRC, debited + reversed (102)           143        32         4
+  R02   DRC, debited, not reversed (103)          6         0         0
+  R03   DRC, never reached CBS (104)            116         6         1
+  R04a  Timeout, credited (TCC 102)               2         0         0
+  R04b  Timeout, credited + reversed              0         0         0
+  R05   Timeout, not credited (RET 115)          18         0         0
+  R06b  Adj credit, CBS already reversed (3.1)    0         0         1
+  R06   Adjustment CA / Online Refund / RET      16        28         9
+  R07a  Adjustment, confirmations               227        44        20
+  R07x  Chargeback > 35 days old (3.1)            1         0         0
+  R07b  Adjustment, chargebacks                   1         1         0
+  R07c  Adjustment, complaints / other            1         0         1
+  R04c  Timeout, SSK is remitter (NEW)            7         0         1
+  R08   Other bank's dispute only                 4         2         1
+  R09   Matched (incl. on-us)                67,992    70,958    68,560
+  R10   Reversed, not in DRC                     69       143        88
+  R11   NPCI only, declined                   8,749     7,861     7,367
+  R12   NPCI only, success (00)                   1        11         0
+  R13   CBS only (pending next-day re-check)      1        10       578
+  R14   On-us, one CBS side missing               0         0         0
+  R15   Amount mismatch                           0         0         0
+  R16   Direction mismatch                        0         0         0
+  R17   In both, NPCI code not 00                 0         0         0
+  R99   Anything else                             0         0         0
+  ----  ---------------------------------  --------  --------  --------
+        TOTAL transactions                   77,354    79,096    76,631
+
+  Checks:
+  - The totals equal the non-superseded TransactionMatchGroup count per date.
+  - 14 Jul DRC (R01-R03) and Timeout (R04a/R04b/R05) results match ops'
+    manual_reconciliation_sheet.xlsx RRN-by-RRN (drc: 265 of 265, tmt: 20
+    of 20).
+  - Ops' "tmt" sheet holds exactly the 20 beneficiary = SSK rows. Ops
+    dropped the 10 remitter = SSK rows, which matches R04c (no action).
+  - Recomputed with a read-only SQL query against the rebuilt presence
+    matrix, first rule that fits wins, in the order above.
+
+================================================================================
+ AGEING (new - approved 2026-10-09)
+================================================================================
+
+  Due date = business date + TAT of the rule that fired.
+  Overdue  = today is later than the due date.
+  The work queue lists HIGH priority + overdue first.
+  RBI compensation (Rs 100 per day) applies after T+1 for unreversed
+  customer debits (R02, R05, R12).
+
+  Ageing report buckets (Phase 6), each boundary tied to a real deadline:
+
+    Bucket    Boundary reason
+    0-1 d     T+1  : DRC / TCC / RET / reversal (RBI, NPCI)
+    2-5 d     T+5  : merchant payment reversal (RBI, UPI 4b)
+    6-7 d     7 d  : chargeback raise (ops note)
+    8-35 d    35 d : chargeback representment (ops note)
+    36-45 d   45 d : customer chargeback window (NPCI OC 198)
+    45+ d            past every known deadline
+
+  Source: Owner (Q5c / ageing), 2026-10-09.
+
+================================================================================
+ DECISIONS (answers from the project owner)
+================================================================================
+
+Q1. R05 - which RET reason?
+    Answer (2026-10-08): The system pre-fills RET 115. The maker may choose
+    another SOP reason, and the checker approves. Ops' manual sheet has no
+    reason column, so the data could not settle this.
+
+Q2. R07a, R08, R10, R11 - no financial action?
+    Answer (2026-10-08): Agreed for all four. Also agreed for the new R04c
+    (Timeout where SSK is the remitter).
+
+Q3. R13 - CBS only.
+    Answer (2026-10-08): Pending Investigation, re-checked against the next
+    business date's NPCI files. Escalate to Reversal Required only if the
+    transaction is still missing. The evidence is under R13.
+
+Q4. What does NPCI response code RB mean?
+    Answer (2026-10-08): Deemed approved. The remitter must not reverse its
+    customer. The beneficiary bank confirms by T+1 with TCC 102/103 or
+    returns with RET (by 4 pm). See R04c and R17.
+
+Q5. Priorities and deadlines.
+    Answer (2026-10-09):
+    (a) The draft priorities are kept.
+    (b) DRC 102/103/104, TCC and RET all T+1 (RET by 4 pm), per NPCI
+        Circular 17 / OC 93 and RBI/2019-20/67.
+    (c) Re-presentment Raise = 35 days. This is unverified, because no
+        public NPCI source gives the figure. See Q8.
+
+Q6. "TD 2%" / "BD 8%" on ops' note.
+    Answer (2026-10-08): Not a reconciliation rule. Parked for Phase 6 as a
+    possible decline-rate monitoring report. Confirm the meaning, and which
+    NPCI codes count as technical vs business declines, with ops.
+
+Q7. R06 RET where CBS already shows the reversal.
+    Answer (2026-10-09, v3.1): No automatic credit. It goes to
+    maker-checker review (rule R06b) with the reason shown. Raise again in
+    the Phase 3 Maker-Checker design.
+
+Q8. Re-presentment Raise TAT.
+    Answer (2026-10-09, v3.1): Any chargeback-type adjustment more than 35
+    days after the original transaction is an Exception, HIGH, flagged to
+    the user (rule R07x). STILL TO CONFIRM WITH OPS: the actual response
+    deadline for a re-presentment, and whether it counts from the
+    transaction date or the re-presentment date. Doesn't block Step 3.
+
+================================================================================
+ SOURCES
+================================================================================
+  - RBI/2019-20/67, DPSS.CO.PD No.629/02.01.014/2019-20 (20 Sep 2019),
+    Harmonisation of TAT for failed transactions:
+      UPI 4a: beneficiary bank reverses by T+1; Rs 100 per day after.
+      UPI 4b: merchant payments T+5.
+  - NPCI UPI Circular 17 (2017), Debit Reversals and Deemed Approval:
+    RB / TCC / RET, T+1.
+  - NPCI IMPS/UPI OC 79 FY16-17: deemed approved process.
+  - NPCI IMPS/UPI OC 93 FY19-20: TAT harmonisation; RET by 4 pm.
+  - NPCI UPI OC 198 FY23-24 (21 Jun 2024): 45-day customer chargeback
+    window.
+  - NPCI UPI OC 213 FY24-25 (Feb 2025): chargebacks auto-accepted or
+    rejected from TCC/RET.
+  - Bank SOP (docs/sop_reference.md) and ops' printed note
+    (docs/reconciliation_note_photo.jpeg).
+
+================================================================================
+ NEXT (needs separate approval)
+================================================================================
+Step 3  Build this table as data: a versioned rule set plus a response-code
+        table (102, 103, 104, TCC 102/103, RET 115 + other RET reasons,
+        RRC 501, RB = deemed approved), with priority, TAT and due-date
+        fields.
+Step 4  Rule evaluator, including cross-date matching for R13's next-day
+        re-check.
+Step 5  Run it on the 3 loaded dates and check it against ops' manual sheet.
+        Loading 27 Sep files would confirm that the 26 Sep CBS-only set
+        clears.
