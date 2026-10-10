@@ -3,7 +3,39 @@
  v3 - APPROVED 2026-10-09 (project owner)
  v3.1 amendment - APPROVED 2026-10-09 (project owner): Q7 and Q8 decided,
                   new rules R06b and R07x. See "v3.1 AMENDMENT" below.
+ v3.2 amendment - APPROVED 2026-10-10 (project owner): R13 changed, no
+                  cross-day checks. See "v3.2 AMENDMENT" below.
 ================================================================================
+
+v3.2 AMENDMENT (2026-10-10)
+---------------------------
+  - Owner: "we only work on that particular day". Each business date is
+    reconciled ONLY against its own files. The system does no cross-day
+    check, in either direction. This REVERSES the Q3 answer (next-day
+    re-check) for R13.
+  - R13 (In CBS only) -> Pending Investigation, MEDIUM, due T+1 (working
+    days), on its own business date. A maker investigates (for example, by
+    checking the next day's NPCI file by hand) and decides, and a checker
+    approves. No refund is suggested automatically. This is the same "no
+    automatic money action" approach as R06b.
+  - Why not "Reversal Required": on 26 Sep most of the 578 CBS-only
+    payments are 27 Sep transactions (RRN day code 270) that NPCI records
+    the next day. An automatic refund would pay those customers twice.
+  - R12 (NPCI only, successful) is unchanged: Adjustment Required, HIGH,
+    T+1.
+  - Known effect (Phase 2 Step 5, 2026-10-10): a payment that NPCI
+    records on day D and CBS posts on D+1 shows up as R12 on D AND R13 on
+    D+1, two separate items. Examples: 11 pairs on 25/26 Sep, and RRN
+    656121043209 (Rs 900) on 14/15 Jul. Ops resolves these by hand. R13
+    is a review item, so no money moves without a maker decision.
+  - Superseded by this amendment: the Step 4 next-day re-check
+    (awaiting / matched next day / escalated) and the owner's two
+    2026-10-10 decisions about it (only 00/RB clears; escalation deadline
+    counts from the escalation date).
+  - Rule counts: unchanged (R13 matches the same groups: 1 / 10 / 578).
+  - Phase 3 item (owner, 2026-10-10): several Adjustment rows for one RRN
+    on one date. Only the first row is evaluated today (example:
+    187576707970, 14 Jul).
 
 v3.1 AMENDMENT (2026-10-09)
 ---------------------------
@@ -334,10 +366,14 @@ R12  In NPCI only - successful
      Counts   : 1 / 11 / 0
      Source   : Spec; TAT: RBI/2019-20/67
 
-R13  In CBS only                                                  CHANGED
+R13  In CBS only                                        CHANGED AGAIN v3.2
+     v3.2     : Pending Investigation, MEDIUM, T+1 (working days), on its
+                own day. A maker investigates and a checker approves. NO
+                cross-day re-check (see the v3.2 AMENDMENT). The text below
+                is the superseded v3 version, kept as history.
      When     : In CBS, not in NPCI
      Status   : Pending Investigation
-     Action   : Re-check against the NEXT business date's NPCI files once
+     Action   : (v3, superseded) Re-check against the NEXT business date's NPCI files once
                 they are loaded.
                 - Found there      -> treat as matched (late-cycle
                                       transaction).

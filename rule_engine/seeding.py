@@ -1,6 +1,6 @@
 """
-Loads a frozen rule-table version (rule_engine/seed_data/v3_1.py) into the
-DB through the live models, so every model check runs: condition
+Loads a frozen rule-table version (rule_engine/seed_data/v3_1.py, v3_2.py)
+into the DB through the live models, so every model check runs: condition
 validation, TAT consistency, and RuleSet.activate()'s structural checks.
 Used by `manage.py seed_rule_sets`. The data migration rule_engine/0002
 does the same inserts with historical models (see its docstring);
@@ -12,7 +12,10 @@ Idempotent and create-only:
   - the rule set: if the version already exists it is left alone (versions
     are immutable); differences from the seed data are reported. If the
     module already has a DIFFERENT active version, nothing is created (we
-    would otherwise retire someone's newer version).
+    would otherwise retire someone's newer version) -- unless the seed data
+    names that version as the one it replaces (`SUPERSEDES`, e.g. v3.2
+    replaces v3.1): then the new version is created and activate() retires
+    the old one in the same transaction.
   Everything runs in one transaction, so a failure leaves no half-built draft.
 """
 from __future__ import annotations
@@ -117,7 +120,7 @@ def seed_rule_table(data: ModuleType, created_by: str = "seed_rule_sets") -> See
         _check_existing_rule_set(existing, data, report)
         return report
     other_active = RuleSet.objects.filter(payment_module=module, status=RuleSetStatus.ACTIVE).first()
-    if other_active:
+    if other_active and other_active.version_label != getattr(data, "SUPERSEDES", None):
         report.warnings.append(
             f"{other_active} is already active; {data.VERSION_LABEL} not created (would retire it)"
         )

@@ -1,7 +1,8 @@
 """
 Runs the Business Rule Engine evaluator (Phase 2 Step 4) for one business
 date, or every date that has a current presence matrix (--all-loaded,
-oldest first). Idempotent: a re-run supersedes the date's current results
+oldest first). Each date is evaluated against its own files only (no
+cross-day checks, rule set v3.2). Idempotent: a re-run supersedes the date's current results
 (kept, not deleted) and recreates them.
 
     manage.py evaluate_rules --business-date 2026-09-25
@@ -48,10 +49,6 @@ class Command(BaseCommand):
                 )
             )
             self.stdout.write("  rules: " + ", ".join(f"{k} {v}" for k, v in s.rule_counts.items() if v))
-            if s.recheck_counts:
-                self.stdout.write(f"  next-day re-check on this date: {s.recheck_counts}")
-            if s.previous_date_recheck_counts:
-                self.stdout.write(f"  previous date's R13 re-checked against this date: {s.previous_date_recheck_counts}")
             for label, n in (
                 ("calendar_incomplete", s.calendar_incomplete_count),
                 ("no TAT for Adjtype", s.tat_unresolved_count),

@@ -6,7 +6,11 @@ Acceptance check for the rule evaluator (Phase 2 Step 4), read-only.
    swapped for a per-group one) in a READ ONLY transaction and compares its
    rule per match group with the current RuleResult of every group.
 2. Compares the current per-rule counts with
-   rule_engine.seed_data.v3_1.EXPECTED_COUNTS for the dates it covers.
+   rule_engine.seed_data.v3_2.EXPECTED_COUNTS (identical to v3.1's: v3.2
+   changes only R13's outcome, not which groups it matches) and reports
+   which rule set version the current results reference.
+The oracle SQL encodes v3.1's CASE order and conditions, which v3.2 keeps
+unchanged, so it remains the per-group oracle.
 
 The project's tests load only single-cycle samples, so the full-date counts
 can't be a unit test; this command is the acceptance check instead.
@@ -24,7 +28,7 @@ from django.db import connection, transaction
 
 from core.models import PaymentModule
 from rule_engine.models import RuleResult
-from rule_engine.seed_data import v3_1
+from rule_engine.seed_data import v3_2 as expected
 
 ORACLE = Path(settings.BASE_DIR) / "docs" / "phase2_rule_table_v3_1_reference.sql"
 _CASE_HEAD = "r as (select business_date, case"
@@ -66,6 +70,12 @@ class Command(BaseCommand):
                 "match_group_id", "business_date", "rule_code"
             )
         )
+        versions = Counter(
+            RuleResult.objects.filter(payment_module=module, is_superseded=False).values_list(
+                "rule_set__version_label", flat=True
+            )
+        )
+        self.stdout.write(f"Current results by rule set version: {dict(versions)}")
         failures = 0
         only_oracle = oracle.keys() - ours.keys()
         only_ours = ours.keys() - oracle.keys()
@@ -79,15 +89,15 @@ class Command(BaseCommand):
         failures += len(diff) + len(only_oracle) + len(only_ours)
 
         counts = Counter((d, code) for d, code in ours.values())
-        for i, d in enumerate(v3_1.EXPECTED_COUNT_DATES):
+        for i, d in enumerate(expected.EXPECTED_COUNT_DATES):
             got_total = sum(n for (dd, _), n in counts.items() if dd == d)
             bad = {
                 code: (want[i], counts.get((d, code), 0))
-                for code, want in v3_1.EXPECTED_COUNTS.items()
+                for code, want in expected.EXPECTED_COUNTS.items()
                 if counts.get((d, code), 0) != want[i]
             }
-            ok = not bad and got_total == v3_1.EXPECTED_TOTALS[i]
-            line = f"{d}: total {got_total} (expected {v3_1.EXPECTED_TOTALS[i]})" + (
+            ok = not bad and got_total == expected.EXPECTED_TOTALS[i]
+            line = f"{d}: total {got_total} (expected {expected.EXPECTED_TOTALS[i]})" + (
                 "  OK" if ok else f"  MISMATCH {bad}"
             )
             self.stdout.write(self.style.SUCCESS(line) if ok else self.style.ERROR(line))

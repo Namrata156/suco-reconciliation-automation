@@ -1,7 +1,7 @@
 """
 Rule evaluator (Phase 2 Step 4): fact extraction, condition semantics,
-first-match order, deadlines, supersede-on-rerun, the R13 next-day
-re-check / R12 mirror in both evaluation orders, read-time ageing, admin,
+first-match order, deadlines, supersede-on-rerun, single-day evaluation
+(rule set v3.2: R13 a T+1 review item, no cross-day check), read-time ageing, admin,
 command and Celery task.
 
 Match groups are built directly (presence rows + the facts they point at)
@@ -20,8 +20,9 @@ from io import StringIO
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from core.models import Direction, PaymentModule, RegisterType
@@ -38,14 +39,13 @@ from rule_engine.evaluator import (
 )
 from rule_engine.facts import extract_facts
 from rule_engine.management.commands.check_rule_evaluation import oracle_rules
-from rule_engine.models import RecheckState, RuleEvaluationRun, RuleResult
+from rule_engine.models import RuleEvaluationRun, RuleResult
 from rule_engine.tasks import evaluate_rules
 from transactions.models import TransactionFact
 from transactions.models.history import StagingAdjustmentHistory
 from transactions.models.staging import STAGING_MODEL_BY_REGISTER_TYPE, StagingAdjustment
 
 D = date(2026, 7, 14)  # Tuesday
-TODAY = date(2026, 10, 12)  # Monday, a working day
 AUTO = object()
 
 
@@ -96,7 +96,7 @@ class EvaluatorTestBase(TestCase):
 
     def npci_fact(self, rrn, d, code="00", register_type=RegisterType.RAW_DATA):
         """An NPCI-leg fact whose staging row carries the response code in
-        cell 5, where the presence engine and the re-check read it."""
+        cell 5, where the presence engine reads it."""
         f = self.file(register_type, d)
         self._row += 1
         staging = STAGING_MODEL_BY_REGISTER_TYPE[register_type].objects.create(
@@ -176,8 +176,8 @@ class EvaluatorTestBase(TestCase):
             match_group=g, leg="ADJUSTMENT", present=True, transaction_record=fact, ssk_side=ssk, dispute_type=type
         )
 
-    def evaluate(self, d=D, today=TODAY):
-        return evaluate_business_date(self.module, d, today=today)
+    def evaluate(self, d=D):
+        return evaluate_business_date(self.module, d)
 
     def result(self, rrn, d=D) -> RuleResult:
         return RuleResult.objects.get(rrn=rrn, business_date=d, is_superseded=False)
@@ -314,7 +314,7 @@ class FirstMatchTests(EvaluatorTestBase):
                 self.assertEqual(self.result(f"3000000000{suffix}").rule_code, expected)
         self.assertEqual(RuleResult.objects.filter(is_superseded=False).count(), len(self.CASES))
         results = RuleResult.objects.filter(is_superseded=False)
-        self.assertEqual({r.rule_set.version_label for r in results}, {"v3.1"})
+        self.assertEqual({r.rule_set.version_label for r in results}, {"v3.2"})
         self.assertTrue(all(r.facts and r.rule.code == r.rule_code for r in results))
 
     def test_first_match_helper_never_returns_none(self):
@@ -445,180 +445,78 @@ class SupersedeTests(EvaluatorTestBase):
 
 
 # ---------------------------------------------------------------------------
-class NextDayRecheckTests(EvaluatorTestBase):
-    D1 = D + timedelta(days=1)
+class SingleDayTests(EvaluatorTestBase):
+    """Rule set v3.2 (owner 2026-10-10, "we only work on that particular
+    day"): each business date is evaluated against its own files only. R13
+    is a T+1 review item; there is no cross-day check in either direction."""
 
-    def load_npci(self, d, status=ProcessingStatus.LOADED):
-        self.file(RegisterType.RAW_DATA, d, status=status)
+    def test_active_set_is_v3_2(self):
+        self.group("620000000001", cbs=True)
+        summary = self.evaluate()
+        self.assertEqual(summary.rule_set_version, "v3.2")
+        r = self.result("620000000001")
+        self.assertEqual((r.rule_set.version_label, r.rule.rule_set.version_label), ("v3.2", "v3.2"))
 
-    def test_next_day_not_loaded_awaits(self):
-        self.group("600000000001", cbs=True)
+    def test_r13_pending_investigation_medium_due_next_working_day(self):
+        for rrn, d, due in (
+            ("620000000002", date(2026, 7, 14), date(2026, 7, 15)),  # Tue -> Wed
+            ("620000000003", date(2026, 9, 25), date(2026, 9, 28)),  # Fri -> (4th Sat, Sun) Mon
+            ("620000000004", date(2026, 9, 26), date(2026, 9, 28)),  # Sat -> (Sun) Mon
+        ):
+            self.group(rrn, d=d, cbs=True)
+            self.evaluate(d)
+            r = self.result(rrn, d)
+            with self.subTest(d=d):
+                self.assertEqual(r.rule_code, "R13")
+                self.assertEqual((r.status_category, r.priority), ("PENDING_INVESTIGATION", "MEDIUM"))
+                self.assertEqual((r.tat_start_date, r.due_date, r.due_cutoff_time), (d, due, None))
+                self.assertEqual(r.tat_label, "T+1 working day")
+                self.assertFalse(r.rbi_compensation)
+                self.assertIsNone(r.response_code)
+                self.assertIn("In CBS only, not in this date's NPCI files", r.reason)
+                self.assertIn("No automatic refund", r.reason)
+
+    def test_r12_unchanged(self):
+        self.group("620000000005", npci=True)
         self.evaluate()
-        r = self.result("600000000001")
-        self.assertEqual((r.rule_code, r.recheck_state), ("R13", RecheckState.AWAITING_NEXT_DAY))
-        self.assertEqual((r.status_category, r.priority, r.due_date), ("PENDING_INVESTIGATION", "MEDIUM", None))
+        r = self.result("620000000005")
+        self.assertEqual(
+            (r.rule_code, r.status_category, r.priority, r.due_date, r.rbi_compensation),
+            ("R12", "ADJUSTMENT_REQUIRED", "HIGH", date(2026, 7, 15), True),
+        )
 
-    def test_only_adjustment_rows_or_unloaded_files_do_not_count_as_loaded(self):
-        # 14 Jul's real case: facts dated 15 Jul exist, but only Adjustment rows.
-        self.group("600000000002", cbs=True)
-        self.fact(RegisterType.ADJUSTMENT, "600000000099", self.D1)
-        self.load_npci(self.D1, status=ProcessingStatus.NORMALIZED)  # not LOADED yet
+    def _snapshot(self, rrn, d):
+        r = self.result(rrn, d)
+        return (r.rule_code, r.status_category, r.priority, r.due_date, r.reason, r.facts)
+
+    def test_next_days_npci_row_does_not_change_r13(self):
+        d1 = D + timedelta(days=1)
+        self.group("620000000006", cbs=True)
         self.evaluate()
-        self.assertEqual(self.result("600000000002").recheck_state, RecheckState.AWAITING_NEXT_DAY)
-
-    def test_next_day_loaded_and_missing_escalates(self):
-        self.group("600000000003", cbs=True)
-        self.load_npci(self.D1)
-        self.evaluate(today=date(2026, 10, 9))  # Fri -> T+1 = Mon 12 Oct
-        r = self.result("600000000003")
-        self.assertEqual(r.rule_code, "R13")
-        self.assertEqual(r.recheck_state, RecheckState.ESCALATED)
-        self.assertEqual((r.status_category, r.priority), ("REVERSAL_REQUIRED", "HIGH"))
-        self.assertEqual((r.escalated_on, r.due_date), (date(2026, 10, 9), date(2026, 10, 12)))
-        # A later re-run keeps the first escalation date: the deadline can't creep.
-        self.evaluate(today=date(2026, 10, 22))
-        r = self.result("600000000003")
-        self.assertEqual((r.escalated_on, r.due_date), (date(2026, 10, 9), date(2026, 10, 12)))
-
-    def test_found_next_day_without_r12_on_that_date(self):
-        self.group("600000000004", cbs=True)
-        fact = self.npci_fact("600000000004", self.D1, "00")
+        before = self._snapshot("620000000006", D)
+        # D+1 now has an NPCI 00 row (and its own R12 group) for the same RRN.
+        self.group("620000000006", d=d1, npci=True, code="00")
+        self.npci_fact("620000000006", d1, "RB")
+        self.evaluate(d1)
+        self.assertEqual(self._snapshot("620000000006", D), before)  # evaluating D+1 left D alone
         self.evaluate()
-        r = self.result("600000000004")
-        self.assertEqual(r.recheck_state, RecheckState.MATCHED_NEXT_DAY)
-        self.assertEqual((r.status_category, r.priority, r.due_date), ("RECONCILED", "NONE", None))
-        self.assertEqual(r.next_day_fact_id, fact.id)
-        self.assertIsNone(r.linked_result_id)
+        self.assertEqual(self._snapshot("620000000006", D), before)  # re-evaluating D ignores D+1
+        r12 = self.result("620000000006", d1)
+        self.assertEqual((r12.rule_code, r12.status_category), ("R12", "ADJUSTMENT_REQUIRED"))
 
-    def _late_pair(self, rrn):
-        self.group(rrn, d=D, cbs=True)  # CBS posted it on D
-        self.group(rrn, d=self.D1, npci=True)  # NPCI has it on D+1 (R12)
-
-    def _assert_linked(self, rrn):
-        d_side, d1_side = self.result(rrn, D), self.result(rrn, self.D1)
-        self.assertEqual((d_side.rule_code, d1_side.rule_code), ("R13", "R12"))  # rules unchanged
-        self.assertEqual(d_side.recheck_state, RecheckState.MATCHED_NEXT_DAY)
-        self.assertEqual(d1_side.recheck_state, RecheckState.MATCHED_PREVIOUS_DAY)
-        self.assertEqual((d_side.status_category, d1_side.status_category), ("RECONCILED", "RECONCILED"))
-        self.assertFalse(d1_side.rbi_compensation)
-        self.assertIsNone(d1_side.due_date)
-        self.assertEqual(d_side.linked_result_id, d1_side.pk)
-        self.assertEqual(d1_side.linked_result_id, d_side.pk)
-        self.assertEqual(d_side.next_day_group.rrn, rrn)
-        self.assertEqual(d_side.next_day_group.business_date, self.D1)
-
-    def test_late_match_d_first_then_d1(self):
-        self._late_pair("600000000005")
-        self.load_npci(self.D1)
-        self.evaluate(D)
-        self.assertEqual(self.result("600000000005").recheck_state, RecheckState.MATCHED_NEXT_DAY)
-        self.evaluate(self.D1)
-        self._assert_linked("600000000005")
-
-    def test_late_match_d1_first_then_d(self):
-        self._late_pair("600000000006")
-        self.load_npci(self.D1)
-        self.evaluate(self.D1)
-        r12 = self.result("600000000006", self.D1)
-        self.assertEqual((r12.recheck_state, r12.status_category), ("", "ADJUSTMENT_REQUIRED"))
-        self.evaluate(D)
-        self._assert_linked("600000000006")
-
-    def test_rerun_relinks_to_new_current_results(self):
-        self._late_pair("600000000007")
-        self.load_npci(self.D1)
-        self.evaluate(D)
-        self.evaluate(self.D1)
-        self.evaluate(D)
-        self._assert_linked("600000000007")
-        self.evaluate(self.D1)
-        self._assert_linked("600000000007")
-
-    def test_r12_reset_when_partner_disappears(self):
-        self._late_pair("600000000008")
-        self.load_npci(self.D1)
-        self.evaluate(D)
-        self.evaluate(self.D1)
-        TransactionMatchGroup.objects.filter(rrn="600000000008", business_date=D).update(is_superseded=True)
-        self.evaluate(D)
-        r12 = self.result("600000000008", self.D1)
-        self.assertEqual(r12.recheck_state, "")
-        self.assertIsNone(r12.linked_result_id)
-        self.assertEqual((r12.status_category, r12.priority), ("ADJUSTMENT_REQUIRED", "HIGH"))
-        self.assertEqual(r12.due_date, date(2026, 7, 16))  # T+1 from Wed 15 Jul
-        self.assertTrue(r12.rbi_compensation)
-
-    def test_unrelated_r12_untouched(self):
-        self.group("600000000009", d=self.D1, npci=True)
-        self.group("600000000010", d=D, cbs=True)
-        self.load_npci(self.D1)
-        self.evaluate(self.D1)
-        self.evaluate(D)
-        self.assertEqual(self.result("600000000009", self.D1).recheck_state, "")
-        self.assertEqual(self.result("600000000010").recheck_state, RecheckState.ESCALATED)
-
-
-class RecheckClearingCodeTests(EvaluatorTestBase):
-    """Owner decision 2026-10-10: a D+1 NPCI row clears an R13 item only with
-    code 00 or RB; any other code is escalated exactly like "not found"."""
-
-    D1 = D + timedelta(days=1)
-
-    def check(self, rrn, codes, expected_state):
-        self.group(rrn, cbs=True)
-        facts = [self.npci_fact(rrn, self.D1, code) for code in codes]
+    def test_evaluating_a_date_reads_and_writes_only_that_date(self):
+        d1 = D + timedelta(days=1)
+        self.group("620000000007", cbs=True)
+        self.group("620000000007", d=d1, npci=True)
         self.evaluate()
-        r = self.result(rrn)
-        self.assertEqual(r.rule_code, "R13")
-        self.assertEqual(r.recheck_state, expected_state)
-        self.assertEqual(r.next_day_npci_codes, ",".join(codes))
-        return r, facts
-
-    def test_success_00_matches(self):
-        r, (f,) = self.check("610000000001", ["00"], RecheckState.MATCHED_NEXT_DAY)
-        self.assertEqual((r.status_category, r.next_day_fact_id), ("RECONCILED", f.id))
-
-    def test_deemed_approved_rb_matches(self):
-        r, (f,) = self.check("610000000002", ["RB"], RecheckState.MATCHED_NEXT_DAY)
-        self.assertEqual(r.next_day_fact_id, f.id)
-
-    def test_declined_codes_escalate(self):
-        for i, code in enumerate(["U30", "XB", "Z9", ""]):
-            with self.subTest(code=code):
-                r, _ = self.check(f"61000000001{i}", [code], RecheckState.ESCALATED)
-                self.assertEqual((r.status_category, r.priority), ("REVERSAL_REQUIRED", "HIGH"))
-                self.assertIsNone(r.next_day_fact_id)
-                self.assertEqual(r.due_date, date(2026, 10, 13))  # Mon 12 Oct + 1 working day
-
-    def test_bt_escalates(self):
-        r, _ = self.check("610000000003", ["BT"], RecheckState.ESCALATED)
-        self.assertEqual((r.status_category, r.priority), ("REVERSAL_REQUIRED", "HIGH"))
-
-    def test_declined_and_success_rows_match_on_the_success_row(self):
-        r, (declined, success) = self.check("610000000004", ["U30", "00"], RecheckState.MATCHED_NEXT_DAY)
-        self.assertEqual(r.next_day_fact_id, success.id)
-
-    def test_declined_row_on_unloaded_date_awaits(self):
-        self.group("610000000005", cbs=True)
-        self.file(RegisterType.RAW_DATA, self.D1, status=ProcessingStatus.NORMALIZED)
-        self.npci_fact("610000000005", self.D1, "U30")
-        self.evaluate()
-        self.assertEqual(self.result("610000000005").recheck_state, RecheckState.AWAITING_NEXT_DAY)
-
-    def test_r12_mirror_unaffected_since_r12_is_always_00(self):
-        # R11 takes every non-00 NPCI-only row, so an R12 on D+1 always carries 00
-        # and its D-side R13 is cleared by that same row.
-        self.group("610000000006", d=D, cbs=True)
-        self.group("610000000006", d=self.D1, npci=True, code="00")
-        self.group("610000000007", d=D, cbs=True)
-        self.group("610000000007", d=self.D1, npci=True, code="U30")  # R11, not R12
-        self.evaluate(self.D1)
-        self.evaluate(D)
-        self.assertEqual(self.result("610000000006", self.D1).recheck_state, RecheckState.MATCHED_PREVIOUS_DAY)
-        self.assertEqual(self.result("610000000006").recheck_state, RecheckState.MATCHED_NEXT_DAY)
-        declined = self.result("610000000007", self.D1)
-        self.assertEqual((declined.rule_code, declined.recheck_state), ("R11", ""))
-        self.assertEqual(self.result("610000000007").recheck_state, RecheckState.ESCALATED)
+        self.evaluate(d1)
+        d_result = self.result("620000000007", D)
+        with CaptureQueriesContext(connection) as ctx:
+            self.evaluate(d1)
+        sql = chr(10).join(q["sql"] for q in ctx.captured_queries)
+        self.assertIn("'2026-07-15'", sql)
+        self.assertNotIn("'2026-07-14'", sql)  # D is never read or written while evaluating D+1
+        self.assertEqual(self.result("620000000007", D).pk, d_result.pk)  # D's result not superseded
 
 
 # ---------------------------------------------------------------------------
@@ -684,5 +582,5 @@ class EntryPointAndAdminTests(EvaluatorTestBase):
 class WorkingCalendarInjectionTests(EvaluatorTestBase):
     def test_calendar_can_be_passed_in(self):
         self.group("900000000001", drc=True)  # R03, T+1
-        evaluate_business_date(self.module, D, today=TODAY, calendar=WorkingDayCalendar(holidays={D + timedelta(1): "x"}))
+        evaluate_business_date(self.module, D, calendar=WorkingDayCalendar(holidays={D + timedelta(1): "x"}))
         self.assertEqual(self.result("900000000001").due_date, date(2026, 7, 16))

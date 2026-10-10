@@ -27,38 +27,15 @@ Deadlines (Rule.tat_*; working days from core.working_days):
   DAYS CALENDAR n -> T + n days, not shifted (owner 2026-10-10)
   BY_ADJTYPE      -> the first RuleTat row whose condition matches; none ->
                      no deadline, tat_unresolved=True
-  NEXT_BUSINESS_DATE_LOAD (R13) -> no fixed deadline; see the re-check below
+  NEXT_BUSINESS_DATE_LOAD -> no due date (only retired v3.1's R13 used it)
   tat_cutoff_time (R05: 16:00) is stored next to the due date.
 
-R13 next-day re-check (owner Q3) and its R12 mirror -- modelled as
-RuleResult.recheck_state + cross-links, not as extra rules:
-  "next business date" of D = D + 1 calendar day (UPI runs 24x7).
-  D+1 NPCI "loaded" = a current UploadedFile in LOADED status, of an NPCI
-  leg file type (Raw Data / Merchant Raw Data / BBP), with business_date
-  D+1 -- not the mere presence of facts dated D+1.
-  "Found" = D+1 has an NPCI row for the RRN whose response code is in
-  RECHECK_CLEARING_CODES (00 / RB; owner 2026-10-10). A row with any other
-  code does not count: the item is handled exactly as "not found". The
-  codes seen are recorded on the result (next_day_npci_codes).
-  For each current R13 result on D:
-    found                         -> matched_next_day: Reconciled (late
-        cycle), next_day_fact (the clearing row) / next_day_group recorded,
-        linked to D+1's current R12 result if there is one.
-    not found, D+1 NPCI loaded    -> escalated: Reversal Required, HIGH, due
-        1 working day after the escalation date (first escalation, kept
-        across re-runs).
-    not found, not loaded         -> awaiting_next_day: R13's own defaults.
-  Mirror: a current R12 result on D+1 whose RRN is a current R13 result on
-  D that is matched_next_day -> matched_previous_day: Reconciled, linked to
-  the D result (a late match, not an adjustment). R12 is NPCI code 00 by
-  definition (R11 takes every other code), so the clearing-code rule never
-  blocks the mirror; requiring the D side to be matched_next_day keeps the
-  two sides symmetric anyway. An R12 that loses that link is reset to R12's
-  own defaults.
-  refresh_next_day_recheck(D) runs after evaluating D (D's R13s, D+1's R12s)
-  and after evaluating D+1 (same pair), so whichever date is evaluated
-  second updates the other date's current results in place. It never
-  changes which rule fired.
+One business date at a time (owner, v3.2 amendment 2026-10-10: "we only
+work on that particular day"): evaluating D reads only D's matrix and
+writes only D's results. There is no cross-day check in either direction --
+the v3.1-era R13 next-day re-check / R12 mirror was removed. A payment NPCI
+records on D and CBS posts on D+1 shows up as R12 on D and R13 on D+1, two
+separate items that ops resolves by hand (R13 is a T+1 review item in v3.2).
 """
 from __future__ import annotations
 
@@ -76,47 +53,27 @@ from typing import Callable
 
 from django.db import connection, transaction
 from django.db.models import JSONField
-from django.db.models import Min
 from django.utils import timezone
 
-from core.models import PaymentModule, RegisterType
+from core.models import PaymentModule
 from core.working_days import WorkingDayCalendar
-from file_processing.models import ProcessingStatus as FileProcessingStatus
-from file_processing.models import UploadedFile
 from reconciliation.models import TransactionMatchGroup
-from reconciliation.presence import DEFAULT_PRESENCE_LEGS
-from reconciliation.presence import _read_cells  # same cell reading/cleaning as the matrix
 from rule_engine.conditions import facts_used
 from rule_engine.facts import GroupFacts, extract_facts
 from rule_engine.models import (
     REASON_TEMPLATE_PLACEHOLDERS,
     DayBasis,
     Priority,
-    RecheckState,
     Rule,
     RuleEvaluationRun,
     RuleResult,
     RuleSet,
     RuleSetStatus,
-    StatusCategory,
     TatType,
 )
-from transactions.models import TransactionFact
 
 logger = logging.getLogger(__name__)
 
-# Rule codes the re-check is about (UPI rule set v3.1: R13 "In CBS only",
-# R12 "In NPCI only - successful"). If a future rule set drops either code,
-# the re-check simply finds no results for it.
-RECHECK_RULE_CODE = "R13"
-MIRROR_RULE_CODE = "R12"
-# A D+1 NPCI row clears a CBS-only (R13) item only with one of these codes
-# (owner decision 2026-10-10): 00 = success, RB = deemed approved (Q4). Any
-# other code -- declined, incl. BT, or a blank cell -- is NOT a match and is
-# escalated exactly like "not found" (NPCI OC 93 FY19-20: a declined
-# transaction where the customer was debited must be reversed by T+1).
-RECHECK_CLEARING_CODES = frozenset({"00", "RB"})
-NPCI_REGISTER_TYPES = list(DEFAULT_PRESENCE_LEGS["NPCI"])
 _BULK_BATCH = 2000
 
 
@@ -231,10 +188,6 @@ class Outcome:
         "rbi_compensation",
     )
 
-    def apply(self, result: RuleResult) -> None:
-        for name in self.FIELDS:
-            setattr(result, name, getattr(self, name))
-
     def as_dict(self) -> dict:
         return {name: getattr(self, name) for name in self.FIELDS}
 
@@ -297,8 +250,6 @@ class EvaluationSummary:
     group_count: int = 0
     superseded_count: int = 0
     rule_counts: dict = field(default_factory=dict)
-    recheck_counts: dict = field(default_factory=dict)
-    previous_date_recheck_counts: dict = field(default_factory=dict)
     calendar_incomplete_count: int = 0
     tat_unresolved_count: int = 0
     groups_missing_cbs_or_npci_presence: int = 0
@@ -336,7 +287,6 @@ def _build_row(gf: GroupFacts, compiled: CompiledRule, rule_set: RuleSet, run_id
         tat_start_date=tat_start,
         facts=gf.facts,
         evaluated_at=now,
-        recheck_state=RecheckState.AWAITING_NEXT_DAY if rule.code == RECHECK_RULE_CODE else RecheckState.NONE,
     )
     row.update(rule_outcome(compiled, tat_start, gf.facts, calendar).as_dict())
     return row
@@ -383,12 +333,10 @@ def evaluate_business_date(
     payment_module: PaymentModule,
     business_date: date,
     *,
-    today: date | None = None,
     triggered_by: str = "",
     calendar: WorkingDayCalendar | None = None,
 ) -> EvaluationSummary:
     started = time_module.perf_counter()
-    today = today or timezone.localdate()
     calendar = calendar or WorkingDayCalendar()
     with transaction.atomic():
         rule_set = active_rule_set(payment_module)
@@ -411,18 +359,8 @@ def evaluate_business_date(
         rows = [_build_row(gf, first_match(compiled, gf.facts), rule_set, run.pk, now, calendar) for gf in group_facts]
         insert_results(rows)
 
-        # D's R13s against D+1, then D-1's R13s against D (D's R12 mirror).
-        refresh_next_day_recheck(payment_module, business_date, today=today, calendar=calendar)
-        previous = refresh_next_day_recheck(
-            payment_module, business_date - timedelta(days=1), today=today, calendar=calendar
-        )
-
         order = {c.rule.code: i for i, c in enumerate(compiled)}
         counts = Counter(r["rule_code"] for r in rows)
-        current = RuleResult.objects.filter(
-            payment_module=payment_module, business_date=business_date, is_superseded=False
-        )
-        recheck_counts = Counter(current.exclude(recheck_state="").values_list("recheck_state", flat=True))
         summary = EvaluationSummary(
             payment_module_code=payment_module.code,
             business_date=business_date,
@@ -431,9 +369,7 @@ def evaluate_business_date(
             group_count=len(rows),
             superseded_count=superseded,
             rule_counts={code: counts.get(code, 0) for code in sorted(order, key=order.get)},
-            recheck_counts=dict(recheck_counts),
-            previous_date_recheck_counts=previous,
-            calendar_incomplete_count=current.filter(calendar_incomplete=True).count(),
+            calendar_incomplete_count=sum(r["calendar_incomplete"] for r in rows),
             tat_unresolved_count=sum(r["tat_unresolved"] for r in rows),
             groups_missing_cbs_or_npci_presence=sum(1 for gf in group_facts if gf.missing_legs),
         )
@@ -442,7 +378,6 @@ def evaluate_business_date(
         run.duration_seconds = summary.duration_seconds
         run.group_count = summary.group_count
         run.rule_counts = summary.rule_counts
-        run.recheck_counts = summary.recheck_counts
         run.calendar_incomplete_count = summary.calendar_incomplete_count
         run.save()
     if summary.groups_missing_cbs_or_npci_presence:
@@ -453,162 +388,6 @@ def evaluate_business_date(
             summary.groups_missing_cbs_or_npci_presence,
         )
     return summary
-
-
-# ---------------------------------------------------------------------------
-# R13 next-day re-check and R12 mirror
-# ---------------------------------------------------------------------------
-def next_business_date(d: date) -> date:
-    """UPI runs 24x7: NPCI's business dates are calendar days."""
-    return d + timedelta(days=1)
-
-
-def npci_loaded(payment_module: PaymentModule, d: date) -> bool:
-    return UploadedFile.objects.filter(
-        payment_module=payment_module,
-        business_date=d,
-        file_type_config__register_type__in=NPCI_REGISTER_TYPES,
-        is_current=True,
-        processing_status=FileProcessingStatus.LOADED,
-    ).exists()
-
-
-@dataclass
-class NextDayNpci:
-    """D+1's NPCI-leg rows for one RRN."""
-
-    clearing_fact_id: int | None  # first row whose code is in RECHECK_CLEARING_CODES, else None
-    codes: list[str]  # every response code seen, in pick order ('' = blank cell)
-
-
-def _next_day_npci_by_rrn(payment_module: PaymentModule, d: date, rrns: list[str]) -> dict[str, NextDayNpci]:
-    """{rrn: NextDayNpci} for D's NPCI-leg rows (current files, valid RRNs).
-    Rows are ordered by the presence engine's register-type priority, then
-    id; the response code is read from the source row's raw cells exactly as
-    the presence engine reads it (reconciliation.presence._read_cells, cell
-    NPCI_RESPONSE_CODE_CELL)."""
-    priority = {rt: i for i, rt in enumerate(NPCI_REGISTER_TYPES)}
-    facts: list[TransactionFact] = []
-    for start in range(0, len(rrns), 5000):
-        facts += TransactionFact.objects.filter(
-            payment_module=payment_module,
-            business_date=d,
-            rrn__in=rrns[start : start + 5000],
-            rrn_valid=True,
-            source_register_type__in=NPCI_REGISTER_TYPES,
-            uploaded_file__is_current=True,
-        ).only("id", "rrn", "source_register_type", "staging_row_id")
-    cells = _read_cells(facts)
-    out: dict[str, NextDayNpci] = {}
-    for fact in sorted(facts, key=lambda f: (priority[f.source_register_type], f.pk)):
-        code = cells.get(fact.pk, {}).get("response_code", "")
-        entry = out.setdefault(fact.rrn, NextDayNpci(None, []))
-        entry.codes.append(code)
-        if entry.clearing_fact_id is None and code in RECHECK_CLEARING_CODES:
-            entry.clearing_fact_id = fact.pk
-    return out
-
-
-_RECHECK_FIELDS = Outcome.FIELDS + (
-    "recheck_state",
-    "recheck_checked_at",
-    "escalated_on",
-    "next_day_fact",
-    "next_day_group",
-    "next_day_npci_codes",
-    "linked_result",
-)
-
-
-def _defaults(result: RuleResult, compiled_by_rule: dict, calendar) -> Outcome:
-    return rule_outcome(compiled_by_rule[result.rule_id], result.tat_start_date, result.facts, calendar)
-
-
-def refresh_next_day_recheck(
-    payment_module: PaymentModule, d: date, *, today: date | None = None, calendar: WorkingDayCalendar | None = None
-) -> dict:
-    """Updates D's current R13 results and D+1's current R12 results in
-    place (see module docstring). Returns {state: count} for D's R13s."""
-    today = today or timezone.localdate()
-    d1 = next_business_date(d)
-    current = RuleResult.objects.filter(payment_module=payment_module, is_superseded=False)
-    r13s = list(current.filter(business_date=d, rule_code=RECHECK_RULE_CODE).select_related("rule"))
-    r12s = list(current.filter(business_date=d1, rule_code=MIRROR_RULE_CODE).select_related("rule"))
-    if not r13s and not any(r.recheck_state for r in r12s):
-        return {}
-    calendar = calendar or WorkingDayCalendar()
-    rule_sets = {r.rule_set_id for r in (*r13s, *r12s)}
-    compiled_by_rule = {
-        c.rule.pk: c for rs in RuleSet.objects.filter(pk__in=rule_sets) for c in compile_rule_set(rs)
-    }
-    now = timezone.now()
-    loaded = npci_loaded(payment_module, d1)
-    rrns = sorted({r.rrn for r in r13s})
-    next_day = _next_day_npci_by_rrn(payment_module, d1, rrns) if rrns else {}
-    found_facts = {rrn: e.clearing_fact_id for rrn, e in next_day.items() if e.clearing_fact_id is not None}
-    next_groups = dict(
-        TransactionMatchGroup.objects.filter(
-            payment_module=payment_module, business_date=d1, rrn__in=list(found_facts), is_superseded=False
-        ).values_list("rrn", "id")
-    )
-    r12_by_rrn = {r.rrn: r for r in r12s}
-    r13_by_rrn = {r.rrn: r for r in r13s}
-    first_escalation = dict(
-        RuleResult.objects.filter(
-            match_group_id__in=[r.match_group_id for r in r13s], escalated_on__isnull=False
-        )
-        .values("match_group_id")
-        .annotate(first=Min("escalated_on"))
-        .values_list("match_group_id", "first")
-    )
-
-    reconciled = Outcome(status_category=StatusCategory.RECONCILED, priority=Priority.NONE)
-    states = Counter()
-    for r in r13s:
-        r.recheck_checked_at = now
-        r.next_day_fact_id = r.next_day_group_id = r.linked_result_id = None
-        r.next_day_npci_codes = ",".join(next_day[r.rrn].codes)[:50] if r.rrn in next_day else ""
-        if r.rrn in found_facts:
-            reconciled.apply(r)
-            r.recheck_state = RecheckState.MATCHED_NEXT_DAY
-            r.next_day_fact_id = found_facts[r.rrn]
-            r.next_day_group_id = next_groups.get(r.rrn)
-            mirror = r12_by_rrn.get(r.rrn)
-            r.linked_result_id = mirror.pk if mirror else None
-        elif loaded:
-            r.escalated_on = first_escalation.get(r.match_group_id) or r.escalated_on or today
-            due = calendar.add_working_days(r.escalated_on, 1)
-            Outcome(
-                status_category=StatusCategory.REVERSAL_REQUIRED,
-                priority=Priority.HIGH,
-                due_date=due.date,
-                tat_label="T+1 working day from escalation",
-                calendar_incomplete=due.calendar_incomplete,
-            ).apply(r)
-            r.recheck_state = RecheckState.ESCALATED
-        else:
-            _defaults(r, compiled_by_rule, calendar).apply(r)
-            r.recheck_state = RecheckState.AWAITING_NEXT_DAY
-        states[str(r.recheck_state)] += 1
-
-    changed_r12 = []
-    for r in r12s:
-        partner = r13_by_rrn.get(r.rrn)
-        if partner is not None and partner.recheck_state == RecheckState.MATCHED_NEXT_DAY:
-            reconciled.apply(r)
-            r.recheck_state = RecheckState.MATCHED_PREVIOUS_DAY
-            r.linked_result_id = partner.pk
-            r.recheck_checked_at = now
-            changed_r12.append(r)
-        elif r.recheck_state:
-            _defaults(r, compiled_by_rule, calendar).apply(r)
-            r.recheck_state = RecheckState.NONE
-            r.linked_result_id = None
-            r.recheck_checked_at = now
-            changed_r12.append(r)
-
-    RuleResult.objects.bulk_update(r13s + changed_r12, _RECHECK_FIELDS, batch_size=_BULK_BATCH)
-    return dict(states)
 
 
 def loaded_business_dates(payment_module: PaymentModule) -> list[date]:

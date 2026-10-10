@@ -99,10 +99,10 @@ class RuleEvaluationRunAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
 class RuleResultAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_display = (
         "rrn", "business_date", "rule_code", "status_category", "priority", "response_code", "tat_start_date",
-        "due_date", "due_cutoff_time", "overdue", "ageing", "recheck_state", "calendar_incomplete", "is_superseded",
+        "due_date", "due_cutoff_time", "overdue", "ageing", "calendar_incomplete", "is_superseded",
     )
     list_filter = (
-        "business_date", "rule_code", "status_category", "priority", "recheck_state", "is_superseded",
+        "business_date", "rule_code", "status_category", "priority", "rule_set", "is_superseded",
         "calendar_incomplete", "payment_module",
     )
     search_fields = ("rrn",)

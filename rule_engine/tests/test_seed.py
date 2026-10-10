@@ -1,5 +1,7 @@
 """
 Seed of rule table v3.1: `seed_rule_sets` command and data migration 0002.
+Since v3.2 (owner 2026-10-10) the command seeds v3.1 and then v3.2, which
+retires v3.1; v3.2's own checks are in test_seed_v3_2.py.
 
 The expected values below are typed in again from
 docs/phase2_rule_table_v3_approved.txt, independently of
@@ -91,9 +93,9 @@ def _seed() -> str:
     return out.getvalue()
 
 
-def _snapshot(module) -> dict:
+def _snapshot(module, version="v3.1") -> dict:
     """Comparable content of everything seeded for `module` (ids/timestamps dropped)."""
-    rs = RuleSet.objects.get(payment_module=module, version_label="v3.1")
+    rs = RuleSet.objects.get(payment_module=module, version_label=version)
     rules = []
     for r in Rule.objects.filter(rule_set=rs).order_by("evaluation_order"):
         rules.append((
@@ -142,8 +144,10 @@ class SeedCommandTests(TestCase):
         self.upi = PaymentModule.objects.get(code="UPI")
         self.rs = RuleSet.objects.get(payment_module=self.upi, version_label="v3.1")
 
-    def test_active_version_v3_1(self):
-        self.assertEqual(self.rs.status, RuleSetStatus.ACTIVE)
+    def test_version_v3_1_seeded_then_retired_by_v3_2(self):
+        self.assertEqual(self.rs.status, RuleSetStatus.RETIRED)
+        self.assertIsNotNone(self.rs.retired_at)
+        self.assertEqual(RuleSet.objects.get(payment_module=self.upi, status=RuleSetStatus.ACTIVE).version_label, "v3.2")
         self.assertEqual(str(self.rs.effective_from), "2026-10-09")
         self.assertIn("phase2_rule_table_v3_approved.txt", self.rs.source_document)
         self.assertEqual(self.rs.created_by, "seed_rule_sets")
@@ -187,7 +191,7 @@ class SeedCommandTests(TestCase):
             [(t.label, t.tat_days, t.tat_day_basis) for t in r["R07b"].tat_rows.order_by("evaluation_order")],
             R07B_TATS,
         )
-        self.assertEqual(RuleTat.objects.exclude(rule=r["R07b"]).count(), 0)
+        self.assertEqual(RuleTat.objects.filter(rule__rule_set=self.rs).exclude(rule=r["R07b"]).count(), 0)
         self.assertIn({"fact": "adjustment.age_days", "op": "gt", "value": 35}, r["R07x"].condition["all"])
         self.assertEqual(r["R04c"].condition, {"all": [{"fact": "timeout.ssk_side", "op": "eq", "value": False}]})
         self.assertIn({"fact": "cbs_reversed", "op": "eq", "value": False}, r["R09"].condition["all"])
@@ -239,16 +243,19 @@ class SeedCommandTests(TestCase):
             (RuleSet.objects.count(), Rule.objects.count(), ResponseCode.objects.count(), AgeingBucket.objects.count()),
             counts,
         )
-        self.assertEqual(counts, (1, 24, 16, 6))
+        self.assertEqual(counts, (2, 48, 16, 6))  # v3.1 + v3.2
         self.assertEqual(_snapshot(self.upi), before)
 
     def test_does_not_retire_a_different_active_version(self):
-        # Simulate a later version being the active one and v3.1 absent
+        # Simulate a later version being the active one and v3.1 / v3.2 absent
         # (relabel via the unguarded base manager, test-only).
-        RuleSet._base_manager.filter(pk=self.rs.pk).update(version_label="v4")
+        RuleSet._base_manager.filter(pk=self.rs.pk).update(version_label="v0")
+        active = RuleSet.objects.get(payment_module=self.upi, status=RuleSetStatus.ACTIVE)
+        RuleSet._base_manager.filter(pk=active.pk).update(version_label="v4")
         out = _seed()
         self.assertIn("already active", out)
-        self.assertFalse(RuleSet.objects.filter(version_label="v3.1").exists())
+        self.assertFalse(RuleSet.objects.filter(version_label__in=["v3.1", "v3.2"]).exists())
+        self.assertEqual(RuleSet.objects.get(status=RuleSetStatus.ACTIVE).version_label, "v4")
 
 
 class DataMigrationTests(TestCase):
@@ -256,6 +263,11 @@ class DataMigrationTests(TestCase):
         """Run 0002's forwards() with the historical models it really gets."""
         migration = importlib.import_module("rule_engine.migrations.0002_seed_rule_table_v3_1")
         state = MigrationExecutor(connection).loader.project_state(("rule_engine", "0001_initial"))
+        migration.forwards(state.apps, None)
+
+    def _forwards_v3_2(self):
+        migration = importlib.import_module("rule_engine.migrations.0005_seed_rule_table_v3_2")
+        state = MigrationExecutor(connection).loader.project_state(("rule_engine", "0004_remove_next_day_recheck"))
         migration.forwards(state.apps, None)
 
     def test_no_op_without_upi_module(self):
@@ -267,24 +279,25 @@ class DataMigrationTests(TestCase):
     def test_migration_and_command_seed_the_same_rows(self):
         upi = PaymentModule.objects.create(code="UPI", name="UPI")
         self._forwards()
-        migrated = _snapshot(upi)
-        rs = RuleSet.objects.get(payment_module=upi)
+        rs = RuleSet.objects.get(payment_module=upi, version_label="v3.1")
         self.assertEqual(rs.created_by, "migration rule_engine.0002")
         rs.validate_for_activation()  # the live structural checks pass on migrated data too
         for rule in rs.rules.all():
             rule.clean()
+        self._forwards_v3_2()  # the full migration chain: 0002 then 0005
+        migrated = (_snapshot(upi), _snapshot(upi, "v3.2"))
 
         # command afterwards is a no-op
         out = _seed()
         self.assertNotIn("differs", out)
-        self.assertEqual(_snapshot(upi), migrated)
+        self.assertEqual((_snapshot(upi), _snapshot(upi, "v3.2")), migrated)
 
         # and a command-only seed on a clean DB gives identical content
         RuleSet._base_manager.all().delete()
         ResponseCode._base_manager.all().delete()
         AgeingBucket.objects.all().delete()
         _seed()
-        self.assertEqual(_snapshot(upi), migrated)
+        self.assertEqual((_snapshot(upi), _snapshot(upi, "v3.2")), migrated)
 
     def test_migration_is_idempotent(self):
         upi = PaymentModule.objects.create(code="UPI", name="UPI")

@@ -29,8 +29,8 @@ class ReadOnlyAdminTests(TestCase):
         self.assertNotIn(RuleTat, site._registry)  # shown inline under its rule only
 
     def test_changelists_and_detail_pages_render(self):
-        rule_set = RuleSet.objects.get()
-        rule = Rule.objects.get(code="R07b")
+        rule_set = RuleSet.objects.get(status="ACTIVE")
+        rule = Rule.objects.get(code="R07b", rule_set=rule_set)
         for url in (
             "/admin/rule_engine/ruleset/",
             f"/admin/rule_engine/ruleset/{rule_set.pk}/change/",

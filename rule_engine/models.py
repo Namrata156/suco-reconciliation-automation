@@ -5,6 +5,8 @@ is stored here as DATA: a versioned RuleSet of Rules, a ResponseCode table
 and the AgeingBucket config. Step 4 (2026-10-10) adds the evaluator
 (rule_engine.facts + rule_engine.evaluator) and its output: one RuleResult
 per TransactionMatchGroup per evaluation, grouped by RuleEvaluationRun.
+Each business date is evaluated against its own files only (v3.2, owner
+2026-10-10: no cross-day checks).
 
 Why a separate app (not inside `reconciliation`): the Business Rule Engine
 is its own tracked component in the spec and the tracker. It consumes the
@@ -39,8 +41,11 @@ TAT storage: Rule.tat_type says what kind of deadline the rule has:
   BY_ADJTYPE               -- R07b: the deadline depends on the Adjtype; one
                               RuleTat row per type, checked in order, first
                               match wins (same condition format).
-  NEXT_BUSINESS_DATE_LOAD  -- R13: event-driven, due when the next business
-                              date's NPCI files are loaded. No fixed days.
+  NEXT_BUSINESS_DATE_LOAD  -- v3.1's R13 only (retired): event-driven, due when
+                              the next business date's NPCI files are loaded.
+                              No v3.2 rule uses it; kept because retired v3.1
+                              data references it. The evaluator gives it no
+                              due date.
 Due date = T + TAT (doc, AGEING). WORKING days use core.working_days
 (Karnataka bank holidays + Sundays + 2nd/4th Saturdays, owner 2026-10-10).
 """
@@ -56,7 +61,6 @@ from django.utils import timezone
 
 from core.models import PaymentModule
 from reconciliation.models import TransactionMatchGroup
-from transactions.models import TransactionFact
 from rule_engine.conditions import ConditionError, is_catch_all, validate_condition
 
 
@@ -617,18 +621,6 @@ def validate_ageing_buckets(payment_module: PaymentModule) -> None:
 # ---------------------------------------------------------------------------
 # Step 4: evaluation output
 # ---------------------------------------------------------------------------
-class RecheckState(models.TextChoices):
-    """R13's next-day re-check (owner Q3) and its mirror on R12. Blank for
-    every other rule. Stored on the result, not as extra rules: the rule set
-    stays exactly the approved v3.1."""
-
-    NONE = "", "-"
-    AWAITING_NEXT_DAY = "awaiting_next_day", "Awaiting next business date's NPCI files"
-    MATCHED_NEXT_DAY = "matched_next_day", "Found in next business date's NPCI files (late cycle)"
-    ESCALATED = "escalated", "Not in next business date's NPCI files: escalated"
-    MATCHED_PREVIOUS_DAY = "matched_previous_day", "CBS posted it on the previous business date (late match)"
-
-
 class RuleEvaluationRun(models.Model):
     """One run of the evaluator over one (payment module, business date)."""
 
@@ -641,7 +633,6 @@ class RuleEvaluationRun(models.Model):
     group_count = models.PositiveIntegerField(default=0)
     superseded_count = models.PositiveIntegerField(default=0, help_text="Previous results this run superseded")
     rule_counts = models.JSONField(default=dict, blank=True, help_text="{rule code: results}")
-    recheck_counts = models.JSONField(default=dict, blank=True, help_text="{recheck state: results} after this run")
     calendar_incomplete_count = models.PositiveIntegerField(default=0)
     triggered_by = models.CharField(max_length=150, blank=True, help_text="Command / task / user that ran it")
 
@@ -702,10 +693,10 @@ class RuleResult(models.Model):
     deleted (same rule as the presence matrix, owner 2026-09-30). At most
     one current result per match group (DB constraint).
 
-    status_category / priority / due_* / rbi_compensation are the EFFECTIVE
-    values: the fired rule's defaults, except where the R13 / R12 next-day
-    re-check (recheck_state) overrides them. `rule` always stays the rule
-    that fired.
+    Each result is computed from its own business date's matrix only: no
+    cross-day check in either direction (owner, v3.2 amendment 2026-10-10).
+    status_category / priority / due_* / rbi_compensation are the fired
+    rule's values.
 
     Deadline: due_date + due_cutoff_time (R05: 16:00 on the due date) rather
     than one datetime, so date-level work (calendar, ageing, "due today")
@@ -717,14 +708,13 @@ class RuleResult(models.Model):
     # Index policy: every index costs ~79K inserts per evaluation and as many
     # on a re-run's supersede (indexed column changes -> no HOT update).
     # Only the indexes queries use are kept (see Meta); FKs whose targets
-    # are never deleted (immutable rules/sets, runs, modules) get none, and
-    # the sparse re-check FKs get partial indexes.
+    # are never deleted (immutable rules/sets, runs, modules) get none.
     payment_module = models.ForeignKey(
         PaymentModule, on_delete=models.PROTECT, related_name="rule_results", db_index=False
     )
     match_group = models.ForeignKey(TransactionMatchGroup, on_delete=models.PROTECT, related_name="rule_results")
     business_date = models.DateField(help_text="The match group's business date (denormalized)")
-    rrn = models.CharField(max_length=20, help_text="The match group's RRN (denormalized for cross-date lookup)")
+    rrn = models.CharField(max_length=20, help_text="The match group's RRN (denormalized for search)")
     run = models.ForeignKey(RuleEvaluationRun, on_delete=models.PROTECT, related_name="results", db_index=False)
 
     rule_set = models.ForeignKey(RuleSet, on_delete=models.PROTECT, related_name="results", db_index=False)
@@ -767,45 +757,6 @@ class RuleResult(models.Model):
     is_superseded = models.BooleanField(default=False)
     superseded_at = models.DateTimeField(null=True, blank=True)
 
-    # R13 next-day re-check and its R12 mirror (owner Q3)
-    recheck_state = models.CharField(max_length=30, choices=RecheckState.choices, blank=True, default="")
-    recheck_checked_at = models.DateTimeField(null=True, blank=True)
-    escalated_on = models.DateField(
-        null=True, blank=True, help_text="R13: date first escalated; carried across re-runs so the deadline can't creep"
-    )
-    next_day_fact = models.ForeignKey(
-        TransactionFact,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-        db_index=False,
-        help_text="R13 matched_next_day: the D+1 NPCI row that cleared it (code 00 or RB)",
-    )
-    next_day_npci_codes = models.CharField(
-        max_length=50,
-        blank=True,
-        help_text="R13: response codes of every D+1 NPCI row for the RRN (comma-separated; only 00 / RB clear it)",
-    )
-    next_day_group = models.ForeignKey(
-        TransactionMatchGroup,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-        db_index=False,
-        help_text="R13 matched_next_day: D+1's match group for the RRN, if built",
-    )
-    linked_result = models.ForeignKey(
-        "self",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-        db_index=False,
-        help_text="Cross-date link: R13 on D <-> R12 on D+1 (the other date's current result)",
-    )
-
     objects = RuleResultQuerySet.as_manager()
 
     class Meta:
@@ -820,17 +771,6 @@ class RuleResult(models.Model):
             models.Index(fields=["payment_module", "business_date", "is_superseded"], name="ruleresult_module_date_idx"),
             models.Index(fields=["rrn", "business_date"], name="ruleresult_rrn_date_idx"),
             models.Index(fields=["rule_code", "business_date"], name="ruleresult_rule_date_idx"),
-            # Sparse FKs (re-check only): partial indexes keep SET_NULL on
-            # fact / group / result deletes from scanning the table.
-            models.Index(
-                fields=["next_day_fact"], condition=Q(next_day_fact__isnull=False), name="ruleresult_nextday_fact_idx"
-            ),
-            models.Index(
-                fields=["next_day_group"], condition=Q(next_day_group__isnull=False), name="ruleresult_nextday_grp_idx"
-            ),
-            models.Index(
-                fields=["linked_result"], condition=Q(linked_result__isnull=False), name="ruleresult_linked_idx"
-            ),
         ]
         ordering = ["business_date", "rrn", "-evaluated_at"]
 
