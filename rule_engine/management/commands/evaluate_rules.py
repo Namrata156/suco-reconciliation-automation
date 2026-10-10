@@ -3,7 +3,9 @@ Runs the Business Rule Engine evaluator (Phase 2 Step 4) for one business
 date, or every date that has a current presence matrix (--all-loaded,
 oldest first). Each date is evaluated against its own files only (no
 cross-day checks, rule set v3.2). Idempotent: a re-run supersedes the date's current results
-(kept, not deleted) and recreates them.
+(kept, not deleted) and recreates them. Each date's exception cases are then
+synced from the new results in the same transaction (Phase 3,
+exception_management.sync).
 
     manage.py evaluate_rules --business-date 2026-09-25
     manage.py evaluate_rules --all-loaded
@@ -13,9 +15,12 @@ from __future__ import annotations
 from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 from core.models import PaymentModule
 from core.working_days import WorkingDayCalendar
+from exception_management.management.commands.sync_cases import write_summary
+from exception_management.sync import sync_cases_for_date
 from rule_engine.evaluator import NoActiveRuleSet, evaluate_business_date, loaded_business_dates
 
 
@@ -39,7 +44,9 @@ class Command(BaseCommand):
         calendar = WorkingDayCalendar()
         for d in dates:
             try:
-                s = evaluate_business_date(module, d, triggered_by="manage.py evaluate_rules", calendar=calendar)
+                with transaction.atomic():
+                    s = evaluate_business_date(module, d, triggered_by="manage.py evaluate_rules", calendar=calendar)
+                    case_summary = sync_cases_for_date(module, d, source="manage.py evaluate_rules")
             except NoActiveRuleSet as exc:
                 raise CommandError(str(exc)) from exc
             self.stdout.write(
@@ -56,3 +63,4 @@ class Command(BaseCommand):
             ):
                 if n:
                     self.stdout.write(self.style.WARNING(f"  {label}: {n}"))
+            write_summary(self, case_summary)

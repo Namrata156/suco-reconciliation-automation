@@ -1,0 +1,302 @@
+================================================================================
+ PHASE 3 - EXCEPTION MANAGEMENT + MAKER-CHECKER WORKFLOW
+ DESIGN v1 - APPROVED 2026-10-10 (project owner)
+================================================================================
+
+APPROVAL (2026-10-10): the owner accepted the recommendation on every
+open question:
+  - P1 yes: every result with a due date becomes a case.
+  - P2 bulk is allowed for LOW/MEDIUM same-action cases only.
+  - P3 response-code edits go through maker-checker; rule sets stay as
+    versioned releases.
+  - P4 self-approval is flagged.
+  - P5 the hint is shown.
+  - P6 archival is designed now and built at the end of Phase 3 if time
+    allows.
+AMENDMENT 1 (owner, 2026-10-11, after Slice 1 on real data):
+  A1 RRC already sent. A case whose RRN already has a "Refund Reversal
+     Confirmation" adjustment row (on any loaded date):
+     - shows a warning: "RRC already sent for this RRN on <date>; check
+       before crediting".
+     - The maker closes it with that as evidence; the checker approves.
+     - No rule change, nothing automatic.
+     Found on 6 R06 cases on 25 Sep (Rs 1-2 each); the same pattern
+     applies to the 26 Sep R06b case.
+  A2 New action CHARGEBACK_REPRESENT. R07b says "accept or represent";
+     section 2 had missed represent.
+  A3 CLOSE_NO_ACTION completes when approved, with no external reference.
+  A4 A result that needs action but has no due date (TAT not found)
+     still becomes a case, flagged "no deadline". There are 0 today.
+  A5 A checker clears the "needs review" flag with a mandatory remark,
+     which is logged as an event.
+  Slice 1 interpretations accepted as built:
+  - a pending action is withdrawn if its rule changes
+  - an approved case keeps its action and is flagged for review
+  - a superseded case that needs action again reopens as OPEN
+  - every foreign key blocks deletion; archival moves events, actions and
+    cases first
+
+Build order: Slice 1 = case model, lifecycle, audit, roles, case
+creation and re-run handling. Slice 2 = admin screens, API, bulk,
+code-table maker-checker, the P5 hint.
+
+The spec (docs/reconciliation_automation.docx) has only stubs for both
+components. This draft fills them. No code is written until the owner
+approves it.
+
+What the spec says:
+  - Exception Management. Display unresolved exceptions, assign priorities,
+    track ageing, allow remarks, track resolution status (spec "Exception
+    Management"). Tracking, ageing, remarks, assignment and resolution
+    (architecture table).
+  - Maker-Checker. A maker generates reversal requests, a checker
+    approves, unauthorised uploads are prevented, and approval history is
+    recorded. "The final operational action shall be subject to the
+    Maker-Checker Workflow" (Exception and Action Classification).
+    Changes to rules, error codes and action mappings need authorised
+    approval (Rule Versioning).
+  - Roles. Administrator (users, rules, settings); Operations User
+    (upload, run reconciliation, reports); Maker (review exceptions,
+    prepare adjustments); Checker (approve or reject, authorise NPCI
+    uploads); Auditor (logs, reports, approval history).
+  - Auditability. Every reconciliation activity is logged.
+
+--------------------------------------------------------------------------------
+DECIDED BY THE OWNER (2026-10-10)
+--------------------------------------------------------------------------------
+  D1 Interface.
+     - Backend plus Django admin screens (queue, filters, take / submit /
+       approve / reject / complete actions).
+     - Thin API endpoints for the Phase 5 front end.
+     - No custom web pages until Phase 5.
+  D2 What approval means.
+     - The approval is RECORDED (who, when, what).
+     - Ops still carries out the action in the NPCI portal and CBS as
+       today, then marks the case done with the external reference.
+     - NPCI upload files come in Phase 4.
+  D3 Four-eyes. The same person may be maker and checker on one item if
+     they hold both roles (small team).
+     Mitigation proposed in P4 below.
+  D4 R06b carry-forward. A refund/RET where CBS already shows the money
+     back: decided by the owner with web research (owner asked PM to
+     decide).
+     - YES. The checker may approve "reply RRC 501 without a new credit".
+     - The maker MUST attach the CBS reversal already posted (date,
+       amount, RRN) as evidence.
+     - It is never automatic.
+     - Basis: NPCI RRC circular 38/2017-18. The remitter bank checks that
+       a matching debit exists in CBS before crediting, and confirms 501
+       only once the reversal is done in CBS. In R06b it already is, so a
+       second credit would pay the customer twice.
+
+--------------------------------------------------------------------------------
+1. WHAT BECOMES A CASE
+--------------------------------------------------------------------------------
+Proposal: one EXCEPTION CASE per business date + RRN, for every current
+rule result that has a due date, i.e. something someone must do.
+
+Real data (rule set v3.2):
+
+  Rule  Status                     Priority  14 Jul  25 Sep  26 Sep
+  ----  -------------------------  --------  ------  ------  ------
+  R01   No Financial Action (DRC   LOW         143      32       4
+        reply 102 in NPCI portal)
+  R02   Reversal Required          HIGH          6       0       0
+  R03   No Financial Action (DRC   MEDIUM      116       6       1
+        reply 104; corrected
+        2026-10-11, was "103")
+  R04a  No Financial Action (TCC)  LOW           2       0       0
+  R05   Return Required (RET)      HIGH         18       0       0
+  R06   Manual Credit Required     HIGH         16      28       9
+  R06b  Pending Investigation      HIGH          0       0       1
+  R07b  Chargeback Required        HIGH          1       1       0
+  R07c  Pending Investigation      MEDIUM        1       0       1
+  R07x  Exception                  HIGH          1       0       0
+  R12   Adjustment Required        HIGH          1      11       0
+  R13   Pending Investigation      MEDIUM        1      10     578
+                                             -----   -----   -----
+  Cases per date                               306      88     594
+  (Corrected 2026-10-11: 14 Jul was mis-added as 307; the rows sum to 306,
+  and the built system has 306.)
+
+Not a case (nothing to do, no due date): R09 Reconciled, R04c, R07a,
+R08, R10, R11. These are still visible in results and reports.
+
+--------------------------------------------------------------------------------
+2. CASE LIFECYCLE
+--------------------------------------------------------------------------------
+  OPEN --take--> IN_PROGRESS --submit--> PENDING_APPROVAL
+                     ^                         |        \
+                     |                    approve     reject (reason
+                     |                         |       mandatory)
+                     +--------- rejected ------+--------/
+                                               v
+                                           APPROVED --mark done (external
+                                               |       ref)--> COMPLETED
+  Any open state --(re-evaluation: no longer needs action)--> CLOSED_SUPERSEDED
+
+  - take: a maker picks the case from the shared queue (assigns it to
+    self). An Administrator can reassign.
+  - submit: the maker chooses the ACTION and adds remarks, plus evidence
+    where needed. The action is pre-filled from the rule (e.g. R05 ->
+    RET 115). The maker can change it, e.g. to another RET reason (Q1,
+    v3).
+  - approve / reject: a checker. A rejection goes back to the maker with
+    the reason.
+  - mark done: the maker records the NPCI portal / CBS reference after
+    doing it.
+  - A "close without action" outcome (e.g. an R13 investigation found the
+    payment on the next day's NPCI file) is also an action and is approved
+    the same way.
+
+Action types (pre-filled from the rule's action/response code):
+  - DRC reply 102 / 103 / 104
+  - TCC 102 / 103
+  - RET <reason> (default 115)
+  - Manual credit + RRC 501
+  - RRC 501 without a new credit (R06b, evidence required)
+  - Adjustment entry in CBS
+  - Chargeback raise / accept
+  - Refund customer (reversal)
+  - Close without action (with finding)
+
+--------------------------------------------------------------------------------
+3. QUEUE, AGEING, ALERTS
+--------------------------------------------------------------------------------
+  - Queue order:
+      - HIGH first, then overdue, then due date, then age.
+      - R07x (>35-day chargeback) and anything overdue are flagged.
+  - Filters: business date, status, priority, rule, overdue, assigned to
+    me, awaiting my approval.
+  - Due date / overdue come from the rule result (working days, 16:00
+    cutoff for RET). Ageing buckets come from rule_engine.AgeingBucket.
+  - Remarks: append-only comments on the case.
+  - Alerts: IN-APP only in Phase 3 (queue flags, counts). Email needs the
+    bank's mail server and is deferred.
+
+--------------------------------------------------------------------------------
+4. ROLES (Django groups)
+--------------------------------------------------------------------------------
+  Administrator   : manage users and roles, reassign cases, settings
+  Operations User : view queue and results (upload / run as in Phase 1-2)
+  Maker           : take, submit, add remarks, mark done
+  Checker         : approve / reject
+  Auditor         : read-only everything, incl. full case history and
+                    activity log
+
+A user may hold several roles (D3).
+
+--------------------------------------------------------------------------------
+5. AUDIT
+--------------------------------------------------------------------------------
+  - Every case change is an append-only CASE EVENT, which cannot be
+    edited or deleted (same protection as the rule set). It records:
+      - who and when
+      - old -> new status
+      - the action and its old -> new values
+      - remarks and evidence
+  - User activity log: login, logout and failed login (spec: user activity
+    report, Phase 6).
+
+--------------------------------------------------------------------------------
+6. RE-RUNS
+--------------------------------------------------------------------------------
+Re-evaluating a date supersedes its rule results (Phase 2). A case is
+keyed by business date + RRN, so it survives and links to the new
+result.
+  - Same rule: nothing changes.
+  - Rule changed, case not yet approved: the case updates, and an event
+    records the change.
+  - Rule changed, case already APPROVED or COMPLETED: the case is FLAGGED
+    for review, never silently changed.
+  - No longer needs action: CLOSED_SUPERSEDED (an event is recorded),
+    unless it was approved or completed, which is flagged instead.
+
+--------------------------------------------------------------------------------
+7. CARRY-FORWARDS FROM PHASE 2
+--------------------------------------------------------------------------------
+  - R06b: decided (D4).
+  - R07x "bring to the user's notice": handled by the in-app flag (section
+    3).
+  - Several Adjustment rows for one RRN: the case shows ALL overlay rows
+    for the RRN and is flagged "multiple adjustment rows", so the maker
+    sees each one.
+  - Same payment on two days (R12 on D, R13 on D+1): the R13 case shows
+    "an R12 case exists for this RRN on D-1" as an information hint only.
+    No automatic linking, per v3.2. (See P5.)
+  - Archival trigger: a business date is "complete" when it has no open
+    cases. Archival of results/cases before match groups is designed
+    here, but run later (P6).
+  - Code-table / rule changes need authorised approval (spec): see P3.
+
+--------------------------------------------------------------------------------
+8. OUT OF SCOPE FOR PHASE 3
+--------------------------------------------------------------------------------
+  - NPCI upload file generation (Phase 4)
+  - The custom front end (Phase 5)
+  - Reports, incl. the approval / ageing / user-activity reports
+    (Phase 6). The data for them is captured now.
+  - Email alerts
+  - Holiday-calendar import from CBS (waiting on the export format)
+
+--------------------------------------------------------------------------------
+OPEN QUESTIONS FOR THE OWNER
+--------------------------------------------------------------------------------
+  P1 Cases = results with a due date (306 / 88 / 594 per date above),
+     including the LOW DRC replies (R01: 143 on 14 Jul)?
+     Recommendation: yes. They are an NPCI-portal action with a T+1
+     deadline and NPCI penalties (Circular 42).
+
+  P2 Bulk handling. Can a maker submit, and a checker approve, many cases
+     at once?
+     Recommendation:
+       - Bulk is allowed for LOW / MEDIUM cases with the same action
+         (e.g. 143 x "DRC reply 102").
+       - HIGH cases (money moves) are handled one by one.
+
+  P3 Rule and code-table changes under maker-checker.
+     Recommendation:
+       - Response-code edits (e.g. filling in the 7 unknown RET numbers)
+         go through maker-checker in Phase 3.
+       - Rule-set changes stay as versioned releases (as v3.2 was), with
+         the owner's approval recorded.
+
+  P4 Mitigation for self-approval (D3).
+     Recommendation: allow it, but record a "self-approved" flag on the
+     approval and list such items in the approval report, so the Auditor
+     can see them.
+
+  P5 Same payment on two days. Show the D-1 R12 hint on R13 cases?
+     Recommendation: yes. It is display only and doesn't change v3.2's
+     one-day rule.
+
+  P6 Archival. Archive a date's cases and results when it has had no open
+     cases for N days?
+     Recommendation: design it now, choose N with ops, and build it at the
+     end of Phase 3 if time allows.
+
+--------------------------------------------------------------------------------
+SCHEDULE NOTE
+--------------------------------------------------------------------------------
+Planning estimate: 3-4 weeks (1-2 engineers). The project deadline is
+2026-10-15, 5 days away, so Phase 3 cannot finish by then at this scope.
+Re-baselining or cutting scope is the owner's decision.
+
+Suggested build order:
+  1. Case model, lifecycle and audit events
+  2. Roles and permissions
+  3. Case creation from rule results, plus re-run handling
+  4. Admin screens
+  5. API
+  6. Bulk actions
+
+--------------------------------------------------------------------------------
+SOURCES
+--------------------------------------------------------------------------------
+  - NPCI UPI OC RRC - Refund Reversal Confirmation by Customer Bank
+    (circular 38/2017-18):
+    https://www.npci.org.in/PDF/npci/upi/circular/2017/UPI%20-%20OC%20-%20RRC%20-%20Refund%20Revesal%20Confirmation%20by%20Customer%20Bank_0.pdf
+  - NPCI Circular 42 - Enhanced penalty for not updating TCC, RET, DRC and
+    RRC: https://www.npci.org.in/PDF/npci/upi/circular/2018/Circular%2042%20-%20Enhanced%20penalty%20for%20not%20updating%20TCC,%20RET,%20DRC%20and%20RRC.pdf
+  - docs/sop_reference.md - "Dispute update actions (in the NPCI portal,
+    maker -> checker)"

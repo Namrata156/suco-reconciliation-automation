@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "transactions",
     "reconciliation",
     "rule_engine",
+    "exception_management",
 ]
 
 MIDDLEWARE = [

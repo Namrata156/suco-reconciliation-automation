@@ -6,6 +6,52 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-11
+
+- **Added: Exception Management + Maker-Checker, Slice 1 (Phase 3).** New
+  app `exception_management`, built to the approved design
+  (`docs/phase3_design_draft_v1.txt`, approved 2026-10-10, Amendment 1
+  2026-10-11).
+  - **Cases.** `ExceptionCase`: one case per payment module + business
+    date + RRN, for every current rule result with a due date.
+  - **Proposed actions.** `ProposedAction` is kept per submission, so a
+    rejected proposal and its resubmission are both on record. The default
+    action comes from the rule, and the mapping is one table in
+    `actions.py`.
+  - **Audit.** `CaseEvent` is append-only: edits and deletes are blocked
+    on every ORM path.
+  - **Lifecycle** (`services.py`): take, release, reassign, submit,
+    approve, reject (reason required), mark done (external reference
+    required) and remark. Each step checks the role and status and locks
+    the row. Self-approval is allowed and flagged (`self_approved`).
+  - **Evidence.** RRC 501 without a new credit requires the CBS reversal
+    (date, amount, RRN) as evidence.
+  - **Roles.** Five groups (Administrator, Operations User, Maker,
+    Checker, Auditor), created by migration 0002.
+  - **Case sync.** `sync_cases`, which also runs automatically after
+    `evaluate_rules` and the Celery task, in the same transaction.
+    Re-runs:
+    - a case re-links to the new result
+    - a rule change after approval flags the case for review and never
+      changes it silently
+    - a case no longer needing action closes as superseded
+  - **Other flags.** `multiple_adjustment_rows`. Queue ageing and overdue
+    reuse the rule-result logic.
+  - **Matrix code.** `reconciliation/presence.py` was refactored: the
+    Adjustment-row selection now lives in one function, plus a read-only
+    `overlay_rows_for_date`. The matrix output is unchanged.
+  - **Real data, PM-verified.**
+    - Cases on 14 Jul / 25 Sep / 26 Sep: 306 / 88 / 594, all OPEN, one per
+      due-dated result.
+    - No case links to a superseded result.
+    - Re-evaluating 25 Sep re-linked all 88 cases with 0 changes.
+    - Multiple-adjustment flags: 1 / 6 / 1.
+  - **Found on real data.** The 6 flagged R06 cases on 25 Sep already
+    have a "Refund Reversal Confirmation" in the 26 Sep file. Per the
+    owner's Amendment 1, a warning will be shown, built in Slice 2.
+
+  Full suite: **327 tests, OK** (PM re-ran on Postgres).
+
 ## 2026-10-10
 
 - **Changed: rule set v3.2, one business date at a time (owner decision

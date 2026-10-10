@@ -318,44 +318,15 @@ def _overlay_attachments(
     original_not_loaded. Adjustment volumes are small (hundreds), so all
     current Adjustment rows are read and the ones for this date picked here.
     """
-    loaded_cbs_dates = set(
-        TransactionFact.objects.filter(
-            payment_module=payment_module,
-            source_register_type=RegisterType.CBS_GL_EXTRACT,
-            uploaded_file__is_current=True,
-        )
-        .values_list("business_date", flat=True)
-        .distinct()
-    )
+    loaded_cbs_dates = _loaded_cbs_dates(payment_module)
 
     attachments: dict[str, dict[str, tuple[TransactionFact, dict[str, str], bool]]] = {}
     for leg_name, register_types in overlay_legs.items():
-        is_adjustment = RegisterType.ADJUSTMENT in register_types
-        by_rrn, _dups, _collisions = _build_leg_index(
-            payment_module, None if is_adjustment else business_date_, register_types
-        )
-        cells = _read_cells(record for records in by_rrn.values() for record in records)
         stats = Counter()
         attached: dict[str, tuple[TransactionFact, dict[str, str], bool]] = {}
-        for rrn, records in by_rrn.items():
-            belonging = []
-            for record in records:
-                record_cells = cells.get(record.pk, {})
-                original_not_loaded = False
-                if is_adjustment:
-                    txn_date = _parse_txn_date(record_cells.get("txn_date", ""))
-                    if txn_date is not None and txn_date in loaded_cbs_dates:
-                        if txn_date != business_date_:
-                            continue
-                        stats["linked_to_txn_date"] += 1
-                    elif record.business_date == business_date_:
-                        original_not_loaded = True
-                        stats["original_not_loaded"] += 1
-                    else:
-                        continue
-                belonging.append((record, record_cells, original_not_loaded))
-            if not belonging:
-                continue
+        for rrn, belonging in _belonging_overlay_rows(
+            payment_module, business_date_, register_types, loaded_cbs_dates, stats
+        ).items():
             # One overlay presence per (group, leg): the first row is used and
             # any further rows for the same RRN are counted, never hidden.
             stats["duplicates"] += len(belonging) - 1
@@ -365,6 +336,76 @@ def _overlay_attachments(
         attachments[leg_name] = attached
         result.overlays[leg_name] = dict(stats)
     return attachments
+
+
+def _loaded_cbs_dates(payment_module: PaymentModule) -> set[date]:
+    return set(
+        TransactionFact.objects.filter(
+            payment_module=payment_module,
+            source_register_type=RegisterType.CBS_GL_EXTRACT,
+            uploaded_file__is_current=True,
+        )
+        .values_list("business_date", flat=True)
+        .distinct()
+    )
+
+
+def _belonging_overlay_rows(
+    payment_module: PaymentModule,
+    business_date_: date,
+    register_types: list[str],
+    loaded_cbs_dates: set[date],
+    stats: Counter,
+) -> dict[str, list[tuple[TransactionFact, dict[str, str], bool]]]:
+    """{rrn: [(fact, cells, original_not_loaded), ...]} -- every row of one
+    overlay leg that belongs to this business date's group for the RRN, in
+    id order (the first is the one attached as the presence row). The
+    attachment rule is the one described in _overlay_attachments."""
+    is_adjustment = RegisterType.ADJUSTMENT in register_types
+    by_rrn, _dups, _collisions = _build_leg_index(
+        payment_module, None if is_adjustment else business_date_, register_types
+    )
+    cells = _read_cells(record for records in by_rrn.values() for record in records)
+    rows: dict[str, list[tuple[TransactionFact, dict[str, str], bool]]] = {}
+    for rrn, records in by_rrn.items():
+        belonging = []
+        for record in records:
+            record_cells = cells.get(record.pk, {})
+            original_not_loaded = False
+            if is_adjustment:
+                txn_date = _parse_txn_date(record_cells.get("txn_date", ""))
+                if txn_date is not None and txn_date in loaded_cbs_dates:
+                    if txn_date != business_date_:
+                        continue
+                    stats["linked_to_txn_date"] += 1
+                elif record.business_date == business_date_:
+                    original_not_loaded = True
+                    stats["original_not_loaded"] += 1
+                else:
+                    continue
+            belonging.append((record, record_cells, original_not_loaded))
+        if belonging:
+            rows[rrn] = belonging
+    return rows
+
+
+def overlay_rows_for_date(
+    payment_module: PaymentModule, business_date_: date, leg_name: str = "ADJUSTMENT"
+) -> dict[str, list[tuple[TransactionFact, dict[str, str], bool]]]:
+    """Read-only: ALL dispute rows of one overlay leg that belong to
+    `business_date_`'s groups, {rrn: [(fact, cells, original_not_loaded),
+    ...]}. The presence matrix stores only the first row per (group, leg)
+    (RegisterPresence is unique per leg); Exception Management uses this to
+    see the rest (Phase 3 design section 7, "several Adjustment rows for one
+    RRN"). Same attachment rule as build_presence_matrix, read from the
+    current files."""
+    return _belonging_overlay_rows(
+        payment_module,
+        business_date_,
+        DEFAULT_OVERLAY_LEGS[leg_name],
+        _loaded_cbs_dates(payment_module),
+        Counter(),
+    )
 
 
 @db_transaction.atomic
