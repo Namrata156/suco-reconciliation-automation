@@ -1,0 +1,820 @@
+===============================================================================
+ ENTERPRISE PAYMENT RECONCILIATION PLATFORM (UPI)
+ PHASE 2 STEP 5: RULE EVALUATOR vs OPS' MANUAL RECONCILIATION, 14 JUL 2026
+ Prepared: 2026-10-10 (test-engineer, read-only validation)
+===============================================================================
+
+Scope      : The current rule results (rule_engine_ruleresult, is_superseded =
+             false, rule set v3.1) for business date 2026-07-14, compared with
+             ops' manual working sheet (manual_reconciliation_sheet.xlsx,
+             repo root, gitignored). Internal consistency checks for
+             2026-09-25 and 2026-09-26, which have no manual sheet.
+Read-only  : No code, data, migrations or tracker files were changed. Only
+             SELECTs were run, plus `manage.py check_rule_evaluation`
+             (read-only). The workbook was read in memory with openpyxl
+             (scratch venv). No copy of it was written anywhere.
+Rules      : docs/phase2_rule_table_v3_approved.txt (v3.1) and its oracle
+             docs/phase2_rule_table_v3_1_reference.sql. Business rules are
+             not restated here. Rule codes refer to that document.
+Row counts : "rows" means data rows, header excluded. openpyxl's max_row
+             (header included) is one higher for each sheet.
+
+Classes used for every difference (exactly one each):
+  SYSTEM BUG               the system does not do what the approved rules say
+  OPS SHEET ERROR          ops' sheet is wrong, or is a working artefact
+                           (a helper list whose label doesn't mean the action)
+  RULE-TABLE DIFFERENCE    the system follows v3.1, but ops' view differs and
+                           v3.1 doesn't cover the case: needs an owner decision
+  DATA NOT LOADED          can't be compared until another business date
+                           is loaded
+  EXPLAINED                not a real difference (reason given)
+
+
+1. HEADLINE
+-------------------------------------------------------------------------------
+
+  - No SYSTEM BUG found. On every sheet where ops' work maps to a rule outcome,
+    the system agrees row by row.
+  - drc 265/265, tmt 20/20 and adj 18/18 agree on the rule ops applied.
+    The CBS sheets (`14`, `Sheet12`, `1535` 14 Jul rows) and the NPCI sheets
+    (`iss`, `acq`, `mer acq`, `mer iss`, `Sheet10`) match the loaded data
+    exactly, row for row (RRN + amount + response code). The presence and
+    outcome agree on every row except the one below.
+  - 1 real disagreement on 14 Jul, classed RULE-TABLE DIFFERENCE:
+    RRN 656121043209, Rs 900, R12 "Adjustment Required" (HIGH). CBS posted
+    it on 15 Jul. The same pattern appears 11 times between 25 and 26 Sep,
+    where both dates are loaded (section 4.6). v3.1 only re-checks forward
+    (CBS on D, NPCI on D+1). It has no rule for NPCI on D, CBS on D+1.
+  - 794 rows on ops' `rev` sheet are successful on-us payments, not
+    reversals: OPS SHEET ERROR (working artefact). It has no effect on ops'
+    DRC results.
+  - check_rule_evaluation passes (0 of 233,081 groups differ from the
+    oracle). 25 Sep and 26 Sep pass every internal consistency check.
+
+  Correction to the Step 5 brief: the 14 Jul Adjustment file has 257 rows
+  (255 with Adjdate 14 Jul, 2 with Adjdate 15 Jul), not ~424. 424 is the
+  total over the three loaded dates (257 + 93 + 74).
+
+
+2. HOW SHEETS WERE JOINED
+-------------------------------------------------------------------------------
+
+  RRN normalisation: ops stores RRNs as numbers, so leading zeros are lost.
+  Each sheet RRN was normalised the way file_processing.tasks._extract_cbs_rrn
+  does it: if it is all digits and 8-11 long, zero-pad it to 12 (e.g.
+  33078017112 -> 033078017112). On `14`/`Sheet12` the normalised sheet RRN
+  equals the system's CBS fact RRN on all 69,239 rows. The only exceptions
+  are 2 GL rows where ops' formula gives #VALUE! and the system has no RRN.
+
+  Join keys:
+    drc, tmt, adj           RRN -> 14 Jul match group -> current RuleResult
+    14, Sheet12, 1535, rev  (Remarks, amount, Withdrawal/Deposit side)
+                            multiset-joined to the CBS staging rows of the
+                            14 Jul CBS file (cbs_14072026.xls, staging
+                            history), then fact -> group -> result
+    iss/acq/mer acq/        (RRN, amount, response code) multiset-joined to
+    mer iss/Sheet10         the 14 Jul NPCI facts (Raw Data, Merchant Raw
+                            Data, BBP; code = staging raw cell 5)
+  Ops' "implied outcome" was derived only from ops' own columns (eff/rev,
+  REF/EFF, RES CODE). For the NPCI sheets, "in CBS" was taken from ops' own
+  `1535` sheet.
+
+  Workbook map (what each sheet is, established from the data):
+    1535     the whole 3-day CBS GL 1535 file (13/14/15 Jul), identical to
+             the staged CBS file. EFF = lookup of the RRN in 14 Jul NPCI.
+    14       14 Jul CBS rows whose RRN appears once that day. REF = the same
+             NPCI lookup.
+    Sheet12  14 Jul CBS rows whose RRN appears twice (1 debit + 1 credit).
+             14 + Sheet12 = all 69,239 14 Jul CBS rows, with no overlap.
+    rev      the credit-back leg of every same-RRN CBS pair, per date
+             (13/14/15 Jul). Used by drc/tmt's `rev` lookup.
+    iss/acq/mer acq/mer iss  the 14 Jul NPCI Raw Data ISS / ACQ, Merchant
+             ACQ (+ BBP) / Merchant ISS files, concatenated: DATE (071426),
+             RRN, RES CODE, AMT.
+    Sheet10  iss + acq + mer acq + mer iss stacked: the lookup target of
+             REF/EFF.
+    drc/tmt  DRC / Timeout report rows ops acts on, with eff/rev lookups.
+    adj      the Adjustment report rows ops acted on.
+
+
+3. SHEET BY SHEET, 14 JUL 2026
+-------------------------------------------------------------------------------
+
+3.1  drc  (265 rows)
+     What   : DRC report rows where SSK is the Remitter (all 265; 11 are
+              on-us, i.e. Beneficiary also SSK). eff = RRN found in CBS
+              (1535), rev = found in `rev`.
+     Ops' implied rule: eff+rev -> R01, eff only -> R02, neither -> R03.
+     Result :
+       R01 agree                                 143
+       R02 agree                                   6
+       R03 agree                                 116
+       ------------------------------------------------
+       total                                     265   (all amounts equal)
+     ops-only 0, system-only 0 (every system R01/R02/R03 RRN is on the
+     sheet), disagreements 0.
+     Note: the DRC file has 273 rows. The 8 not on ops' sheet have SSK as
+     beneficiary (ssk_side = false). The system puts all 8 in R11 (NPCI
+     decline, no money moved, no action). That matches ops leaving them
+     out.
+
+3.2  tmt  (20 rows)
+     What   : Timeout rows where SSK is the Beneficiary (all 20, code RB).
+     Ops' implied rule: eff -> R04a (TCC 102), eff+rev -> R04b, neither
+     -> R05 (RET).
+     Result :
+       R04a agree                                  2
+       R05  agree                                 18   (due 15 Jul 16:00)
+       ------------------------------------------------
+       total                                      20
+     ops-only 0, system-only 0, disagreements 0.
+     Note: the Timeout file has 30 rows. The 10 where SSK is the remitter
+     are R04c 7 (no action, RB) and R07a 3 (a TCC already in the Adjustment
+     file). Ops left all 10 out. This agrees.
+
+3.3  adj  (18 rows)
+     What   : the Adjustment report rows ops acted on (all Remitter = SSK).
+     Result :
+       R06  agree (8 Credit Adjustment, 8 Online Refund;
+                   Manual Credit Required, RRC 501, due 15 Jul)    16
+       R07x agree (187576707970, Re-presentment Raise, Rs 199,
+                   41 days after Txndate 3 Jun; Exception HIGH)     1
+       R07b agree (618512781680, Fraud Chargeback
+                   Representment, Rs 3,600; due 18 Aug)             1
+       -------------------------------------------------------------
+       total                                                       18
+     Amounts: the system uses Adjamount, as ops does. The 1 row where
+     Txnamount differs (532023521756: Txnamount 601, Adjamount 401) has
+     amount 401 in both.
+     ops-only 0, disagreements 0. Ops' 18 = exactly the system's 14 Jul
+     R06 + R07b + R07x set.
+
+     Why ops listed 18 rows when the 14 Jul Adjustment file has 257:
+       on ops' adj sheet (R06 16, R07x 1, R07b 1)                  18
+       R07a confirmations, no action (Debit Reversal
+         Confirmation 168, Refund Reversal Confirmation 53, TCC 6) 227
+       Debit Reversal Confirmation, Remitter not SSK
+         (R08 4, R11 3; other bank's case)                          7
+       Complaint Raise                                              2
+         - 619554915472, Rs 19,700: same RRN as an R02 DRC (DRC rule
+           fires first). Ops covers it through the drc sheet.
+         - 619442055691, Rs 4,999.86: R07c Pending Investigation,
+           MEDIUM, due 15 Jul. Not on ops' sheet: see SYSTEM-ONLY below.
+       Response to Complaint, not evaluated                         3
+         - 619016373213 Rs 750 and 655558271244 Rs 6,150: Adjdate
+           15 Jul. DATA NOT LOADED (15 Jul not built).
+         - 187576707970 Rs 199: second Adjustment row for an RRN that
+           already carries the Re-presentment Raise (one overlay per
+           group and leg; counted as a duplicate). EXPLAINED: the RRN is
+           already Exception HIGH (R07x). Raised as an owner item (7.2).
+       -------------------------------------------------------------
+       total                                                      257
+
+     SYSTEM-ONLY (not on ops' adj sheet):
+       619442055691  Rs 4,999.86  Complaint Raise -> R07c, Pending
+                     Investigation, MEDIUM, due 15 Jul.
+                     Class: EXPLAINED. Ops' adj sheet lists only rows that
+                     need a credit or chargeback action. R07c is the
+                     owner-approved manual-review rule (Q2/Q5) and moves no
+                     money. Worth a check with ops that complaints are
+                     tracked somewhere (7.3).
+
+3.4  14  (67,227 rows)
+     What   : 14 Jul CBS rows whose RRN appears once that day. REF = the
+              row's RRN looked up in 14 Jul NPCI (Sheet10), returning AMT.
+              #N/A = not found. All 67,227 rows match a 14 Jul CBS fact.
+     Result :
+       REF found, R09 Reconciled                             67,198  agree
+       REF found, dispute-file rule (in NPCI, as ops says;
+         the action comes from ops' drc/tmt/adj, which agree):   26  agree
+           R06 8 (adj), R02 6 (drc), R04a 2 (tmt),
+           R04c 7 + R07a 3 (SSK-remitter Timeouts ops dropped)
+       REF #N/A, R13 Pending Investigation (811151696323,
+         Rs 1,000 debit, awaiting next day)                       1  agree
+       REF #VALUE!, no RRN (non-UPI GL entries: "UPI TO RRC DRC
+         TCC REVERSAL DATED ON JULY 13" Rs 76,936.13 and
+         "NULLIFICATION OF UPI TRXN AMT TRF TO GL7/1526"
+         Rs 4,313,893.12). Both sides: not a transaction           2  EXPLAINED
+       ---------------------------------------------------------------
+       total                                                 67,227
+     ops-only 0, system-only 0, disagreements 0.
+     The R13's final outcome (matched next day, or escalated) needs
+     15 Jul NPCI: DATA NOT LOADED for the outcome. Presence agrees today.
+
+3.5  Sheet12  (2,012 rows = 1,006 RRNs x debit + credit)
+     What   : 14 Jul CBS rows whose RRN appears twice that day. All have
+              REF found. Ops doesn't split on-us payments from reversals
+              here. The system does.
+     Result :
+       R09 on-us payment (NPCI issuer + acquirer pair,
+         both 00; 794 RRNs)                                   1,588  agree
+       R01 DRC reversed (143 RRNs)                              286  agree
+       R10 reversed, not in DRC (69 RRNs)                       138  agree
+       ---------------------------------------------------------------
+       total                                                  2,012
+     ops-only 0, system-only 0, disagreements 0 (REF "found in NPCI" is
+     true for all 2,012 rows).
+
+3.6  rev  (2,365 rows: 13 Jul 1,208, 14 Jul 1,006, 15 Jul 151)
+     What   : for each date, the credit-back leg of every RRN that appears
+              twice in CBS (1 row per RRN; all Deposits except 1 on 13 Jul).
+              The 14 Jul set is exactly Sheet12's 1,006 RRNs.
+     Result :
+       14 Jul, system cbs_reversed too (R01 143, R10 69;
+         incl. 16 failed on-us pairs)                           212  agree
+       14 Jul, system: successful on-us payment (R09)           794  OPS SHEET ERROR
+       13 Jul rows (13 Jul not a loaded business date)        1,208  DATA NOT LOADED
+       15 Jul rows (15 Jul not loaded)                          151  DATA NOT LOADED
+       ---------------------------------------------------------------
+       total                                                  2,365
+     system-only 0: every one of the system's 212 cbs_reversed groups is on
+     `rev`.
+     The 794 (listed in full in APPENDIX B): `rev` is a mechanical "RRN
+     appears twice in CBS" list. For an on-us payment CBS legitimately holds
+     the payer's debit and the payee's credit, and NPCI holds a successful
+     issuer + acquirer pair. Class: OPS SHEET ERROR (working artefact). It
+     does not affect ops' results: none of the 794 is in the DRC or Timeout
+     file, and drc/tmt agree 100% (3.1, 3.2). This is the same on-us
+     correction already made in Phase 2 Step 2.
+     Side note: 136 of the 13 Jul rev RRNs carry a 14 Jul Adjustment
+     "Debit Reversal Confirmation" (R07a, original_not_loaded). This fits:
+     NPCI confirms reversals CBS made on 13 Jul.
+
+3.7  1535  (154,651 rows: 13 Jul 74,144, 14 Jul 69,239, 15 Jul 11,268)
+     What   : the whole 3-day CBS file. Its multiset of (Remarks, amount,
+              side) is identical to the staged file. EFF = the same 14 Jul
+              NPCI lookup as REF.
+     Result :
+       14 Jul rows: same rows as 14 + Sheet12. EFF found
+         69,236, #N/A 1 (= R13), #VALUE! 2 (GL)              69,239  agree (3.4, 3.5)
+       13 Jul rows (EFF #N/A 74,142, #VALUE! 2 GL)           74,144  DATA NOT LOADED
+       15 Jul rows, EFF #N/A                                 11,267  DATA NOT LOADED
+       15 Jul row, EFF FOUND: 656121043209 Rs 900 credit
+         ("By UPI/656121043209/...@naviaxis")                     1  RULE-TABLE DIFFERENCE
+       ---------------------------------------------------------------
+       total                                                154,651
+     The one 15 Jul row is the disagreement in 3.8 (seen from the CBS side).
+
+3.8  Sheet10  (78,109 rows) and its parts
+     What   : 14 Jul NPCI rows (DATE 71426 = 14 Jul) plus file trailer rows
+              left from stacking the cycle files.
+     Match to loaded data: 77,989 data rows = 77,989 NPCI facts, identical
+     multiset of (RRN, amount, code); fact-only 0, sheet-only 0. Plus 117
+     trailer rows (2 blank + 1 "20260714 / 3" per file boundary) and 3 fully
+     blank rows.
+     Ops' implied status = RES CODE + "RRN in CBS" (from ops' 1535).
+     Result (rows):
+       00, in CBS 14 Jul -> R09                              68,786  agree
+       00, in CBS 14 Jul -> R06 (Online Refund on a
+         completed payment; ops' adj agrees)                      8  agree
+       declined/RB, in CBS -> R01 153, R02 6, R04a 2,
+         R04c 7, R07a 3, R10 75                                 246  agree
+       declined/RB, not in CBS -> R11 8,813, R03 117, R05 18  8,948  agree
+       00, NOT in CBS 14 Jul, IN CBS 15 Jul -> R12                1  RULE-TABLE DIFFERENCE
+       trailer / blank rows                                     120  EXPLAINED (not data)
+       ---------------------------------------------------------------
+       total                                                 78,109
+     (Rows to groups: R09 68,786 rows = 67,992 groups, because the 794
+     on-us RRNs have 2 rows each. R11 8,813 rows = 8,749 groups.)
+     No row has 00 + in CBS with a non-R09/R06 outcome. No declined row is
+     Reconciled. R14-R17 and R99 fire 0 times.
+
+     Per part (each row is in Sheet10 too, with the same class):
+       iss      25,302 = R09 23,067 + R01 10 + R04a 2 + R10 6 + R03 1
+                         + R05 18 + R11 2,171 + trailer 27
+       acq      19,187 = R09 17,272 + R01 85 + R02 4 + R04c 3 + R07a 2
+                         + R10 67 + R03 24 + R11 1,703 + trailer 27
+       mer acq  33,208 = R09 28,075 + R06 8 + R12 1 + R01 58 + R02 2
+                         + R04c 4 + R07a 1 + R10 2 + R03 92 + R11 4,929
+                         + trailer 36. (Includes the 4 BBP ACQ rows; ops
+                         keeps BBP inside mer acq.)
+       mer iss     409 = R09 372 + R11 10 + trailer 27
+       Each part matches its file type's facts exactly (Raw ISS 25,275,
+       Raw ACQ 19,160, Merchant ACQ 33,168 + BBP 4, Merchant ISS 382).
+
+     THE DISAGREEMENT
+       RRN 656121043209, Rs 900, Merchant Raw Data ACQ 1C, code 00,
+       txn time 14 Jul 23:59:34.
+       System : R12 In NPCI only, successful -> Adjustment Required, HIGH,
+                RBI compensation flag, due 15 Jul. recheck_state blank.
+       Ops    : found it. CBS posts "By UPI/656121043209" Rs 900 on 15 Jul
+                (1535, EFF = 900), so CBS was updated a day late. No
+                adjustment entry is needed.
+       Class  : RULE-TABLE DIFFERENCE (needs owner). The evaluator follows
+                v3.1 correctly. v3.1's next-day re-check only covers CBS on
+                D with NPCI on D+1 (R13 -> D+1, R12 mirror =
+                matched_previous_day). This case is the other way round:
+                NPCI on D, CBS on D+1. 15 Jul CBS is also not loaded as a
+                business date (it is only staged). Even once it is, under
+                v3.1 15 Jul would get an R13 for this RRN that escalates to
+                Reversal Required, and 14 Jul's R12 would stay. See 4.6:
+                the same pattern is in loaded data.
+
+3.9  14 Jul totals from the system side
+     Of the 77,354 current 14 Jul results, 77,125 have their RRN on at least
+     one ops sheet. 229 are on none (EXPLAINED, all non-financial):
+       R07a 224  NPCI's confirmations (DRC confirmation 168, refund reversal
+                 confirmation 53, TCC 3) of earlier transactions
+                 (original_not_loaded; Txndate 13 Jul 185, older 39)
+       R08    4  other bank's DRC confirmations (541131536016 Rs 500,
+                 619486484612 Rs 60, 757374458853 Rs 10, 878991797455
+                 Rs 2,000)
+       R07c   1  619442055691 (3.3)
+
+
+4. 25 SEP AND 26 SEP 2026: INTERNAL CONSISTENCY (no manual sheet)
+-------------------------------------------------------------------------------
+
+  4.1 Current results = groups per date (non-superseded)    PASS
+        14 Jul 77,354 / 25 Sep 79,096 / 26 Sep 76,631. Each group has a
+        current result; 0 groups have none. 0 superseded results exist yet
+        (one evaluation run per date, 2026-10-10 10:17-10:19 UTC, 17-21 s
+        each).
+  4.2 One current result per group                          PASS
+        0 groups with more than one. 0 current results on superseded groups
+        (there are 0 superseded groups). 0 results whose RRN or date
+        differs from their group's.
+  4.3 Every HIGH result has a due date (unless awaiting)    PASS
+        All 103 HIGH results have one: 14 Jul R02 6, R05 18, R06 16, R07b 1,
+        R07x 1, R12 1; 25 Sep R06 28, R07b 1, R12 11, R13-escalated 10;
+        26 Sep R06 9, R06b 1. No HIGH result is awaiting (the 579 awaiting
+        R13s are MEDIUM). 0 due dates before tat_start_date. R05 18 carry
+        16:00. calendar_incomplete 0.
+        Sample date checks: Fri 25 Sep T+1 -> Mon 28 Sep (26 Sep is the 4th
+        Saturday). R07b 25 Sep (Wrong Credit Chargeback Raise) 35 calendar
+        days -> 30 Oct. R07b 14 Jul -> 18 Aug.
+  4.4 tat_unresolved = 0                                    PASS (0)
+  4.5 26 Sep awaiting_next_day 578 = CBS-only count         PASS, with a note
+        CBS present + NPCI absent on 26 Sep = 584 groups = R13 578 + R10 6.
+        The 6 are a CBS debit + credit pair with no NPCI row, so R10
+        (reversed) fires before R13 by design. Without reversals, CBS-only
+        = 578 = R13 = awaiting_next_day. Same check: 14 Jul 1 = 1
+        (awaiting); 25 Sep 10 = 10 (escalated, Reversal Required, HIGH, due
+        12 Oct). The only status/priority overrides of a rule's defaults are
+        those 10 escalations.
+  4.6 Cross-date finding (same pattern as 3.8)              OWNER ITEM
+        All 11 of 25 Sep's R12 results ("In NPCI only, successful ->
+        Adjustment Required", HIGH, due 28 Sep) are also 26 Sep R13 results
+        ("In CBS only", awaiting next day). Amounts are equal and directions
+        opposite in all 11:
+          004383934640   110.00     153533856206    40.00
+          159674438091   353.00     191062025376 1,500.00
+          265411730712   270.00     316826564107    32.00
+          343367999428   100.00     546869277763 1,000.00
+          626821858487 1,000.00     626838682607    62.00
+          976579090223   500.00
+        So NPCI settled them on 25 Sep and CBS posted them on 26 Sep. Under
+        v3.1 as built:
+          - 25 Sep says "pass an adjustment entry in CBS" for 11
+            transactions CBS has already posted.
+          - When 27 Sep loads, these 11 can't appear in 27 Sep NPCI
+            (they're in 25 Sep's). They will escalate to Reversal Required
+            (refund the customer), HIGH.
+        Step 5's plan to load 27 Sep "to confirm the 26 Sep CBS-only set
+        clears" should therefore expect at most 567 of the 578 to clear.
+        The 11 need a backward (D-1) check. Class: RULE-TABLE DIFFERENCE,
+        not a bug: the evaluator does what v3.1 says.
+        Related, can't be checked: the 10 escalated 25 Sep R13s (due 12 Oct)
+        could be the same pattern against 24 Sep NPCI, which isn't loaded
+        (DATA NOT LOADED). Worth checking before anyone reverses them.
+  4.7 manage.py check_rule_evaluation                       PASS
+        "Per-group: oracle 233081 groups, evaluator 233081 current
+        results; 0 differ, 0 only in oracle, 0 only in evaluator"; totals
+        77354 / 79096 / 76631 match EXPECTED_COUNTS. Ran in 15 s.
+
+
+5. DISAGREEMENT REGISTER (every one, 14 Jul)
+-------------------------------------------------------------------------------
+
+  #  Sheet(s)          RRN            Amount     Ops' view               System                      Class
+  -- ----------------- -------------- ---------- ----------------------- --------------------------- ----------------------
+  1  Sheet10/mer acq,  656121043209   900.00     found: CBS credited it  R12 Adjustment Required,    RULE-TABLE DIFFERENCE
+     1535 (15 Jul row)                           on 15 Jul, no action    HIGH, due 15 Jul
+  2  rev (794 RRNs,    see APPENDIX B            listed as a reversal    R09 Reconciled (on-us,      OPS SHEET ERROR
+     14 Jul)                                     (working list)          NPCI pair 00/00)            (working artefact)
+
+  Not disagreements, but listed for completeness:
+  -  adj (system-only) 619442055691   4,999.86   not listed              R07c Pending Investigation, EXPLAINED (3.3)
+                                                                         MEDIUM, due 15 Jul
+  -  adj file (neither) 187576707970  199.00     not listed              2nd Adjustment row (Response EXPLAINED (3.3); owner
+                                                                         to Complaint) not evaluated item 7.2
+  -  adj file (neither) 619016373213  750.00     not listed              Adjdate 15 Jul, not built   DATA NOT LOADED
+                        655558271244  6,150.00
+  -  14 / 1535          811151696323  1,000.00   #N/A (not in NPCI)      R13 awaiting next day       agree; outcome DATA
+                                                                                                     NOT LOADED (15 Jul)
+  -  rev / 1535 13 and 15 Jul rows (1,359 + 85,411): no business date loaded, DATA NOT LOADED
+
+  Count of SYSTEM BUGs: 0.
+
+
+6. SUMMARY
+-------------------------------------------------------------------------------
+
+  What agrees (14 Jul):
+    - Every DRC, Timeout and Adjustment action ops took: 265 + 20 + 18 =
+      303 of 303 RRNs, with the same amounts.
+    - Every CBS row (69,239) and every NPCI row (77,989) in ops' sheets is
+      the loaded data, row for row. For all of them ops' found / not-found
+      matches the system's presence, and the system's outcome is consistent
+      with ops' implied status. The one exception is the R12 above.
+    - Every system reversal (212) is on ops' rev list. Ops' 10 remitter-side
+      Timeouts and 8 beneficiary-side DRCs are correctly left out, and are
+      no-action in the system (R04c/R07a, R11).
+    - R13 (1) and the 2 GL entries agree.
+  25 / 26 Sep: every internal check passes. The oracle agrees on all
+  233,081 groups.
+
+  Needs an owner decision (listed, not done):
+    7.1 Late CBS posting (NPCI on D, CBS on D+1): 12 cases (14 Jul 1;
+        25 -> 26 Sep 11). v3.1 has no rule for it. The R12 action would post
+        a duplicate CBS entry, and the D+1 R13 would escalate to a customer
+        reversal. Possible direction for the owner: a backward re-check that
+        mirrors the existing one (R12 on D cleared by a CBS row on D+1 with
+        the same amount and opposite side; R13 on D+1 cleared by NPCI 00 on
+        D). Also decide whether the 25 Sep escalated 10 need a D-1 look
+        before anyone reverses them.
+    7.2 More than one Adjustment row for the same RRN and group: only the
+        first is attached and evaluated. Here the 2nd ("Response to
+        Complaint") on 187576707970 has no result of its own. It's
+        harmless on 14 Jul (the RRN is already Exception HIGH), but two
+        rows with different actions (e.g. a TCC plus a Credit Adjustment)
+        would hide one of them. The tracker counts 8 same-RRN duplicates
+        over the 3 dates.
+    7.3 Confirm with ops (low): are complaints (R07c, e.g. 619442055691
+        Rs 4,999.86) tracked anywhere today? Ops' adj sheet leaves them out.
+  Data still needed: 15 Jul NPCI (14 Jul R13 outcome; 2 Response to
+  Complaint rows), 15 Jul CBS as a business date (would show item 7.1 on
+  14 Jul), 24 Sep NPCI (item 7.1 for 25 Sep's escalations), 27 Sep (planned).
+
+  Test-suite note: none of these checks touched the Django test DB. They
+  are read-only queries against the dev DB plus the existing
+  check_rule_evaluation command (15 s).
+
+
+APPENDIX A. QUERIES USED (all SELECT / COPY ... TO STDOUT; read-only)
+-------------------------------------------------------------------------------
+
+Run as: docker exec -i suco_reconciliation_automation-postgres-1 psql
+        -U reconciliation -d reconciliation -P pager=off -c "<query>"
+Joins against the workbook were done in Python (openpyxl, in memory) on the
+CSV output of A1-A5, with the RRN normalisation in section 2.
+
+A1  14 Jul results with the matrix (one row per current group)
+  COPY (
+  select g.id gid, g.rrn, g.business_date, g.is_on_us, g.cbs_reversed,
+         g.amount_match, g.direction_match, g.processing_status,
+         r.rule_code, r.status_category, r.priority, r.due_date,
+         r.due_cutoff_time, r.recheck_state,
+         coalesce(rc.flag||' '||coalesce(rc.code,'?'),'') code,
+         c.present cbs, c.amount cbs_amt, c.direction cbs_dir,
+         (c.paired_transaction_record_id is not null) cbs_paired,
+         n.present npci, n.amount npci_amt, n.direction npci_dir,
+         n.response_code npci_code, nf.source_register_type npci_type,
+         d.ssk_side drc_ssk, d.response_code drc_code, d.amount drc_amt,
+         t.ssk_side tmo_ssk, t.response_code tmo_code, t.amount tmo_amt,
+         a.ssk_side adj_ssk, a.dispute_type adj_type, a.amount adj_amt,
+         a.original_not_loaded adj_onl, af.business_date adj_date
+  from reconciliation_transactionmatchgroup g
+  join rule_engine_ruleresult r on r.match_group_id=g.id and not r.is_superseded
+  left join rule_engine_responsecode rc on rc.id=r.response_code_id
+  join reconciliation_registerpresence c on c.match_group_id=g.id and c.leg='CBS'
+  join reconciliation_registerpresence n on n.match_group_id=g.id and n.leg='NPCI'
+  left join transactions_transactionfact nf on nf.id=n.transaction_record_id
+  left join reconciliation_registerpresence d on d.match_group_id=g.id and d.leg='DRC'
+  left join reconciliation_registerpresence t on t.match_group_id=g.id and t.leg='TIMEOUT'
+  left join reconciliation_registerpresence a on a.match_group_id=g.id and a.leg='ADJUSTMENT'
+  left join transactions_transactionfact af on af.id=a.transaction_record_id
+  where not g.is_superseded and g.business_date='2026-07-14'
+  ) TO STDOUT CSV HEADER
+
+A2  14 Jul CBS facts with their raw staging rows
+  COPY (select f.id, f.rrn, f.rrn_valid, f.amount, f.direction, h.worksheet,
+         h.row_number, h.raw_date, h.remarks, h.withdrawals, h.deposits
+  from transactions_transactionfact f
+  join transactions_stagingcbsglextracthistory h on h.original_id=f.staging_row_id
+  where f.source_register_type='CBS_GL_EXTRACT' and f.business_date='2026-07-14'
+  ) TO STDOUT CSV HEADER
+
+A3  Every staged row of the 14 Jul CBS file (13/14/15 Jul), for 1535/rev
+  COPY (select h.original_id, h.worksheet, h.row_number, h.raw_date, h.remarks,
+         h.withdrawals, h.deposits
+  from transactions_stagingcbsglextracthistory h
+  where h.uploaded_file_id in (select distinct uploaded_file_id
+        from transactions_transactionfact
+        where source_register_type='CBS_GL_EXTRACT' and business_date='2026-07-14')
+  ) TO STDOUT CSV HEADER
+
+A4  14 Jul NPCI facts with response code (raw cell 5) and file name
+  COPY (select f.id, f.rrn, f.rrn_valid, f.amount, f.direction,
+         f.source_register_type, u.filename,
+         coalesce(s.raw_cells,h.raw_cells,b.raw_cells)->>'5' code
+  from transactions_transactionfact f
+  join file_processing_uploadedfile u on u.id=f.uploaded_file_id
+  left join transactions_stagingrawdatahistory h
+         on f.source_register_type='RAW_DATA' and h.original_id=f.staging_row_id
+  left join transactions_stagingmerchantrawdatahistory s
+         on f.source_register_type='MERCHANT_RAW_DATA' and s.original_id=f.staging_row_id
+  left join transactions_stagingmerchantrawdatabbphistory b
+         on f.source_register_type='MERCHANT_RAW_DATA_BBP' and b.original_id=f.staging_row_id
+  where f.source_register_type in ('RAW_DATA','MERCHANT_RAW_DATA','MERCHANT_RAW_DATA_BBP')
+    and f.business_date='2026-07-14') TO STDOUT CSV HEADER
+
+A5  All Adjustment facts with Adjtype/Remitter/Txndate and the group they
+    are attached to
+  COPY (select f.id, f.rrn, f.business_date adjdate, f.amount, f.txn_amount,
+         u.filename,
+         coalesce(s.raw_cells,h.raw_cells)->>'4' adjtype,
+         coalesce(s.raw_cells,h.raw_cells)->>'5' remitter,
+         coalesce(s.raw_cells,h.raw_cells)->>'6' benef,
+         coalesce(s.raw_cells,h.raw_cells)->>'8' txndate,
+         (select g.business_date||'|'||g.id
+            from reconciliation_registerpresence p
+            join reconciliation_transactionmatchgroup g on g.id=p.match_group_id
+           where p.transaction_record_id=f.id and not g.is_superseded limit 1) attached_to
+  from transactions_transactionfact f
+  join file_processing_uploadedfile u on u.id=f.uploaded_file_id
+  left join transactions_stagingadjustment s on s.id=f.staging_row_id
+  left join transactions_stagingadjustmenthistory h on h.original_id=f.staging_row_id
+  where f.source_register_type='ADJUSTMENT') TO STDOUT CSV HEADER
+
+A6  Rule counts / due dates per date
+  select business_date, rule_code, status_category, priority, recheck_state,
+         count(*), count(due_date), min(due_date), max(due_date)
+  from rule_engine_ruleresult where not is_superseded
+  group by 1,2,3,4,5 order by 1,2;
+
+A7  Consistency checks (section 4)
+  -- 4.1 groups vs current results
+  select g.business_date, count(*) groups, count(r.id) with_current,
+         count(*) filter (where r.id is null) without_current
+  from reconciliation_transactionmatchgroup g
+  left join rule_engine_ruleresult r on r.match_group_id=g.id and not r.is_superseded
+  where not g.is_superseded group by 1 order by 1;
+  -- 4.2 more than one current result per group; results on superseded
+  --     groups; result rrn/date differs from its group's
+  select count(*) from (select match_group_id from rule_engine_ruleresult
+    where not is_superseded group by 1 having count(*)>1) x;
+  select count(*) from rule_engine_ruleresult r
+    join reconciliation_transactionmatchgroup g on g.id=r.match_group_id
+   where not r.is_superseded and g.is_superseded;
+  select count(*) from rule_engine_ruleresult r
+    join reconciliation_transactionmatchgroup g on g.id=r.match_group_id
+   where not r.is_superseded and (r.business_date<>g.business_date or r.rrn<>g.rrn);
+  -- 4.3 HIGH without a due date
+  select business_date, rule_code, recheck_state,
+         count(*) filter (where due_date is null) no_due, count(*)
+  from rule_engine_ruleresult where not is_superseded and priority='HIGH'
+  group by 1,2,3 order by 1,2;
+  select count(*) filter (where due_date < tat_start_date),
+         count(*) filter (where calendar_incomplete)
+  from rule_engine_ruleresult where not is_superseded;
+  -- 4.4
+  select count(*) from rule_engine_ruleresult where not is_superseded and tat_unresolved;
+  -- 4.5 CBS-only vs R13 / awaiting / escalated; and the exceptions
+  select g.business_date,
+         count(*) filter (where c.present and not n.present) cbs_only,
+         count(*) filter (where r.rule_code='R13') r13,
+         count(*) filter (where r.recheck_state='awaiting_next_day') awaiting,
+         count(*) filter (where r.recheck_state='escalated') escalated
+  from reconciliation_transactionmatchgroup g
+  join reconciliation_registerpresence c on c.match_group_id=g.id and c.leg='CBS'
+  join reconciliation_registerpresence n on n.match_group_id=g.id and n.leg='NPCI'
+  join rule_engine_ruleresult r on r.match_group_id=g.id and not r.is_superseded
+  where not g.is_superseded group by 1 order by 1;
+  -- (same joins) where ((c.present and not n.present) <> (r.rule_code='R13'))
+  --   group by business_date, rule_code   -> 26 Sep R10 6
+  -- status/priority/code overridden vs the fired rule's defaults
+  select r.rule_code, r.recheck_state, count(*)
+  from rule_engine_ruleresult r join rule_engine_rule ru on ru.id=r.rule_id
+  where not r.is_superseded and (r.status_category<>ru.status_category
+     or r.priority<>ru.priority
+     or coalesce(r.response_code_id,-1)<>coalesce(ru.response_code_id,-1))
+  group by 1,2;                                  -> R13 escalated 10 only
+
+A8  Cross-date R12 (D) / result on D+1 (section 3.8 / 4.6)
+  select a.business_date, a.rrn, a.rule_code, a.status_category,
+         b.business_date, b.rule_code, b.recheck_state
+  from rule_engine_ruleresult a
+  join rule_engine_ruleresult b on b.rrn=a.rrn
+       and b.business_date=a.business_date+1 and not b.is_superseded
+  where not a.is_superseded and a.rule_code='R12' order by 1,2;
+  -- amounts/sides: join each side's NPCI / CBS presence and the CBS
+  -- staging remarks (transactions_stagingcbsglextract[history]).
+  -- 14 Jul's R12 (15 Jul not a business date) was found in A3's 15 Jul rows:
+  --   grep 656121043209 in the A3 output -> "By UPI/656121043209/...", 900
+
+A9  manage.py check_rule_evaluation   (read-only; oracle SQL in a READ ONLY
+    transaction + EXPECTED_COUNTS)
+
+
+APPENDIX B. rev, 14 JUL: THE 794 ON-US PAYMENTS LISTED AS REVERSALS
+-------------------------------------------------------------------------------
+Each: RRN (normalised to 12 digits) and amount. System for all 794: R09
+Reconciled, is_on_us = true, NPCI issuer + acquirer pair both 00, CBS debit +
+credit pair, cbs_reversed = false. Class: OPS SHEET ERROR (working artefact).
+
+    000348553624   5,000.00   002529186830   6,000.00   003376247170   2,800.00   003378442346     200.00
+    003379914709     400.00   003382742652     500.00   003383834529      13.00   003390414959      20.00
+    003394393889   1,000.00   003394716406   8,000.00   003394983721   5,000.00   004742973659     950.00
+    005217122632      70.00   010749089479      20.00   011315827364     500.00   014239311806   4,800.00
+    017822392341   3,000.00   019278195138     200.00   020584384984     600.00   021185871246     500.00
+    024095513478     160.00   026307992540      74.00   026927800423     200.00   027265835947   3,000.00
+    029398746325      80.00   032934801129   1,000.00   033128298849     200.00   036210126160     200.00
+    036742744507  12,000.00   036790706341      50.00   037395185893     525.00   037849926789     100.00
+    037912532738      50.00   039694949756     200.00   039738579131   1,500.00   039965726694     500.00
+    040781527277   1,000.00   041709106379   2,000.00   042799632104     450.00   043600080858   1,450.00
+    049026719355     180.00   049932190944     950.00   053218957432   6,000.00   053852532436      50.00
+    054366908120   5,000.00   055244170770     320.00   055789209128   2,000.00   057833568747     200.00
+    058039798099   9,000.00   059945915112     600.00   060607202964   2,000.00   061688219182     200.00
+    063546691582   3,000.00   064977311337   4,600.00   065662891797   3,000.00   065910533272     600.00
+    066878160285     600.00   067296899758   3,500.00   071432915021   3,000.00   072003859568      70.00
+    073136497183      50.00   077672446631      30.00   081012866488     200.00   081087812212   1,000.00
+    081393333009     950.00   083775404002     150.00   084045241954     300.00   085672801927      60.00
+    088080026611   3,000.00   090344946660   3,000.00   091584680867     200.00   096162674261     200.00
+    097803189695     600.00   097875862887     500.00   098458377241     300.00   098525313487     100.00
+    098794954799   1,100.00   100720831399     754.00   101195582755      50.00   101902180293   2,000.00
+    103717475667   2,500.00   105622979669   4,000.00   109500527943     500.00   110220594034     400.00
+    112852530690     100.00   115940834867   1,000.00   116067360502   9,100.00   116876218594      10.00
+    116959198838      50.00   117733206652  34,000.00   117777584815     179.00   118077489895     100.00
+    118921193989     200.00   119257553199      45.00   119866158603   2,000.00   120968112773     340.00
+    122108788358     200.00   122610330264   7,000.00   122996574637      75.00   123583606849   1,900.00
+    126257042596      20.00   126273776606     300.00   126288022656      50.00   126298919146     250.00
+    127566014796   2,000.00   127837533321     500.00   129167402153   5,000.00   130711488910     200.00
+    131428246505     600.00   132088940773     100.00   133472706564   5,000.00   134318129576   2,000.00
+    134742667321   7,000.00   135776837282     200.00   143362832268   8,000.00   143666914501      20.00
+    144506820559   4,500.00   150682648461      50.00   152315827015      35.00   154788728025      50.00
+    155065376567     700.00   155854401139   2,000.00   157352380383     450.00   159060832020     600.00
+    161774144337     500.00   162025532632     950.00   163405746685   1,000.00   163639673790   1,000.00
+    166716498004   1,000.00   167354719334     100.00   169057213638      30.00   173577448452     150.00
+    174076961327   5,000.00   175723431267   3,000.00   175808526385     500.00   177772089952     155.00
+    178111254191   3,000.00   179253498536   9,150.00   180037796833      80.00   182349132402   1,000.00
+    182483340530      40.00   183504562793     500.00   184743041352   3,000.00   184945498619     490.00
+    189514927889   1,000.00   190310823992      20.00   191731431354      22.00   192140508715  10,000.00
+    192264427280     900.00   193033621640     400.00   193122505187      26.00   193890859138   2,186.00
+    194016056657      15.00   196392175371      30.00   200295794305     360.00   202270138936       9.00
+    202963285360     100.00   203754429242     500.00   207115199529     200.00   208564157314     353.00
+    212450573687  11,000.00   214008698808      40.00   214834135738   1,000.00   214944593714      80.00
+    216660669818   1,000.00   218293931921     200.00   221297176379     700.00   222267203986   1,100.00
+    225950020893      50.00   226054451256     100.00   226567370937      50.00   231936877414     200.00
+    233012810407   1,200.00   233279902849     110.00   234400012961     200.00   235274092475     600.00
+    235398692453      30.00   236061092569      40.00   237966541614     540.00   244680979526     200.00
+    247064586477      40.00   248968863569   1,350.00   249536718918     600.00   251077516548   1,700.00
+    252209122525      50.00   252313031859   1,000.00   253468975345   4,500.00   253595164129     460.00
+    255077643046     155.00   255271495828   1,000.00   255810084139   3,000.00   256502193793   7,200.00
+    258118369615     300.00   259113609013     100.00   260888057596     500.00   261864886731     500.00
+    263897567743     210.00   263977066344     350.00   264668789823     110.00   264979735273     100.00
+    265280432955     600.00   267255795177     200.00   267408963293   1,200.00   267677340934   3,400.00
+    271603408708   1,000.00   272959904098   1,540.00   275305379001   1,000.00   275696820045   2,400.00
+    276665885107     400.00   277275086071   2,500.00   280523416866   3,000.00   280602866295   2,500.00
+    287206700004   2,000.00   287591743926     150.00   290047391892     700.00   290914963397     300.00
+    291024128781      50.00   291224798677     240.00   291320270652     700.00   291373562910     350.00
+    292845957354     500.00   294997132204     490.00   297730733080   9,700.00   297950386016      80.00
+    298141225016  14,500.00   298146895731  10,500.00   299233623704  10,000.00   301665157140      30.00
+    302432986687     190.00   303020279822      50.00   305587197828      82.00   305646813841   2,000.00
+    305838296198   1,000.00   305904859230      40.00   308797808885   4,000.00   308986249569     100.00
+    309420869592   4,000.00   310397007504   2,000.00   310413370776   2,000.00   311270311798     100.00
+    314484876019   2,000.00   315514398757     310.00   315908523838     500.00   316550228340   2,650.00
+    316985516780     600.00   319537630958     200.00   323118662664      50.00   323253035370   5,000.00
+    324549812353     900.00   325517967556   4,000.00   326460017804   6,370.00   328522181094   1,000.00
+    328970410402  20,000.00   331484609550   5,000.00   334824261755   2,000.00   336609445359   1,400.00
+    339087354429   5,000.00   340306297972     500.00   341789146689      70.00   342420328985  18,000.00
+    342479863372   1,000.00   342942169211   4,000.00   343165176191   1,100.00   344712257465   1,000.00
+    345820763012  18,100.00   348041178695     267.00   348515886203   5,000.00   348638996921   1,000.00
+    350505393216   3,500.00   351031261237     800.00   351032913404   3,000.00   351491913892   1,000.00
+    352465566499      50.00   354461487411      60.00   355747482151     200.00   359444203301     200.00
+    360718695990     100.00   361634812219      20.00   363040736547     210.00   363224528822      70.00
+    363572212939   4,000.00   364082107988     350.00   367016182626     570.00   367556066382     200.00
+    368651602896   7,200.00   368897708930   1,800.00   369606392723     190.00   369746728747     100.00
+    379013264395      50.00   379250681461   2,000.00   380601790552   1,000.00   380855393718     200.00
+    386087143731  16,000.00   387546068344   3,000.00   389655782953   1,100.00   389992962840   4,000.00
+    390432547399     220.00   391659428648  80,000.00   393185618352   1,000.00   396223564258     200.00
+    397926426190      50.00   402925385249   2,000.00   403261821262     200.00   403662664239     800.00
+    404959770244      40.00   410260154536   1,000.00   410913966913   7,000.00   410925237992   1,500.00
+    412718079445       1.00   413718670510      50.00   414090124975     800.00   414499814138      50.00
+    415218446801     120.00   415959261115     200.00   417936811281      40.00   417991099515     600.00
+    420025469154      50.00   425244191633       1.00   425357555308     284.00   425831872794      80.00
+    426770152736  17,500.00   428524100768   4,300.00   432792772006      60.00   433010295792  20,000.00
+    433644797148   1,000.00   437238317522      20.00   440423020256     100.00   440683110155     200.00
+    442133805915   4,000.00   442984669722     200.00   443268454015      20.00   444910685324     200.00
+    445022578201   1,500.00   451674377115   1,500.00   458020674562     500.00   459500780070     134.00
+    461675650611     100.00   461850135152     530.00   462158595470   1,000.00   462383985380      20.00
+    463149473787       1.00   463402239295      30.00   463939766169     150.00   464619653330     110.00
+    465658299230      20.00   468729680302      80.00   471037627931     600.00   471547807728  10,000.00
+    472071775587   2,000.00   478865631224       5.00   479280762019   3,400.00   480940550403     140.00
+    484750187442   2,000.00   486695184778     200.00   487096942874     150.00   487885789640     300.00
+    490861387504   2,000.00   491086080981     100.00   493546691467  10,000.00   494164156412   1,500.00
+    495794916534   3,000.00   497613846735       5.00   497655332631   1,000.00   498500438856      10.00
+    500056512176   5,000.00   500503347769     200.00   500606461706     500.00   500627527930   6,000.00
+    501003566071      40.00   501541412176   1,000.00   502317583148     800.00   502486398022     250.00
+    503372022750   5,000.00   506218282870     100.00   507118899574     900.00   507181227756     200.00
+    509913755588   1,000.00   509974251182  26,480.00   513368150297   1,000.00   513880309433  14,000.00
+    514279674722   4,000.00   514987790425  11,000.00   515086420477   1,200.00   518080094016     280.00
+    518224638609   1,500.00   518353494357   2,100.00   521962958111      15.00   522478527656   1,600.00
+    523761617345   4,000.00   524300018299   7,000.00   524539333559   3,000.00   530494950713   1,000.00
+    530563827729   1,000.00   533731579661     100.00   534210617749      35.00   534411014750   9,900.00
+    535886563516      50.00   537444168106     300.00   539642911966   2,700.00   541288483596      80.00
+    542765731182     100.00   544500493033   1,000.00   545593471275   7,000.00   546508309204   4,000.00
+    548711905292   1,100.00   548722351755     100.00   549250541288     500.00   549560342800     400.00
+    550429450745     805.00   552059410855   7,000.00   554536456459     300.00   555282702897       9.00
+    557496150664     100.00   558083574634      50.00   562902454297     280.00   565430699593     300.00
+    566476417938  21,000.00   566861909782   1,500.00   568116434428     200.00   568449528765     100.00
+    568628748169   2,500.00   570051718038     200.00   571033379268      30.00   572986546463     160.00
+    573699162381     500.00   574993877352   2,000.00   575087962662     300.00   575107993553     100.00
+    575321421338  22,000.00   578476136916     500.00   578820205506  10,000.00   578899072410   6,000.00
+    582035312161   2,000.00   583016845611      10.00   585575953950     220.00   587373866577     500.00
+    587847653459   1,000.00   588078352353   6,000.00   588727482045   4,500.00   589716180681   1,100.00
+    589857431572   2,000.00   590286267276     500.00   590790184720     880.00   591496042190      25.00
+    595331300310   1,100.00   597366716480   1,000.00   597990750336     470.00   599881800415      20.00
+    602501662856  10,000.00   603077754905      25.00   603708820093     450.00   603746088356     100.00
+    603767854684     600.00   604749381850     500.00   605713407982     500.00   606605951959   6,000.00
+    606961344437     250.00   607306780288     500.00   607476389329   1,100.00   607975669028     320.00
+    609352881747     500.00   610297166831     200.00   610789638608     200.00   610791919344   1,000.00
+    610924165153     400.00   613525974465  13,000.00   615127037693       7.00   617445874775      50.00
+    618887040426     230.00   619501637135     500.00   619505594872     700.00   619506758904     150.00
+    619509431902     460.00   619510766652     465.00   619517633949     250.00   619518082614  22,500.00
+    619524469453   1,500.00   619526879643      50.00   619530806415     700.00   619536444954     150.00
+    619539913810     500.00   619539922172      80.00   619545377066     500.00   619552006724      20.00
+    619557140643   2,600.00   619564204111   1,000.00   619565926135     120.00   619572748406      40.00
+    619574643134     400.00   619576510040     500.00   619576812993     400.00   619577854695   5,000.00
+    619579414616     330.00   619582588633   1,500.00   619583905945   2,500.00   619587479503   3,600.00
+    619587572348      30.00   619593387882      50.00   619594429091      90.00   619595881011      50.00
+    619598405539   1,000.00   622288549147   5,500.00   624103797822     180.00   631778715966   2,900.00
+    633629281571   3,000.00   634490551471   6,000.00   635298733686     120.00   635813617022      30.00
+    636324055207     350.00   637338288415     115.00   638754511686     450.00   639564839617     656.00
+    642163144692     100.00   642241026011      50.00   644411284990      10.00   644555809229     225.00
+    646033132045     250.00   646729729099     200.00   647533503500     200.00   647584783990   4,000.00
+    647771640182     500.00   648178387513     155.00   649186247962     370.00   649475550832      50.00
+    649986267266   2,000.00   650008156983     700.00   650200467921   2,000.00   652363374166     110.00
+    654677936151     200.00   656107927342      20.00   656107930985      20.00   656107935204      20.00
+    656107937835      20.00   656110776796       1.00   656112585807   1,000.00   656117552089  10,000.00
+    656119358176      54.00   656140699264     300.00   656158786600   7,500.00   657286569289  20,000.00
+    658364733078   1,000.00   658922955513     100.00   660570055903      50.00   661182742691     800.00
+    661886034142   4,000.00   663896444354   1,500.00   663986227588   1,200.00   665621125218     200.00
+    665658685235   1,000.00   665683040244   1,000.00   668384733200     100.00   670085001517   1,200.00
+    676156620244     500.00   676362037464     500.00   680372587014   1,440.00   681363676764     150.00
+    681651175204     200.00   682472357228   2,400.00   682499799698   1,000.00   684267109009   2,000.00
+    688901369858   9,000.00   689418328130   3,000.00   689514623135   1,000.00   690165670806  45,000.00
+    690307011201   1,100.00   693058096872   1,000.00   694096004808     100.00   695007933751   1,950.00
+    697095917477   2,000.00   697162296266   8,000.00   697524645363   1,010.00   701904622533   1,550.00
+    702782770655  18,000.00   702850549613     300.00   706876152724     700.00   707021890607   3,000.00
+    708246285437      20.00   709851492182     100.00   711841138695     125.00   712519114549   4,000.00
+    712864736549   1,010.00   716323546123     200.00   720091514583   2,000.00   720293920980     500.00
+    722044497227     100.00   722217885841  10,000.00   723467829116     500.00   724192104519      10.00
+    724620472120   3,240.00   725079855615     300.00   725510586640      20.00   725966398764     500.00
+    726585491744   1,392.00   729008084278      25.00   729759943830     100.00   732027700088      10.00
+    732157844320     300.00   732207093828      35.00   733993150450   1,150.00   734273947584     400.00
+    737224619454  10,797.00   740399250700     260.00   743362344252     300.00   744767490100     300.00
+    745498304726     400.00   745611508793     500.00   747146194844   1,000.00   747360129392      40.00
+    747835547981     300.00   747933536957   2,000.00   748476698006     100.00   750355846437     600.00
+    751396968107     300.00   752517028257     890.00   752635935025     600.00   754492688082   1,000.00
+    754682955156      95.00   765685349796   4,000.00   771207886823      88.00   774620961356     400.00
+    774651451415     230.00   776934255152     100.00   777056205254       1.00   777388590979     800.00
+    784632255460     130.00   785471429514  11,400.00   785949174598     800.00   791744797925   1,000.00
+    791957157595  11,650.00   792352005937     200.00   792497996927      20.00   792986031697     200.00
+    793633621593   2,000.00   794588708893   1,000.00   794924463594   6,500.00   797193083093  10,000.00
+    798149040520      60.00   799070754793     940.00   799447277009      10.00   799450334382      50.00
+    799469337808     900.00   803706818867      70.00   804628685684     115.00   805304826839   1,000.00
+    806218845906   1,000.00   806481529446     300.00   808880954478   2,000.00   811340527953     700.00
+    815212920198   5,000.00   815805116762      30.00   817498100519   3,000.00   818978496700     540.00
+    824841837814   2,000.00   824920494527  10,000.00   825177552629     500.00   825716030159   1,400.00
+    827173137698      64.00   829774678283   1,000.00   831660558712   1,000.00   831798068184     100.00
+    832224532929       1.00   834431070441   1,000.00   834780016071      45.00   838784685519     300.00
+    839067975268      20.00   840638017453      70.00   841026726165      30.00   841035049798   1,500.00
+    841810032228     950.00   843441677517   5,500.00   845588192245     426.00   846377606766  30,000.00
+    847502251679   6,000.00   848271410025     550.00   849403675790     200.00   850206361451     100.00
+    850966022536     905.00   852417844552     700.00   854616286301   1,000.00   855471926182      50.00
+    858909426926     100.00   859256296373     340.00   865279710866     200.00   865534018606       5.00
+    866799284409     330.00   867173878096     150.00   867327599092     100.00   867503681857   4,000.00
+    867581362644     500.00   868869684176      55.00   869153802187     800.00   869158782000      20.00
+    870346534705   1,000.00   871128565909     320.00   873169247780   1,800.00   873930116197     200.00
+    878143814692     300.00   879370982821      80.00   879496000712     500.00   881233785033      50.00
+    881405824002     950.00   882672550838     230.00   884978375874  12,000.00   886640193041      12.00
+    886929669077   3,000.00   887968447068   1,000.00   887988920860      51.00   888388479970     300.00
+    890838395851     734.00   894648022783     100.00   895254784410     500.00   895386677932     500.00
+    895687567282      63.00   896663741144     100.00   897313492150   1,000.00   898958172709  11,500.00
+    901069580338     250.00   904708696141       1.00   906670165297   1,000.00   906714036674  35,000.00
+    908201913727  20,000.00   908894611929     300.00   909144223787   3,000.00   911237053983     400.00
+    911581692319   3,000.00   911592543515     400.00   915008987821     500.00   915606496819      10.00
+    915933912593       1.00   919284223814   5,000.00   922291754512     800.00   923233513506     100.00
+    924555472992     120.00   926484781644   5,000.00   926763036902   2,300.00   927446920167     400.00
+    927472722104   1,500.00   927829430302      50.00   928052950703     500.00   928506934640   1,300.00
+    928943175786   3,000.00   929991255628   2,000.00   931526217855  15,000.00   933303841738      17.00
+    933629459515  50,000.00   935199159808   6,000.00   936829104846   1,400.00   938640130455     500.00
+    938877286850     195.00   939018208560  19,800.00   940039331682     200.00   942834309541      50.00
+    942926744171     104.00   943985762980   1,000.00   944813552584   2,000.00   945136440569     302.00
+    945438808488   1,000.00   945526352780   6,000.00   946021754008   3,000.00   948888461564     400.00
+    951269982950      58.00   952035027956     200.00   953103812762     500.00   953806869630      60.00
+    955511601507   1,700.00   956968827433     100.00   960648107329   3,000.00   960853314620     200.00
+    963996889001      10.00   969419815767  20,000.00   969598015600     200.00   971516643950     450.00
+    971680652116   1,000.00   972416144848   3,000.00   976243572399     100.00   976290586497      40.00
+    976341568828  17,000.00   976807583452   3,000.00   977066707721   5,000.00   977100914545   2,000.00
+    978252197068     600.00   979636581338   3,000.00   980520610386     350.00   980875455778   1,500.00
+    981736908277      90.00   983367312939     500.00   983588216662     500.00   986777441069     200.00
+    988066662732   5,300.00   988272629077   1,210.00   990037433306   2,000.00   994974263171   2,000.00
+    998066079455      20.00   998664761645      50.00
+
+    (794 RRNs)
+
+===============================================================================
+ END
+===============================================================================

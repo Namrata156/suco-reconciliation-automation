@@ -8,6 +8,56 @@ don't duplicate this history there.
 
 ## 2026-10-10
 
+- **Changed: rule set v3.2, one business date at a time (owner decision
+  2026-10-10).** Each business date is now reconciled only against its
+  own files. Rule table amendment v3.2 is in
+  `docs/phase2_rule_table_v3_approved.txt`.
+  - **New rule set.** v3.2 is active and v3.1 is retired (`rule_engine`
+    0005). v3.2 is the same as v3.1 except for R13.
+  - **R13 (in CBS only).** Now Pending Investigation, MEDIUM, due T+1
+    working day. A maker checks it by hand and a checker approves. Nothing
+    is refunded automatically.
+  - **Removed.** The Step 4 next-day re-check is gone: the
+    awaiting / matched / escalated states, R12/R13 linking and the 00/RB
+    clearing rule. Migration `rule_engine` 0004 drops the re-check fields.
+  - **Real data, PM-verified.**
+    - 0 of 233,081 groups differ from the reference SQL.
+    - All current results use v3.2.
+    - R13: 14 Jul (1) is due 15 Jul; 25 Sep (10) and 26 Sep (578) are due
+      Mon 28 Sep.
+    - The PM's field-by-field diff of v3.1 against v3.2 shows only R13
+      changed.
+
+  Full suite: **264 tests, OK** (PM re-ran on Postgres). This is 267,
+  minus 16 re-check tests, plus 13 new tests.
+
+- **Added: Phase 2 Step 5 validation report**
+  (`docs/phase2_step5_validation_14jul.txt`). The system's 14 Jul results
+  were compared with ops' manual sheet. This is a read-only check, with no
+  code or data changes.
+  - **Agreement.** DRC 265/265, Timeout 20/20 and Adjustment 18/18 match.
+    The NPCI and CBS tabs agree row by row.
+  - **No system bugs found.**
+  - **Findings.** Same-payment-on-two-days pairs: 11 on 25/26 Sep and 1 on
+    14/15 Jul. Ops resolves these by hand under v3.2.
+  - **Phase 3.** Several Adjustment rows for one RRN.
+  - **Ops sheet.** 794 on-us payments are listed as reversals in ops'
+    `rev` sheet.
+
+- **Changed: 2026 Karnataka bank holidays confirmed by ops.** The owner
+  confirmed the list on 2026-10-10.
+  - **Migration.** `core` 0006 sets `confirmed_by_ops=True` on all 22 rows
+    and adds a note. It is reversible.
+  - **Re-seeding.** `seed_bank_holidays` still leaves rows that already
+    exist alone, so a confirmation is never reset. It now prints the real
+    confirmed count.
+  - **Future years.** A year loaded later, e.g. 2027, starts as not
+    confirmed.
+  - **Next source.** The calendar is to be imported from SSK's CBS once
+    ops/IT give us the export format.
+
+  6 new tests. Full suite 267 OK (engineer); 21 `core` tests re-run by PM.
+
 - **Added: rule evaluator, results and working-day calendar (Phase 2
   Step 4).**
   - **Working-day calendar.** New `core.BankHoliday`, seeded with the 22
