@@ -1,11 +1,22 @@
-"""Read-only admin for the rule repository. Editing rules is out of scope:
-rule changes need maker-checker approval (Phase 3), and versions are
-immutable anyway -- a change is a new version, seeded from an approved doc."""
+"""Read-only admin for the rule repository and the evaluation results.
+Editing rules is out of scope: rule changes need maker-checker approval
+(Phase 3), and versions are immutable anyway -- a change is a new version,
+seeded from an approved doc. Results are written only by the evaluator;
+overdue and ageing are derived at read time (RuleResultQuerySet.with_ageing)."""
 from __future__ import annotations
 
 from django.contrib import admin
 
-from rule_engine.models import AgeingBucket, ResponseCode, Rule, RuleSet, RuleSetStatus, RuleTat
+from rule_engine.models import (
+    AgeingBucket,
+    ResponseCode,
+    Rule,
+    RuleEvaluationRun,
+    RuleResult,
+    RuleSet,
+    RuleSetStatus,
+    RuleTat,
+)
 
 
 class ReadOnlyAdminMixin:
@@ -70,3 +81,45 @@ class ResponseCodeAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
 class AgeingBucketAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_display = ("payment_module", "order", "label", "min_days", "max_days", "boundary_reason", "source")
     list_filter = ("payment_module",)
+
+
+# ---------------------------------------------------------------------------
+# Step 4: evaluation output (read-only)
+# ---------------------------------------------------------------------------
+@admin.register(RuleEvaluationRun)
+class RuleEvaluationRunAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "business_date", "payment_module", "rule_set", "started_at", "duration_seconds", "group_count",
+        "superseded_count", "calendar_incomplete_count", "triggered_by",
+    )
+    list_filter = ("payment_module", "business_date", "rule_set")
+
+
+@admin.register(RuleResult)
+class RuleResultAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "rrn", "business_date", "rule_code", "status_category", "priority", "response_code", "tat_start_date",
+        "due_date", "due_cutoff_time", "overdue", "ageing", "recheck_state", "calendar_incomplete", "is_superseded",
+    )
+    list_filter = (
+        "business_date", "rule_code", "status_category", "priority", "recheck_state", "is_superseded",
+        "calendar_incomplete", "payment_module",
+    )
+    search_fields = ("rrn",)
+    list_select_related = ("response_code",)
+    readonly_fields = ("alternative_codes_display", "due_datetime", "overdue", "ageing")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).with_ageing()
+
+    @admin.display(description="Overdue", boolean=True, ordering="is_overdue")
+    def overdue(self, obj):
+        return getattr(obj, "is_overdue", None)
+
+    @admin.display(description="Ageing", ordering="age_days")
+    def ageing(self, obj):
+        return f"{obj.ageing_bucket} ({obj.age_days} d)" if getattr(obj, "age_days", None) is not None else "-"
+
+    @admin.display(description="Alternative codes (maker may choose)")
+    def alternative_codes_display(self, obj):
+        return ", ".join(str(c) for c in obj.alternative_codes) or "-"

@@ -136,3 +136,44 @@ class SettlementCycle(models.Model):
 
     def __str__(self) -> str:
         return f"{self.payment_module.code}-{self.cycle_code}"
+
+
+class BankHoliday(models.Model):
+    """
+    One bank holiday on the working-day calendar used for rule deadlines
+    (T+n = the n-th working day after T; see core.working_days). Bank-wide,
+    not per payment module -- the same calendar serves every rail and later
+    phases (settlement, NPCI file generation).
+
+    Working-day rule (project owner, 2026-10-10): a day is NOT a working day
+    if it is a Sunday, the 2nd or 4th Saturday of the month, or a holiday in
+    this table for the region. Only the holidays are stored; Sundays and
+    2nd/4th Saturdays are computed.
+
+    Seeded from RBI's holiday matrix (docs/bank_holidays_bengaluru_2026.txt)
+    by data migration core/0005 and `manage.py seed_bank_holidays`. Ops is
+    to confirm the list once a year and add bank-specific or late-announced
+    holidays (confirmed_by_ops stays False until then).
+    """
+
+    date = models.DateField()
+    name = models.CharField(max_length=200)
+    region = models.CharField(
+        max_length=50,
+        help_text="Calendar region, e.g. 'Karnataka' (RBI Bengaluru regional office)",
+    )
+    source_url = models.URLField(max_length=500)
+    retrieved_on = models.DateField(help_text="Date the list was read from the source")
+    confirmed_by_ops = models.BooleanField(default=False)
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["region", "date"], name="unique_bank_holiday_per_region_date"),
+        ]
+        ordering = ["region", "date"]
+
+    def __str__(self) -> str:
+        return f"{self.date} {self.name} ({self.region})"

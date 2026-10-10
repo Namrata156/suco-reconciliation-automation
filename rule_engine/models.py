@@ -2,8 +2,9 @@
 `rule_engine` app: Business Rule Engine, Phase 2 Step 3 -- the rule
 repository. The approved rule table (docs/phase2_rule_table_v3_approved.txt)
 is stored here as DATA: a versioned RuleSet of Rules, a ResponseCode table
-and the AgeingBucket config. Nothing in this app evaluates rules yet; the
-evaluator and the per-transaction results table are Step 4.
+and the AgeingBucket config. Step 4 (2026-10-10) adds the evaluator
+(rule_engine.facts + rule_engine.evaluator) and its output: one RuleResult
+per TransactionMatchGroup per evaluation, grouped by RuleEvaluationRun.
 
 Why a separate app (not inside `reconciliation`): the Business Rule Engine
 is its own tracked component in the spec and the tracker. It consumes the
@@ -40,12 +41,13 @@ TAT storage: Rule.tat_type says what kind of deadline the rule has:
                               match wins (same condition format).
   NEXT_BUSINESS_DATE_LOAD  -- R13: event-driven, due when the next business
                               date's NPCI files are loaded. No fixed days.
-Due date = business date + TAT (doc, AGEING). WORKING days need a bank
-holiday calendar, which does not exist yet -- Step 4 must decide/obtain it.
+Due date = T + TAT (doc, AGEING). WORKING days use core.working_days
+(Karnataka bank holidays + Sundays + 2nd/4th Saturdays, owner 2026-10-10).
 """
 from __future__ import annotations
 
 import string
+from datetime import date, datetime, time
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -53,6 +55,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from core.models import PaymentModule
+from reconciliation.models import TransactionMatchGroup
+from transactions.models import TransactionFact
 from rule_engine.conditions import ConditionError, is_catch_all, validate_condition
 
 
@@ -608,3 +612,253 @@ def validate_ageing_buckets(payment_module: PaymentModule) -> None:
             return
         expected_min = b.max_days + 1
     raise ValidationError("The last bucket must be open-ended")
+
+
+# ---------------------------------------------------------------------------
+# Step 4: evaluation output
+# ---------------------------------------------------------------------------
+class RecheckState(models.TextChoices):
+    """R13's next-day re-check (owner Q3) and its mirror on R12. Blank for
+    every other rule. Stored on the result, not as extra rules: the rule set
+    stays exactly the approved v3.1."""
+
+    NONE = "", "-"
+    AWAITING_NEXT_DAY = "awaiting_next_day", "Awaiting next business date's NPCI files"
+    MATCHED_NEXT_DAY = "matched_next_day", "Found in next business date's NPCI files (late cycle)"
+    ESCALATED = "escalated", "Not in next business date's NPCI files: escalated"
+    MATCHED_PREVIOUS_DAY = "matched_previous_day", "CBS posted it on the previous business date (late match)"
+
+
+class RuleEvaluationRun(models.Model):
+    """One run of the evaluator over one (payment module, business date)."""
+
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="rule_evaluation_runs")
+    business_date = models.DateField()
+    rule_set = models.ForeignKey(RuleSet, on_delete=models.PROTECT, related_name="evaluation_runs")
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.FloatField(null=True, blank=True)
+    group_count = models.PositiveIntegerField(default=0)
+    superseded_count = models.PositiveIntegerField(default=0, help_text="Previous results this run superseded")
+    rule_counts = models.JSONField(default=dict, blank=True, help_text="{rule code: results}")
+    recheck_counts = models.JSONField(default=dict, blank=True, help_text="{recheck state: results} after this run")
+    calendar_incomplete_count = models.PositiveIntegerField(default=0)
+    triggered_by = models.CharField(max_length=150, blank=True, help_text="Command / task / user that ran it")
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [models.Index(fields=["payment_module", "business_date"], name="ruleeval_module_date_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.payment_module.code} {self.business_date} {self.rule_set.version_label} @ {self.started_at:%Y-%m-%d %H:%M}"
+
+
+class RuleResultQuerySet(models.QuerySet):
+    def current(self):
+        return self.filter(is_superseded=False)
+
+    def with_ageing(self, today: date | None = None, now: datetime | None = None):
+        """Annotates age_days, ageing_bucket and is_overdue. Derived at read
+        time, never stored (they change daily). `now` defaults to the current
+        local time and `today` to its date. Age counts from T (tat_start_date)."""
+        now = timezone.localtime(now) if now else timezone.localtime()
+        today = today or now.date()
+        age = models.Func(
+            models.Value(today, output_field=models.DateField()),
+            models.F("tat_start_date"),
+            template="(%(expressions)s)",
+            arg_joiner=" - ",
+            output_field=models.IntegerField(),
+        )
+        whens = []
+        for bucket in AgeingBucket.objects.order_by("payment_module_id", "order"):
+            cond = Q(payment_module_id=bucket.payment_module_id, age_days__gte=bucket.min_days)
+            if bucket.max_days is not None:
+                cond &= Q(age_days__lte=bucket.max_days)
+            whens.append(models.When(cond, then=models.Value(bucket.label)))
+        overdue = Q(due_date__lt=today) | Q(
+            due_date=today, due_cutoff_time__isnull=False, due_cutoff_time__lt=now.time()
+        )
+        qs = self.annotate(age_days=age).annotate(
+            is_overdue=models.ExpressionWrapper(Q(due_date__isnull=False) & overdue, output_field=models.BooleanField())
+        )
+        bucket_expr = (
+            models.Case(*whens, default=models.Value(""), output_field=models.CharField())
+            if whens
+            else models.Value("", output_field=models.CharField())
+        )
+        return qs.annotate(ageing_bucket=bucket_expr)
+
+
+class RuleResult(models.Model):
+    """
+    The outcome of the active rule set for one TransactionMatchGroup in one
+    evaluation run. Rules only RECOMMEND: nothing here moves money or
+    produces an NPCI file; every action still goes through maker-checker
+    (Phase 3).
+
+    History: re-running a date marks that date's current results superseded
+    (is_superseded + superseded_at) and creates new ones -- kept, never
+    deleted (same rule as the presence matrix, owner 2026-09-30). At most
+    one current result per match group (DB constraint).
+
+    status_category / priority / due_* / rbi_compensation are the EFFECTIVE
+    values: the fired rule's defaults, except where the R13 / R12 next-day
+    re-check (recheck_state) overrides them. `rule` always stays the rule
+    that fired.
+
+    Deadline: due_date + due_cutoff_time (R05: 16:00 on the due date) rather
+    than one datetime, so date-level work (calendar, ageing, "due today")
+    stays plain date arithmetic and a deadline with no time is not given an
+    arbitrary end-of-day time. due_datetime combines them (local time; a
+    date-only deadline runs to the end of the day).
+    """
+
+    # Index policy: every index costs ~79K inserts per evaluation and as many
+    # on a re-run's supersede (indexed column changes -> no HOT update).
+    # Only the indexes queries use are kept (see Meta); FKs whose targets
+    # are never deleted (immutable rules/sets, runs, modules) get none, and
+    # the sparse re-check FKs get partial indexes.
+    payment_module = models.ForeignKey(
+        PaymentModule, on_delete=models.PROTECT, related_name="rule_results", db_index=False
+    )
+    match_group = models.ForeignKey(TransactionMatchGroup, on_delete=models.PROTECT, related_name="rule_results")
+    business_date = models.DateField(help_text="The match group's business date (denormalized)")
+    rrn = models.CharField(max_length=20, help_text="The match group's RRN (denormalized for cross-date lookup)")
+    run = models.ForeignKey(RuleEvaluationRun, on_delete=models.PROTECT, related_name="results", db_index=False)
+
+    rule_set = models.ForeignKey(RuleSet, on_delete=models.PROTECT, related_name="results", db_index=False)
+    rule = models.ForeignKey(Rule, on_delete=models.PROTECT, related_name="results", db_index=False)
+    rule_code = models.CharField(max_length=10, help_text="rule.code (denormalized for filtering)")
+
+    status_category = models.CharField(max_length=40, choices=StatusCategory.choices)
+    priority = models.CharField(max_length=10, choices=Priority.choices)
+    action = models.TextField(help_text="The fired rule's action text")
+    response_code = models.ForeignKey(
+        ResponseCode,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="results",
+        db_index=False,
+        help_text="The rule's default code; the maker's alternatives (R05) are rule.alternative_codes",
+    )
+    reason = models.TextField(blank=True, help_text="The rule's reason_template with placeholders filled")
+
+    tat_start_date = models.DateField(
+        help_text="T, the date the clock starts: the group's business date, or the Adjustment's own date "
+        "(Adjdate) for rules that fire on the Adjustment overlay"
+    )
+    tat_label = models.CharField(max_length=200, blank=True, help_text="Which deadline applied")
+    tat_unresolved = models.BooleanField(
+        default=False, help_text="BY_ADJTYPE rule whose Adjtype matched no TAT row: no deadline known"
+    )
+    due_date = models.DateField(null=True, blank=True)
+    due_cutoff_time = models.TimeField(null=True, blank=True, help_text="Time on the due date (R05: 16:00)")
+    calendar_incomplete = models.BooleanField(
+        default=False, help_text="The working-day count crossed a year with no bank holidays loaded"
+    )
+    rbi_compensation = models.BooleanField(
+        default=False, help_text="RBI Rs 100/day customer compensation after the due date (R02, R05, R12)"
+    )
+
+    facts = models.JSONField(help_text="Snapshot of the fact values the conditions saw (audit)")
+    evaluated_at = models.DateTimeField()
+    is_superseded = models.BooleanField(default=False)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+
+    # R13 next-day re-check and its R12 mirror (owner Q3)
+    recheck_state = models.CharField(max_length=30, choices=RecheckState.choices, blank=True, default="")
+    recheck_checked_at = models.DateTimeField(null=True, blank=True)
+    escalated_on = models.DateField(
+        null=True, blank=True, help_text="R13: date first escalated; carried across re-runs so the deadline can't creep"
+    )
+    next_day_fact = models.ForeignKey(
+        TransactionFact,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        db_index=False,
+        help_text="R13 matched_next_day: the D+1 NPCI row that cleared it (code 00 or RB)",
+    )
+    next_day_npci_codes = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="R13: response codes of every D+1 NPCI row for the RRN (comma-separated; only 00 / RB clear it)",
+    )
+    next_day_group = models.ForeignKey(
+        TransactionMatchGroup,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        db_index=False,
+        help_text="R13 matched_next_day: D+1's match group for the RRN, if built",
+    )
+    linked_result = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        db_index=False,
+        help_text="Cross-date link: R13 on D <-> R12 on D+1 (the other date's current result)",
+    )
+
+    objects = RuleResultQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["match_group"],
+                condition=Q(is_superseded=False),
+                name="one_current_rule_result_per_group",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["payment_module", "business_date", "is_superseded"], name="ruleresult_module_date_idx"),
+            models.Index(fields=["rrn", "business_date"], name="ruleresult_rrn_date_idx"),
+            models.Index(fields=["rule_code", "business_date"], name="ruleresult_rule_date_idx"),
+            # Sparse FKs (re-check only): partial indexes keep SET_NULL on
+            # fact / group / result deletes from scanning the table.
+            models.Index(
+                fields=["next_day_fact"], condition=Q(next_day_fact__isnull=False), name="ruleresult_nextday_fact_idx"
+            ),
+            models.Index(
+                fields=["next_day_group"], condition=Q(next_day_group__isnull=False), name="ruleresult_nextday_grp_idx"
+            ),
+            models.Index(
+                fields=["linked_result"], condition=Q(linked_result__isnull=False), name="ruleresult_linked_idx"
+            ),
+        ]
+        ordering = ["business_date", "rrn", "-evaluated_at"]
+
+    def __str__(self) -> str:
+        return f"{self.rrn} ({self.business_date}) {self.rule_code} {self.status_category}"
+
+    # -- derived at read time ------------------------------------------------
+    @property
+    def alternative_codes(self):
+        """Codes the maker may choose instead of the default (R05's RET reasons)."""
+        return self.rule.alternative_codes.all()
+
+    @property
+    def due_datetime(self) -> datetime | None:
+        if self.due_date is None:
+            return None
+        return timezone.make_aware(datetime.combine(self.due_date, self.due_cutoff_time or time.max))
+
+    def age_days(self, today: date | None = None) -> int:
+        return ((today or timezone.localdate()) - self.tat_start_date).days
+
+    def ageing_bucket(self, today: date | None = None) -> str:
+        age = self.age_days(today)
+        for bucket in AgeingBucket.objects.filter(payment_module_id=self.payment_module_id).order_by("order"):
+            if age >= bucket.min_days and (bucket.max_days is None or age <= bucket.max_days):
+                return bucket.label
+        return ""
+
+    def is_overdue(self, now: datetime | None = None) -> bool:
+        due = self.due_datetime
+        return due is not None and timezone.localtime(now or timezone.now()) > due

@@ -6,6 +6,55 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-10
+
+- **Added: rule evaluator, results and working-day calendar (Phase 2
+  Step 4).**
+  - **Working-day calendar.** New `core.BankHoliday`, seeded with the 22
+    RBI Bengaluru 2026 NI Act holidays (`core` 0004/0005 plus the
+    `seed_bank_holidays` command, all marked `confirmed_by_ops=False`).
+    `core/working_days.py` skips Sundays, 2nd/4th Saturdays and those
+    holidays for T+n deadlines. The 7- and 35-day deadlines count calendar
+    days. A year with no holiday list loaded is flagged
+    `calendar_incomplete`.
+  - **Results.** New `rule_engine.RuleResult`, one current row per match
+    group, holding:
+    - the rule, status, priority, response code and reason
+    - T, the due date and cutoff time (R05: 16:00), plus the RBI
+      compensation flag
+    - a snapshot of the facts the rule saw
+
+    A re-run marks the date's old results superseded and keeps them. Each
+    run is logged in `RuleEvaluationRun`. Overdue and ageing are worked out
+    when read, from `AgeingBucket` (`RuleResult.objects.with_ageing`).
+    Migration `rule_engine` 0003. Results are written with PostgreSQL
+    COPY.
+  - **Evaluator** (`rule_engine/facts.py`, `evaluator.py`):
+    - first match wins, over the active rule set
+    - rules that read adjustment facts start the clock on Adjdate
+  - **R13/R12 next-day re-check.** A CBS-only item waits for D+1's NPCI
+    files to load, then ends in one of two ways:
+    - **Matched next day,** linked to the D+1 R12 as "matched previous
+      day". Only a D+1 row with code 00 or RB clears it (owner, 2026-10-10;
+      NPCI OC 93).
+    - **Escalated** to Reversal Required, HIGH, due T+1 from the date it
+      was escalated.
+
+    The codes seen on D+1 are kept in `next_day_npci_codes`.
+  - **Entry points.** The `evaluate_rules` command, the
+    `check_rule_evaluation` command (a read-only per-group diff against
+    `docs/phase2_rule_table_v3_1_reference.sql`) and a Celery task.
+  - **Real data, PM-verified.** On 14 Jul / 25 Sep / 26 Sep:
+    - **0 of 233,081** groups differ from the reference SQL, and every
+      rule count matches `EXPECTED_COUNTS`.
+    - R05 is due Wed 15 Jul 16:00. Fri 25 Sep T+1 is Mon 28 Sep. R07b on
+      25 Sep is due 30 Oct.
+    - R13: 25 Sep's 10 escalated; 26 Sep's 578 and 14 Jul's 1 are waiting
+      for the next day (27 Sep and 15 Jul NPCI files not loaded).
+    - Each date takes about 15–27 s to evaluate.
+
+  `python manage.py test`: **261 tests, OK** (PM re-ran on Postgres).
+
 ## 2026-10-09
 
 - **Added: Business Rule Engine rule repository (Phase 2 Step 3).** New
