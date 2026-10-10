@@ -5,8 +5,10 @@ same get_or_create with its historical model (migrations don't import live
 app code), and core/tests/test_working_days.py checks both give the same rows.
 
 Idempotent and create-only: an existing (region, date) row is left alone,
-including any ops edits (name, confirmed_by_ops); a name that differs from
-the seed data is reported as a warning.
+including any ops edits (name, notes, confirmed_by_ops -- e.g. the 2026
+confirmation applied by core/0006 survives a re-seed); a name that differs
+from the seed data is reported as a warning. Newly created rows get the
+model default confirmed_by_ops=False.
 """
 from __future__ import annotations
 

@@ -20,12 +20,16 @@ class Command(BaseCommand):
     help = "Seeds Karnataka 2026 bank holidays (RBI Bengaluru) for the working-day calendar. Idempotent."
 
     def handle(self, *args, **options):
+        from core.models import BankHoliday
+
         created, existing, warnings = seed_bank_holidays(data)
         for warning in warnings:
             self.stdout.write(self.style.WARNING(warning))
+        rows = BankHoliday.objects.filter(region=data.REGION, date__year=data.YEAR)
+        confirmed = rows.filter(confirmed_by_ops=True).count()
         self.stdout.write(
             self.style.SUCCESS(
                 f"Bank holidays {data.REGION} {data.YEAR}: {created} created, {existing} already present "
-                "(not yet confirmed by ops)."
+                f"({confirmed} of {rows.count()} confirmed by ops)."
             )
         )

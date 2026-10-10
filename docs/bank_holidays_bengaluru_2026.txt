@@ -14,7 +14,11 @@ Decision   : project owner, 2026-10-10:
              - Ops confirms the list once a year and adds any bank-specific
                or late-announced holiday. RBI sometimes adds holidays at
                short notice.
-Status     : NOT YET CONFIRMED BY OPS.
+Status     : CONFIRMED by ops (via project owner, 2026-10-10).
+Future     : owner, 2026-10-10: the holiday calendar is to be IMPORTED
+             from SSK's CBS, which already keeps it, so it is maintained
+             once. Waiting on ops/IT for the CBS export format and a
+             sample. Until then this RBI-seeded list is used.
 
 WORKING-DAY RULE (owner, 2026-10-10)
 ------------------------------------
@@ -31,8 +35,11 @@ actual working day.
   Example: T = Fri 9 Oct 2026. Sat 10 Oct is a non-working day (2nd
   Saturday, and also Mahalaya Amavasye) and Sun 11 Oct is Sunday, so
   T+1 = Mon 12 Oct 2026.
-Calendar-day TATs (7 / 35 days) are NOT shifted. That is the reading in
-rule table v3.1, and it is still to be confirmed by the owner.
+Calendar-day TATs (7 / 35 days) are NOT shifted (rule table v3.1;
+confirmed by the owner 2026-10-10).
+A holiday's own business date (e.g. Sat 26 Sep) is reconciled on its own,
+with the same process, on the first working day after it (owner,
+2026-10-10).
 
 NEGOTIABLE INSTRUMENTS ACT HOLIDAYS - BENGALURU 2026 (22 days)
 --------------------------------------------------------------

@@ -21,7 +21,8 @@ class SettlementCycleAdmin(admin.ModelAdmin):
 class BankHolidayAdmin(admin.ModelAdmin):
     """Read-only: the list is seeded from RBI's published matrix (migration
     core/0005, `seed_bank_holidays`). Ops' yearly confirmation / additions
-    are a separate, approved change, not an admin edit."""
+    land as a separate, approved data migration, not an admin edit (the
+    2026 Karnataka confirmation is core/0006)."""
 
     list_display = ("date", "weekday", "name", "region", "confirmed_by_ops", "retrieved_on", "source_url")
     list_filter = ("region", "confirmed_by_ops")

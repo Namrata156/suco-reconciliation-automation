@@ -10,7 +10,11 @@ only (no app imports), so both data migration core/0005 and
 `manage.py seed_bank_holidays` read it. core/tests/test_working_days.py
 re-checks it against the doc.
 
-Status: NOT YET CONFIRMED BY OPS (confirmed_by_ops=False on every row).
+Status: CONFIRMED BY OPS (project owner decision 2026-10-10), applied by data
+migration core/0006, which sets confirmed_by_ops=True and appends a
+confirmation note on the existing rows. This module still carries no
+confirmation flag: a row created from it later (e.g. by `seed_bank_holidays`
+after a delete) gets the model default confirmed_by_ops=False.
 """
 from __future__ import annotations
 

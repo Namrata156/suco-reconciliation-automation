@@ -151,9 +151,11 @@ class BankHoliday(models.Model):
     2nd/4th Saturdays are computed.
 
     Seeded from RBI's holiday matrix (docs/bank_holidays_bengaluru_2026.txt)
-    by data migration core/0005 and `manage.py seed_bank_holidays`. Ops is
-    to confirm the list once a year and add bank-specific or late-announced
-    holidays (confirmed_by_ops stays False until then).
+    by data migration core/0005 and `manage.py seed_bank_holidays`. Ops
+    confirms the list once a year and adds bank-specific or late-announced
+    holidays. A seeded row starts with confirmed_by_ops=False; the 2026
+    Karnataka list was confirmed by ops (project owner, 2026-10-10) and
+    marked True by data migration core/0006. Re-seeding never resets it.
     """
 
     date = models.DateField()

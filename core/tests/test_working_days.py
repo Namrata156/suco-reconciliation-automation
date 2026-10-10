@@ -30,7 +30,7 @@ class SeedTests(TestCase):
         rows = BankHoliday.objects.filter(region="Karnataka")
         self.assertEqual(set(rows.values_list("date", flat=True)), doc_dates)
         self.assertEqual({d for d, _ in data.HOLIDAYS}, doc_dates)
-        self.assertFalse(rows.filter(confirmed_by_ops=True).exists())
+        self.assertEqual(rows.filter(confirmed_by_ops=True).count(), 22)  # core/0006
         self.assertEqual(set(rows.values_list("source_url", flat=True)), {data.SOURCE_URL})
         self.assertEqual(set(rows.values_list("retrieved_on", flat=True)), {date(2026, 10, 10)})
 
