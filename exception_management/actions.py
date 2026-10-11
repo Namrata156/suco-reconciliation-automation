@@ -9,8 +9,9 @@ filled in. RET is the one action whose code the maker chooses (any RET
 reason; default 115 from the rule, owner Q1).
 
 DEFAULT_ACTION_BY_RULE pre-fills the maker's choice. A rule missing from the
-table has no default: the maker must choose (R07b/R07x chargebacks, R07c,
-R13 and the manual-review rules). The default response code is the rule
+table has no default: the maker must choose (R07b/R07x chargebacks --
+"accept or represent", no single action in the rule table --, R07c, R13 and
+the manual-review rules). The default response code is the rule
 result's own code (rule_engine.Rule.response_code), so R05 pre-fills RET 115.
 It is a pre-fill only -- nothing is ever submitted or approved automatically
 (design D4).
@@ -34,6 +35,7 @@ class ActionType(models.TextChoices):
     CBS_ADJUSTMENT_ENTRY = "CBS_ADJUSTMENT_ENTRY", "Adjustment entry in CBS"
     CHARGEBACK_RAISE = "CHARGEBACK_RAISE", "Chargeback raise"
     CHARGEBACK_ACCEPT = "CHARGEBACK_ACCEPT", "Chargeback accept"
+    CHARGEBACK_REPRESENT = "CHARGEBACK_REPRESENT", "Chargeback represent"  # Amendment 1 A2
     REFUND_CUSTOMER = "REFUND_CUSTOMER", "Refund customer (reversal)"
     CLOSE_NO_ACTION = "CLOSE_NO_ACTION", "Close without action (with finding)"
 
@@ -44,6 +46,7 @@ class ActionSpec:
     fixed_code: str | None = None  # the numeric code; None with a flag = the maker chooses (RET)
     requires_cbs_reversal_evidence: bool = False  # design D4
     requires_remarks: bool = False  # "close without action (with finding)"
+    completes_on_approval: bool = False  # nothing to do outside: no external reference (Amendment 1 A3)
 
 
 ACTION_SPECS: dict[str, ActionSpec] = {
@@ -58,8 +61,9 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ActionType.CBS_ADJUSTMENT_ENTRY: ActionSpec(),
     ActionType.CHARGEBACK_RAISE: ActionSpec(),
     ActionType.CHARGEBACK_ACCEPT: ActionSpec(),
+    ActionType.CHARGEBACK_REPRESENT: ActionSpec(),
     ActionType.REFUND_CUSTOMER: ActionSpec(),
-    ActionType.CLOSE_NO_ACTION: ActionSpec(requires_remarks=True),
+    ActionType.CLOSE_NO_ACTION: ActionSpec(requires_remarks=True, completes_on_approval=True),
 }
 
 # Rule code (rule set v3.2, docs/phase2_rule_table_v3_approved.txt) -> the

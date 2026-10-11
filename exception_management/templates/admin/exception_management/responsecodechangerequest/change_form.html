@@ -1,0 +1,8 @@
+{% extends "admin/change_form.html" %}
+{% block object-tools-items %}
+  {% if can_decide %}
+    <li><a href="{% url 'admin:exception_management_codechange_decide' original.pk 'approve' %}">Approve and apply</a></li>
+    <li><a href="{% url 'admin:exception_management_codechange_decide' original.pk 'reject' %}">Reject</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

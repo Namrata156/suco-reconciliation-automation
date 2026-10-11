@@ -37,7 +37,9 @@ class CaseTestBase(TestCase):
     def user(self, *roles, superuser=False, active=True):
         self._users += 1
         model = get_user_model()
-        u = model.objects.create_user(f"user{self._users}", password="x", is_superuser=superuser, is_active=active)
+        u = model.objects.create_user(
+            f"user{self._users}", password="x", is_superuser=superuser, is_active=active, is_staff=True
+        )
         for role in roles:
             u.groups.add(Group.objects.get(name=role))
         return u
@@ -56,7 +58,7 @@ class CaseTestBase(TestCase):
         self._runs[d] = run
         return run
 
-    def result(self, rrn, rule_code, d=D, *, due=AUTO, cutoff=None, run=None) -> RuleResult:
+    def result(self, rrn, rule_code, d=D, *, due=AUTO, cutoff=None, run=None, tat_unresolved=False) -> RuleResult:
         rule = self.rules[rule_code]
         group, _ = TransactionMatchGroup.objects.get_or_create(payment_module=self.module, rrn=rrn, business_date=d)
         if due is AUTO:
@@ -77,6 +79,7 @@ class CaseTestBase(TestCase):
             tat_start_date=d,
             due_date=due,
             due_cutoff_time=cutoff,
+            tat_unresolved=tat_unresolved,
             facts={},
             evaluated_at=timezone.now(),
         )

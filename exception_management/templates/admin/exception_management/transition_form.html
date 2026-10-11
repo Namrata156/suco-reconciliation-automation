@@ -1,0 +1,19 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% if case %}
+<p>Status <b>{{ case.status }}</b>, priority <b>{{ case.priority }}</b>, assigned to
+  <b>{{ case.assigned_to|default:"nobody" }}</b>.
+  {% if case.default_action_type %}Pre-filled action: <b>{{ case.get_default_action_type_display }}</b>{% if case.default_response_code %} ({{ case.default_response_code }}){% endif %}.{% endif %}</p>
+{% endif %}
+{% if warnings %}<ul class="errorlist">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
+<form method="post">
+  {% csrf_token %}
+  {% if form.non_field_errors %}<p class="errornote">{{ form.non_field_errors|join:" " }}</p>{% endif %}
+  <table>{{ form.as_table }}</table>
+  <div class="submit-row">
+    <input type="submit" value="Confirm" class="default">
+    <a href="{{ change_url }}" class="closelink">Cancel</a>
+  </div>
+</form>
+{% endblock %}

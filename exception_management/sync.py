@@ -5,8 +5,22 @@ Case sync: keeps ExceptionCase in step with the rule results of one
 transaction) and from `manage.py sync_cases`. Idempotent: a second run with
 nothing new writes no rows.
 
-Which results become cases (design section 1, P1): every CURRENT
-RuleResult with a due date. One case per business date + RRN.
+Which results become cases (design section 1, P1; Amendment 1 A4): every
+CURRENT RuleResult with a due date, plus any that needs action but whose TAT
+was not found (tat_unresolved -> case flagged no_deadline). One case per
+business date + RRN.
+
+Warnings kept on the case:
+  - multiple_adjustment_rows (design section 7): >1 Adjustment row belongs to
+    the RRN on this date.
+  - rrc_already_sent_on (Amendment 1 A1): the earliest Adjdate of a "Refund
+    Reversal Confirmation" Adjustment row for the RRN on ANY loaded date.
+    Stored at sync time; because such a row can arrive with a later date's
+    files, every sync re-checks this warning on the cases of ALL dates (a
+    small set: only RRNs with such rows), recording a WARNINGS_CHANGED event
+    when it changes.
+The P5 previous-day-R12 hint is computed at read time instead
+(ExceptionCaseQuerySet.with_previous_day_r12).
 
 Re-runs (design section 6). A re-evaluation supersedes the date's results
 and creates new ones; the case is keyed by date + RRN, so it survives and is
@@ -65,7 +79,7 @@ from exception_management.models import (
     ProposedAction,
 )
 from exception_management.services import event_kwargs
-from reconciliation.presence import overlay_rows_for_date
+from reconciliation.presence import adjustment_rows_any_date, overlay_rows_for_date
 from rule_engine.models import RuleEvaluationRun, RuleResult
 
 logger = logging.getLogger(__name__)
@@ -74,19 +88,33 @@ _BATCH = 2000
 _LOOKUP_BATCH = 5000
 
 # The case's copy of its rule result, compared on every sync.
-_RESULT_FIELDS = ("rule_code", "status_category", "priority", "due_date", "due_cutoff_time")
+_COPIED = ("rule_code", "status_category", "priority", "due_date", "due_cutoff_time")
+_RESULT_FIELDS = _COPIED + ("no_deadline",)
 _DEFAULT_FIELDS = ("default_action_type", "default_response_code_id")
-_RESULT_VALUES = ("id", "match_group_id", "rrn", "response_code_id") + _RESULT_FIELDS
+_RESULT_VALUES = ("id", "match_group_id", "rrn", "response_code_id", "tat_unresolved") + _COPIED
 _UPDATE_FIELDS = (
     ("rule_result_id", "match_group_id") + _RESULT_FIELDS + _DEFAULT_FIELDS
     + ("status", "assigned_to_id", "needs_review", "needs_review_reason", "result_missing",
-       "multiple_adjustment_rows", "updated_at")
+       "multiple_adjustment_rows", "rrc_already_sent_on", "updated_at")
 )
+
+REFUND_REVERSAL_CONFIRMATION = "refund reversal confirmation"  # Adjtype, compared case-insensitively
 
 
 def needs_case_q() -> Q:
-    """The one definition of "this result becomes a case" (design P1)."""
-    return Q(due_date__isnull=False)
+    """The one definition of "this result becomes a case" (design P1, A4)."""
+    return Q(due_date__isnull=False) | Q(tat_unresolved=True)
+
+
+def rrc_sent_dates(payment_module: PaymentModule) -> dict[str, date]:
+    """{rrn: earliest Adjdate of a Refund Reversal Confirmation row}, any loaded date (A1)."""
+    out: dict[str, date] = {}
+    for rrn, rows in adjustment_rows_any_date(payment_module).items():
+        dates = [f.business_date for f, cells in rows
+                 if (cells.get("dispute_type") or "").strip().lower() == REFUND_REVERSAL_CONFIRMATION]
+        if dates:
+            out[rrn] = min(dates)
+    return out
 
 
 @dataclass
@@ -104,9 +132,12 @@ class SyncSummary:
     reopened: int = 0
     actions_withdrawn: int = 0
     adjustment_flag_changed: int = 0
+    rrc_warning_changed: int = 0
     events_written: int = 0
     cases_by_rule_status: dict = field(default_factory=dict)
     multiple_adjustment_rows: int = 0
+    rrc_already_sent: int = 0
+    no_deadline: int = 0
 
     def as_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -122,8 +153,9 @@ def _json(value):
 
 def _values_from_result(r: dict) -> dict:
     action, code_id = default_action_for(r["rule_code"], r["response_code_id"])
-    values = {f: r[f] for f in _RESULT_FIELDS}
+    values = {f: r[f] for f in _COPIED}
     values.update(
+        no_deadline=bool(r["tat_unresolved"]) and r["due_date"] is None,
         rule_result_id=r["id"],
         match_group_id=r["match_group_id"],
         default_action_type=action,
@@ -182,6 +214,7 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
         multi_adjustment = {
             rrn for rrn, rows in overlay_rows_for_date(payment_module, business_date).items() if len(rows) > 1
         }
+        rrc_dates = rrc_sent_dates(payment_module)
 
         pending_actions = {
             a.case_id: a
@@ -217,7 +250,8 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
             values = _values_from_result(r)
             new_cases.append(ExceptionCase(
                 payment_module=payment_module, business_date=business_date, rrn=rrn,
-                status=CaseStatus.OPEN, multiple_adjustment_rows=rrn in multi_adjustment, **values,
+                status=CaseStatus.OPEN, multiple_adjustment_rows=rrn in multi_adjustment,
+                rrc_already_sent_on=rrc_dates.get(rrn), **values,
             ))
 
         # -- existing cases ----------------------------------------------------
@@ -316,7 +350,7 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
                 events.append(event_kwargs(
                     case, EventType.CREATED, new_status=case.status, source=source,
                     changes={f: [None, _json(getattr(case, f))] for f in _RESULT_FIELDS + _DEFAULT_FIELDS
-                             + ("multiple_adjustment_rows",)},
+                             + ("multiple_adjustment_rows", "rrc_already_sent_on")},
                 ))
             summary.created = len(new_cases)
         if changed:
@@ -327,6 +361,8 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
         if events:
             CaseEvent.objects.bulk_create([CaseEvent(**kw) for kw in events], batch_size=_BATCH)
         summary.events_written = len(events)
+        summary.rrc_warning_changed, n = _refresh_rrc_warnings(payment_module, rrc_dates, now, source)
+        summary.events_written += n
 
         date_cases = ExceptionCase.objects.filter(payment_module=payment_module, business_date=business_date)
         summary.cases_by_rule_status = {
@@ -334,10 +370,35 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
             for row in date_cases.values("rule_code", "status").annotate(n=Count("id")).order_by("rule_code", "status")
         }
         summary.multiple_adjustment_rows = date_cases.filter(multiple_adjustment_rows=True).count()
+        summary.rrc_already_sent = date_cases.filter(rrc_already_sent_on__isnull=False).count()
+        summary.no_deadline = date_cases.filter(no_deadline=True).count()
     if summary.flagged_for_review:
         logger.warning("%s %s: %d case(s) flagged for review after re-evaluation", payment_module.code,
                        business_date, summary.flagged_for_review)
     return summary
+
+
+def _refresh_rrc_warnings(payment_module, rrc_dates: dict, now, source: str) -> tuple[int, int]:
+    """Brings rrc_already_sent_on up to date on every case of every date
+    (A1); a new case got it at creation. Returns (cases changed, events)."""
+    stale = [
+        c for c in ExceptionCase.objects.select_for_update(of=("self",)).filter(payment_module=payment_module).filter(
+            Q(rrn__in=list(rrc_dates)) | Q(rrc_already_sent_on__isnull=False)
+        )
+        if c.rrc_already_sent_on != rrc_dates.get(c.rrn)
+    ]
+    events = []
+    for c in stale:
+        c.payment_module = payment_module
+        old, c.rrc_already_sent_on, c.updated_at = c.rrc_already_sent_on, rrc_dates.get(c.rrn), now
+        events.append(CaseEvent(**event_kwargs(
+            c, EventType.WARNINGS_CHANGED, old_status=c.status, new_status=c.status, source=source,
+            changes={"rrc_already_sent_on": [_json(old), _json(c.rrc_already_sent_on)]}, remarks=c.rrc_warning,
+        )))
+    if stale:
+        ExceptionCase.objects.bulk_update(stale, ["rrc_already_sent_on", "updated_at"], batch_size=_BATCH)
+        CaseEvent.objects.bulk_create(events, batch_size=_BATCH)
+    return len(stale), len(events)
 
 
 def evaluated_business_dates(payment_module: PaymentModule) -> list[date]:

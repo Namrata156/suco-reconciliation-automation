@@ -40,18 +40,21 @@ built):
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
 
+from core.append_only import AppendOnlyError, AppendOnlyModel, AppendOnlyQuerySet
 from core.models import PaymentModule
 from exception_management.actions import ActionType
 from reconciliation.models import TransactionMatchGroup
 from rule_engine.models import Priority, ResponseCode, RuleResult, StatusCategory
 
 
-class CaseImmutableError(Exception):
-    """A CaseEvent (append-only audit) was about to be changed or deleted."""
+class CaseImmutableError(AppendOnlyError):
+    """A CaseEvent / code-change event (append-only audit) was about to be changed or deleted."""
 
 
 class CaseStatus(models.TextChoices):
@@ -73,6 +76,20 @@ _PRIORITY_RANK = {Priority.HIGH: 0, Priority.MEDIUM: 1, Priority.LOW: 2}
 # R07x: chargeback more than 35 days after the original transaction -- "bring
 # to the user's notice" (rule table v3.1, design section 3).
 ATTENTION_RULE_CODES = ("R07x",)
+
+# P5 hint (display only, no linking; v3.2 one-day rule): an R13 (CBS only) case
+# whose RRN has a current R12 (NPCI only, successful) result on the previous
+# business date -- the same payment recorded by NPCI on D-1 and CBS on D.
+HINT_RULE_CODE, HINT_PREVIOUS_DAY_RULE_CODE = "R13", "R12"
+
+QUEUE_ORDER = (
+    "priority_rank",
+    models.F("is_overdue").desc(nulls_last=True),
+    models.F("due_date").asc(nulls_last=True),
+    models.F("age_days").desc(nulls_last=True),
+    "business_date",
+    "rrn",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -100,33 +117,51 @@ class ExceptionCaseQuerySet(models.QuerySet):
             is_overdue=models.Subquery(aged.values("is_overdue")[:1], output_field=models.BooleanField()),
         )
 
-    def queue(self, today=None, now=None):
-        """The shared work queue (design section 3): active cases, HIGH first,
-        then overdue, then due date, then oldest. `needs_attention` flags
-        R07x and anything overdue."""
+    def with_previous_day_r12(self):
+        """Annotates previous_day_r12 (P5 hint): True on an R13 case whose RRN
+        has a current R12 result on business_date - 1 day. Computed at read
+        time, so it follows a later re-evaluation of D-1."""
+        r12 = RuleResult.objects.filter(
+            is_superseded=False,
+            payment_module_id=models.OuterRef("payment_module_id"),
+            rrn=models.OuterRef("rrn"),
+            rule_code=HINT_PREVIOUS_DAY_RULE_CODE,
+            business_date=models.ExpressionWrapper(
+                models.OuterRef("business_date") - models.Value(timedelta(days=1)), output_field=models.DateField()
+            ),
+        )
+        return self.annotate(
+            previous_day_r12=models.Case(
+                models.When(rule_code=HINT_RULE_CODE, then=models.Exists(r12)),
+                default=models.Value(False),
+                output_field=models.BooleanField(),
+            )
+        )
+
+    def with_queue_annotations(self, today=None, now=None):
+        """with_ageing + the P5 hint + priority_rank + needs_attention (R07x,
+        overdue, or no deadline)."""
         rank = models.Case(
             *(models.When(priority=p, then=models.Value(r)) for p, r in _PRIORITY_RANK.items()),
             default=models.Value(len(_PRIORITY_RANK)),
             output_field=models.IntegerField(),
         )
         return (
-            self.active()
-            .with_ageing(today=today, now=now)
+            self.with_ageing(today=today, now=now)
+            .with_previous_day_r12()
             .annotate(
                 priority_rank=rank,
                 needs_attention=models.ExpressionWrapper(
-                    Q(rule_code__in=ATTENTION_RULE_CODES) | Q(is_overdue=True), output_field=models.BooleanField()
+                    Q(rule_code__in=ATTENTION_RULE_CODES) | Q(is_overdue=True) | Q(no_deadline=True),
+                    output_field=models.BooleanField(),
                 ),
             )
-            .order_by(
-                "priority_rank",
-                models.F("is_overdue").desc(nulls_last=True),
-                models.F("due_date").asc(nulls_last=True),
-                models.F("age_days").desc(nulls_last=True),
-                "business_date",
-                "rrn",
-            )
         )
+
+    def queue(self, today=None, now=None):
+        """The shared work queue (design section 3): active cases, HIGH first,
+        then overdue, then due date, then oldest."""
+        return self.active().with_queue_annotations(today=today, now=now).order_by(*QUEUE_ORDER)
 
 
 class ExceptionCase(models.Model):
@@ -171,6 +206,15 @@ class ExceptionCase(models.Model):
     multiple_adjustment_rows = models.BooleanField(
         default=False, help_text="More than one Adjustment row belongs to this RRN and date (design section 7)"
     )
+    no_deadline = models.BooleanField(
+        default=False, help_text="Needs action but the rule's TAT was not found (tat_unresolved; Amendment 1 A4)"
+    )
+    rrc_already_sent_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Earliest Adjdate of a 'Refund Reversal Confirmation' row for this RRN on any loaded date "
+        "(Amendment 1 A1: RRC already sent, check before crediting)",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -196,6 +240,12 @@ class ExceptionCase(models.Model):
 
     def __str__(self) -> str:
         return f"{self.payment_module.code}:{self.rrn} ({self.business_date}) {self.rule_code} [{self.status}]"
+
+    @property
+    def rrc_warning(self) -> str:
+        if self.rrc_already_sent_on is None:
+            return ""
+        return f"RRC already sent for this RRN on {self.rrc_already_sent_on:%Y-%m-%d}; check before crediting"
 
     @property
     def pending_action(self):
@@ -299,6 +349,7 @@ class EventType(models.TextChoices):
     SUPERSEDED = "SUPERSEDED", "Closed: no longer needs action"
     REOPENED = "REOPENED", "Reopened: needs action again"
     ADJUSTMENT_ROWS_CHANGED = "ADJUSTMENT_ROWS_CHANGED", "Multiple-adjustment-rows flag changed"
+    WARNINGS_CHANGED = "WARNINGS_CHANGED", "Warning changed (RRC already sent)"
     # users
     TAKEN = "TAKEN", "Taken"
     RELEASED = "RELEASED", "Released"
@@ -308,27 +359,16 @@ class EventType(models.TextChoices):
     REJECTED = "REJECTED", "Rejected"
     COMPLETED = "COMPLETED", "Marked done"
     REMARK = "REMARK", "Remark"
+    REVIEW_CLEARED = "REVIEW_CLEARED", "Needs-review flag cleared"
 
 
-class CaseEventQuerySet(models.QuerySet):
-    def update(self, **kwargs):
-        raise CaseImmutableError("Case events are append-only; they cannot be updated")
-
-    def delete(self):
-        raise CaseImmutableError("Case events are append-only; they cannot be deleted")
-
-    def bulk_create(self, objs, *args, **kwargs):
-        if kwargs.get("update_conflicts"):
-            raise CaseImmutableError("Case events are append-only; bulk_create(update_conflicts=True) is not allowed")
-        for obj in objs:
-            if obj.pk is not None:
-                raise CaseImmutableError("Case events are append-only; bulk_create with an existing pk is not allowed")
-        return super().bulk_create(objs, *args, **kwargs)
-
-    # bulk_update() goes through update() and is blocked there.
+class CaseEventQuerySet(AppendOnlyQuerySet):
+    """update / delete / upserts blocked (core.append_only)."""
 
 
-class CaseEvent(models.Model):
+class CaseEvent(AppendOnlyModel):
+    append_only_error = CaseImmutableError
+
     case = models.ForeignKey(ExceptionCase, on_delete=models.PROTECT, related_name="events")
     # Copies so an event stands on its own (e.g. once archived).
     payment_module_code = models.CharField(max_length=20)
@@ -359,12 +399,116 @@ class CaseEvent(models.Model):
     def __str__(self) -> str:
         return f"{self.case_id} {self.event_type} @ {self.created_at:%Y-%m-%d %H:%M}"
 
-    def save(self, *args, **kwargs):
-        if not self._state.adding or kwargs.get("force_update") or kwargs.get("update_fields"):
-            raise CaseImmutableError("Case events are append-only; they cannot be updated")
-        # INSERT only: a new instance given an existing pk must not turn into an UPDATE.
-        kwargs["force_insert"] = True
-        super().save(*args, **kwargs)
 
-    def delete(self, *args, **kwargs):
-        raise CaseImmutableError("Case events are append-only; they cannot be deleted")
+# ---------------------------------------------------------------------------
+# Response-code change requests (design P3, owner 2026-10-10)
+# ---------------------------------------------------------------------------
+class ChangeRequestStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending approval"
+    APPROVED = "APPROVED", "Approved and applied"
+    REJECTED = "REJECTED", "Rejected"
+
+
+class ChangeRequestKind(models.TextChoices):
+    EDIT = "EDIT", "Edit an existing code"
+    CREATE = "CREATE", "Create a new code"  # Amendment 2 B2
+
+
+class ResponseCodeChangeRequest(models.Model):
+    """A maker's proposed edit of one rule_engine.ResponseCode (e.g. filling
+    in the numeric code of a RET reason stored as unknown) or a proposed NEW
+    code (kind CREATE, Amendment 2 B2: response_code is set when the approved
+    code is created). Applied only when a checker approves
+    (exception_management.code_changes); the code table refuses any other
+    edit or creation (except seeding an approved rule-table release). old_*
+    are the values when proposed (empty for CREATE). Changed only through
+    code_changes; history is ResponseCodeChangeEvent."""
+
+    kind = models.CharField(max_length=10, choices=ChangeRequestKind.choices, default=ChangeRequestKind.EDIT)
+    response_code = models.ForeignKey(
+        ResponseCode, on_delete=models.PROTECT, related_name="change_requests", null=True, blank=True,
+        help_text="The code edited; for CREATE, the code created on approval",
+    )
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="+")
+    flag = models.CharField(max_length=20)
+    old_code = models.CharField(max_length=10, null=True, blank=True)
+    old_description = models.CharField(max_length=255)
+    old_notes = models.TextField(blank=True)
+    new_code = models.CharField(max_length=10, null=True, blank=True)
+    new_description = models.CharField(max_length=255)
+    new_notes = models.TextField(blank=True)
+    new_source = models.CharField(max_length=255, blank=True, help_text="CREATE only: the new code's citation")
+    reason = models.TextField(help_text="Why, and the source of the new value (e.g. an NPCI circular)")
+
+    status = models.CharField(max_length=10, choices=ChangeRequestStatus.choices, default=ChangeRequestStatus.PENDING)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    requested_at = models.DateTimeField()
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_remarks = models.TextField(blank=True)
+    self_approved = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["response_code"], condition=Q(status="PENDING"), name="one_pending_change_per_code"
+            ),
+            models.UniqueConstraint(
+                fields=["payment_module", "flag", "new_description"],
+                condition=Q(status="PENDING", kind="CREATE"),
+                name="one_pending_create_per_description",
+            ),
+        ]
+        ordering = ["-requested_at", "-id"]
+        permissions = [
+            ("propose_code_change", "Can propose response-code changes (Maker)"),
+            ("approve_code_change", "Can approve or reject response-code changes (Checker)"),
+        ]
+
+    def __str__(self) -> str:
+        target = self.response_code if self.kind == ChangeRequestKind.EDIT else f"NEW {self.flag}"
+        return f"{target} -> {self.new_code or '(unknown)'} / {self.new_description} [{self.status}]"
+
+    def changes(self) -> dict:
+        if self.kind == ChangeRequestKind.CREATE:
+            return {f: [None, getattr(self, f"new_{f}")] for f in ("code", "description", "notes", "source")}
+        return {
+            f: [getattr(self, f"old_{f}"), getattr(self, f"new_{f}")]
+            for f in ("code", "description", "notes")
+            if getattr(self, f"old_{f}") != getattr(self, f"new_{f}")
+        }
+
+
+class CodeChangeEventType(models.TextChoices):
+    PROPOSED = "PROPOSED", "Proposed"
+    APPROVED = "APPROVED", "Approved and applied"
+    REJECTED = "REJECTED", "Rejected"
+
+
+class ResponseCodeChangeEvent(AppendOnlyModel):
+    """Append-only log of the code change requests (who, when, what)."""
+
+    append_only_error = CaseImmutableError
+
+    change_request = models.ForeignKey(ResponseCodeChangeRequest, on_delete=models.PROTECT, related_name="events")
+    response_code = models.ForeignKey(
+        ResponseCode, on_delete=models.PROTECT, related_name="+", null=True, blank=True,
+        help_text="NULL for a CREATE proposal (the code does not exist yet)",
+    )
+    event_type = models.CharField(max_length=10, choices=CodeChangeEventType.choices)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    actor_username = models.CharField(max_length=150)
+    created_at = models.DateTimeField(auto_now_add=True)
+    changes = models.JSONField(default=dict, blank=True, help_text="{field: [old, new]}")
+    remarks = models.TextField(blank=True)
+    self_approved = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.change_request_id} {self.event_type} by {self.actor_username}"
+
+

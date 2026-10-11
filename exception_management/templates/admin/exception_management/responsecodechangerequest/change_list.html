@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools-items %}
+  {% if can_propose %}
+    <li><a href="{% url 'admin:exception_management_codechange_propose' %}" class="addlink">Propose a code change</a></li>
+    <li><a href="{% url 'admin:exception_management_codechange_propose_new' %}" class="addlink">Propose a new code</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

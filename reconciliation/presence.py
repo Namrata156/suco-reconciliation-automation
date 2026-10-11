@@ -389,6 +389,16 @@ def _belonging_overlay_rows(
     return rows
 
 
+def adjustment_rows_any_date(payment_module: PaymentModule) -> dict[str, list[tuple[TransactionFact, dict[str, str]]]]:
+    """Read-only: every current Adjustment row of every loaded date,
+    {rrn: [(fact, cells), ...]} in id order; fact.business_date is the row's
+    Adjdate, cells carry dispute_type / ssk_side / txn_date. Adjustment
+    volumes are small (hundreds per date)."""
+    by_rrn, _dups, _collisions = _build_leg_index(payment_module, None, DEFAULT_OVERLAY_LEGS["ADJUSTMENT"])
+    cells = _read_cells(record for records in by_rrn.values() for record in records)
+    return {rrn: [(r, cells.get(r.pk, {})) for r in records] for rrn, records in by_rrn.items()}
+
+
 def overlay_rows_for_date(
     payment_module: PaymentModule, business_date_: date, leg_name: str = "ADJUSTMENT"
 ) -> dict[str, list[tuple[TransactionFact, dict[str, str], bool]]]:

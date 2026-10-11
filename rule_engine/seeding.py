@@ -26,7 +26,15 @@ from types import ModuleType
 from django.db import transaction
 
 from core.models import PaymentModule
-from rule_engine.models import AgeingBucket, ResponseCode, Rule, RuleSet, RuleSetStatus, RuleTat
+from rule_engine.models import (
+    AgeingBucket,
+    ResponseCode,
+    Rule,
+    RuleSet,
+    RuleSetStatus,
+    RuleTat,
+    seeding_response_codes,
+)
 
 
 @dataclass
@@ -43,12 +51,15 @@ class SeedReport:
 def _seed_codes(module: PaymentModule, data: ModuleType, report: SeedReport) -> dict:
     by_key = {}
     for flag, code, description, source, notes in data.RESPONSE_CODES:
-        obj, created = ResponseCode.objects.get_or_create(
-            payment_module=module,
-            flag=flag,
-            description=description,
-            defaults=dict(code=code, source=source, notes=notes),
-        )
+        # Seeding an approved rule-table release is the one path allowed to
+        # create codes outside a change request (Phase 3 Amendment 2 B2).
+        with seeding_response_codes():
+            obj, created = ResponseCode.objects.get_or_create(
+                payment_module=module,
+                flag=flag,
+                description=description,
+                defaults=dict(code=code, source=source, notes=notes),
+            )
         if created:
             report.codes_created += 1
         else:

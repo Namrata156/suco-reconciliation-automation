@@ -16,6 +16,7 @@ from rule_engine.models import (
     RuleSetImmutableError,
     RuleSetStatus,
     RuleTat,
+    seeding_response_codes,
     validate_ageing_buckets,
 )
 
@@ -44,6 +45,13 @@ def make_valid_set(module, label="v1"):
     make_rule(rs, "R01", 1, CBS)
     make_rule(rs, "R99", 2, ALWAYS)
     return rs
+
+
+def seeded_code(**kw):
+    """Codes in these tests stand in for a seeded rule-table release (the
+    only path besides a change request that may create codes, Amendment 2 B2)."""
+    with seeding_response_codes():
+        return ResponseCode.objects.create(**kw)
 
 
 class RuleSetLifecycleTests(TestCase):
@@ -136,10 +144,10 @@ class RuleSetLifecycleTests(TestCase):
 class ImmutabilityTests(TestCase):
     def setUp(self):
         self.upi = PaymentModule.objects.create(code="UPI", name="UPI")
-        self.code = ResponseCode.objects.create(
+        self.code = seeded_code(
             payment_module=self.upi, flag="RET", code="115", description="Account doesn't exist", source="t"
         )
-        self.unknown = ResponseCode.objects.create(
+        self.unknown = seeded_code(
             payment_module=self.upi, flag="RET", code=None, description="Account closed", source="t"
         )
         self.rs = make_set(self.upi)
@@ -214,7 +222,7 @@ class ImmutabilityTests(TestCase):
         )
 
     def test_alternative_codes_of_active_set_are_frozen(self):
-        other = ResponseCode.objects.create(payment_module=self.upi, flag="RET", description="NRI account", source="t")
+        other = seeded_code(payment_module=self.upi, flag="RET", description="NRI account", source="t")
         self._assert_blocked(lambda: self.rule.alternative_codes.add(other))
         self._assert_blocked(lambda: self.rule.alternative_codes.remove(self.unknown))
         self._assert_blocked(lambda: self.rule.alternative_codes.clear())
@@ -230,18 +238,30 @@ class ImmutabilityTests(TestCase):
         self._assert_blocked(lambda: ResponseCode.objects.filter(pk=self.unknown.pk).delete())
 
     def test_unknown_code_may_be_filled_in_once(self):
+        # Phase 3 P3: only an approved code change request may edit a code
+        # (exception_management.code_changes sets _approved_change).
         self.unknown.code = "999"  # test value only
+        self._assert_blocked(self.unknown.save)  # direct edit
+        self.unknown._approved_change = True
         self.unknown.save()
         self.unknown.refresh_from_db()
         self.assertEqual(self.unknown.code, "999")
         self.unknown.code = "998"
-        self._assert_blocked(self.unknown.save)
+        self.unknown._approved_change = True
+        self._assert_blocked(self.unknown.save)  # a locked code is filled in once only
 
-    def test_unused_code_stays_editable(self):
-        free = ResponseCode.objects.create(payment_module=self.upi, flag="TCC", code="103", description="d", source="t")
+    def test_unused_code_edits_need_a_change_request(self):
+        # Before Phase 3 P3 an unused code was freely editable; now every edit
+        # goes through a change request and codes are never deleted.
+        free = seeded_code(payment_module=self.upi, flag="TCC", code="103", description="d", source="t")
         free.description = "edited"
+        self._assert_blocked(free.save)
+        self._assert_blocked(free.delete)
+        self._assert_blocked(lambda: ResponseCode.objects.filter(pk=free.pk).update(description="x"))
+        free._approved_change = True
         free.save()
-        free.delete()
+        free.refresh_from_db()
+        self.assertEqual(free.description, "edited")
 
     def test_new_version_is_the_way_to_change_a_rule(self):
         v2 = make_set(self.upi, "v2")
@@ -292,7 +312,7 @@ class RuleValidationTests(TestCase):
 
     def test_response_code_must_be_same_module(self):
         imps = PaymentModule.objects.create(code="IMPS", name="IMPS")
-        code = ResponseCode.objects.create(payment_module=imps, flag="DRC", code="102", description="d", source="t")
+        code = seeded_code(payment_module=imps, flag="DRC", code="102", description="d", source="t")
         with self.assertRaises(ValidationError):
             make_rule(self.rs, "R01", 1, CBS, response_code=code)
 
@@ -309,14 +329,14 @@ class ResponseCodeTableTests(TestCase):
         self.upi = PaymentModule.objects.create(code="UPI", name="UPI")
 
     def test_known_code_unique_per_flag_but_unknown_codes_may_repeat(self):
-        ResponseCode.objects.create(payment_module=self.upi, flag="DRC", code="102", description="a", source="t")
-        ResponseCode.objects.create(payment_module=self.upi, flag="TCC", code="102", description="a", source="t")
-        ResponseCode.objects.create(payment_module=self.upi, flag="RET", code=None, description="x", source="t")
-        ResponseCode.objects.create(payment_module=self.upi, flag="RET", code=None, description="y", source="t")
+        seeded_code(payment_module=self.upi, flag="DRC", code="102", description="a", source="t")
+        seeded_code(payment_module=self.upi, flag="TCC", code="102", description="a", source="t")
+        seeded_code(payment_module=self.upi, flag="RET", code=None, description="x", source="t")
+        seeded_code(payment_module=self.upi, flag="RET", code=None, description="y", source="t")
         with self.assertRaises(IntegrityError), transaction.atomic():
-            ResponseCode.objects.create(payment_module=self.upi, flag="DRC", code="102", description="b", source="t")
+            seeded_code(payment_module=self.upi, flag="DRC", code="102", description="b", source="t")
         with self.assertRaises(IntegrityError), transaction.atomic():
-            ResponseCode.objects.create(payment_module=self.upi, flag="RET", code=None, description="x", source="t")
+            seeded_code(payment_module=self.upi, flag="RET", code=None, description="x", source="t")
 
 
 class AgeingBucketTests(TestCase):

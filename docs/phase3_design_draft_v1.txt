@@ -36,6 +36,23 @@ AMENDMENT 1 (owner, 2026-10-11, after Slice 1 on real data):
   - every foreign key blocks deletion; archival moves events, actions and
     cases first
 
+AMENDMENT 2 (owner, 2026-10-11, after Slice 2 on real data):
+  B1 Every user in the five roles gets Django staff status, so they can
+     open the admin, the only interface until Phase 5. What each user can
+     see and do is still set by their role.
+  B2 Creating a NEW response code also goes through maker-checker, not
+     only edits to existing codes.
+  B3 Pending Investigation cases (R06b, R07c, R13) are NEVER bulk
+     submitted or bulk approved. Each one is handled individually.
+     (Example: 578 R13 on 26 Sep.) Bulk stays for other LOW/MEDIUM
+     same-action cases.
+  Note: the A1 warning showed on 22 of 28 R06 cases on 25 Sep. The RRC
+  rows are in the 26 Sep file: ops credited the customers on the next
+  working day and confirmed, per the SOP. 14 Jul and 26 Sep show none,
+  because their next-day files are not loaded. So the warning works as
+  intended ("already done; close, don't credit again"). No extra rule
+  needed.
+
 Build order: Slice 1 = case model, lifecycle, audit, roles, case
 creation and re-run handling. Slice 2 = admin screens, API, bulk,
 code-table maker-checker, the P5 hint.

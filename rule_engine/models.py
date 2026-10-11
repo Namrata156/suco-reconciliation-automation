@@ -27,7 +27,9 @@ querysets and rule_engine.signals):
     version.
   - A ResponseCode used by an ACTIVE/RETIRED rule cannot be changed or
     deleted, except filling in a numeric code that was stored as unknown
-    (NULL) -- see ResponseCode.
+    (NULL) -- see ResponseCode. Since Phase 3 (P3) every edit of an
+    existing code, locked or not, must come through an approved code change
+    request (exception_management.code_changes); codes are never deleted.
   Limits: raw SQL bypasses all of this; the ORM paths (save, delete,
   queryset update/delete/bulk_create, m2m add/remove/clear) are guarded.
 
@@ -51,7 +53,9 @@ Due date = T + TAT (doc, AGEING). WORKING days use core.working_days
 """
 from __future__ import annotations
 
+import contextvars
 import string
+from contextlib import contextmanager
 from datetime import date, datetime, time
 
 from django.core.exceptions import ValidationError
@@ -300,6 +304,32 @@ def _locked_codes_q() -> Q:
     )
 
 
+_CODE_CHANGE_PATH = (
+    "Response-code edits go through a code change request (maker proposes, checker approves; "
+    "exception_management.code_changes, Phase 3 P3)"
+)
+
+
+_CODE_CREATE_PATH = (
+    "New response codes are created through a code change request (maker proposes, checker approves; "
+    "Phase 3 Amendment 2 B2), or by seeding an approved rule-table release"
+)
+_CODE_SEEDING = contextvars.ContextVar("response_code_seeding", default=False)
+
+
+@contextmanager
+def seeding_response_codes():
+    """The one sanctioned way to create codes outside a change request:
+    seeding an approved rule-table release (rule_engine.seeding, used by
+    `seed_rule_sets`). Data migrations use historical models and are not
+    affected by these guards."""
+    token = _CODE_SEEDING.set(True)
+    try:
+        yield
+    finally:
+        _CODE_SEEDING.reset(token)
+
+
 class ResponseCodeQuerySet(models.QuerySet):
     def locked(self):
         return self.filter(_locked_codes_q()).distinct()
@@ -307,12 +337,17 @@ class ResponseCodeQuerySet(models.QuerySet):
     def update(self, **kwargs):
         if self.locked().exists():
             raise RuleSetImmutableError("Bulk update touches a code used by an ACTIVE/RETIRED rule set")
-        return super().update(**kwargs)
+        raise RuleSetImmutableError(_CODE_CHANGE_PATH)
 
     def delete(self):
         if self.locked().exists():
             raise RuleSetImmutableError("Bulk delete touches a code used by an ACTIVE/RETIRED rule set")
-        return super().delete()
+        raise RuleSetImmutableError(_CODE_CHANGE_PATH)
+
+    def bulk_create(self, objs, *args, **kwargs):
+        if not _CODE_SEEDING.get():
+            raise RuleSetImmutableError(_CODE_CREATE_PATH)
+        return super().bulk_create(objs, *args, **kwargs)
 
 
 class ResponseCode(models.Model):
@@ -357,7 +392,24 @@ class ResponseCode(models.Model):
     def is_locked(self) -> bool:
         return self.pk is not None and ResponseCode.objects.filter(pk=self.pk).filter(_locked_codes_q()).exists()
 
+    # Set only by exception_management.code_changes when it applies an
+    # approved change request (Phase 3 P3, owner 2026-10-10: code-table edits
+    # need maker-checker approval; Amendment 2 B2, 2026-10-11: creating a code
+    # too). Any other edit is refused; creation is refused too except inside
+    # seeding_response_codes() (seeding an approved rule-table release).
+    _approved_change = False
+
     def save(self, *args, **kwargs):
+        try:
+            if not self._state.adding and not self._approved_change:
+                raise RuleSetImmutableError(_CODE_CHANGE_PATH)
+            if self._state.adding and not self._approved_change and not _CODE_SEEDING.get():
+                raise RuleSetImmutableError(_CODE_CREATE_PATH)
+            self._save_checked(*args, **kwargs)
+        finally:
+            self._approved_change = False
+
+    def _save_checked(self, *args, **kwargs):
         if not self._state.adding and self.is_locked():
             old = ResponseCode.objects.get(pk=self.pk)
             changed = [
@@ -376,7 +428,7 @@ class ResponseCode(models.Model):
     def delete(self, *args, **kwargs):
         if self.is_locked():
             raise RuleSetImmutableError(f"{self} is used by an ACTIVE/RETIRED rule set")
-        return super().delete(*args, **kwargs)
+        raise RuleSetImmutableError(_CODE_CHANGE_PATH + "; codes are never deleted")
 
     def used_by(self, rule_set: RuleSet) -> list[str]:
         """Rule codes in `rule_set` that use this code: as the rule's code, as

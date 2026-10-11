@@ -31,7 +31,7 @@ class CreationTests(CaseTestBase):
         self.result("100000000003", "R13")
         self.result("100000000004", "R09")  # reconciled: no due date
         self.result("100000000005", "R10")
-        self.result("100000000006", "R07b", due=None)  # BY_ADJTYPE with no TAT row: no due date, no case
+        self.result("100000000006", "R07b", due=None)  # no due date and TAT not unresolved: no case (A4 covers unresolved)
         s = self.sync()
         self.assertEqual((s.actionable_results, s.created, s.events_written), (3, 3, 3))
         self.assertEqual(s.cases_by_rule_status, {"R01/OPEN": 1, "R05/OPEN": 1, "R13/OPEN": 1})

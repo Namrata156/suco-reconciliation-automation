@@ -49,5 +49,11 @@ def write_summary(command: BaseCommand, s) -> None:
         command.stdout.write("  cases: " + ", ".join(f"{k} {v}" for k, v in s.cases_by_rule_status.items()))
     if s.multiple_adjustment_rows:
         command.stdout.write(command.style.WARNING(f"  multiple adjustment rows: {s.multiple_adjustment_rows}"))
+    if s.rrc_already_sent:
+        command.stdout.write(command.style.WARNING(f"  RRC already sent (A1): {s.rrc_already_sent}"))
+    if s.rrc_warning_changed:
+        command.stdout.write(f"  RRC warnings changed on cases of any date: {s.rrc_warning_changed}")
+    if s.no_deadline:
+        command.stdout.write(command.style.WARNING(f"  no deadline (A4): {s.no_deadline}"))
     if s.flagged_for_review:
         command.stdout.write(command.style.WARNING(f"  flagged for review: {s.flagged_for_review}"))

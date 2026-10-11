@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>{{ title }} ({{ cases|length }} case{{ cases|length|pluralize }})</h1>
+<p>{{ explanation }}</p>
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="{{ action }}">
+  {% for c in cases %}<input type="hidden" name="_selected_action" value="{{ c.pk }}">{% endfor %}
+  {% if form.non_field_errors %}<p class="errornote">{{ form.non_field_errors|join:" " }}</p>{% endif %}
+  <table>{{ form.as_table }}</table>
+  <ul>{% for c in cases|slice:":50" %}<li>{{ c.rrn }} ({{ c.business_date }}) {{ c.rule_code }} {{ c.priority }} {{ c.status }}</li>{% endfor %}
+  {% if cases|length > 50 %}<li>... and {{ cases|length|add:"-50" }} more</li>{% endif %}</ul>
+  <div class="submit-row"><input type="submit" name="apply" value="Apply to all" class="default"></div>
+</form>
+{% endblock %}

@@ -10,7 +10,10 @@ business-editable data.
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import models
+
+from core.append_only import AppendOnlyModel
 
 
 class RegisterType(models.TextChoices):
@@ -179,3 +182,41 @@ class BankHoliday(models.Model):
 
     def __str__(self) -> str:
         return f"{self.date} {self.name} ({self.region})"
+
+
+# ---------------------------------------------------------------------------
+# User activity log (Phase 3 design section 5; report in Phase 6)
+# ---------------------------------------------------------------------------
+class UserActivityType(models.TextChoices):
+    LOGIN = "LOGIN", "Login"
+    LOGOUT = "LOGOUT", "Logout"
+    LOGIN_FAILED = "LOGIN_FAILED", "Failed login"
+
+
+class UserActivity(AppendOnlyModel):
+    """
+    One login, logout or failed login, written by core.signals from Django's
+    auth signals (admin and API both log in through django.contrib.auth).
+    Append-only (core.append_only). `user` is NULL for a failed login with
+    an unknown username and for a logout of an already-expired session;
+    `username` is what was typed / the user's name at the time. `ip_address`
+    is REMOTE_ADDR only: X-Forwarded-For is not trusted until the deployment
+    has a known reverse proxy.
+    """
+
+    activity_type = models.CharField(max_length=20, choices=UserActivityType.choices)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    username = models.CharField(max_length=150, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+    path = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        verbose_name_plural = "user activity"
+
+    def __str__(self) -> str:
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.activity_type} {self.username}"

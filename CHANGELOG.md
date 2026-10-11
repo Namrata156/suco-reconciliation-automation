@@ -8,6 +8,58 @@ don't duplicate this history there.
 
 ## 2026-10-11
 
+- **Added: Exception Management + Maker-Checker, Slice 2 (Phase 3).**
+  Design Amendments 1 and 2 (owner, 2026-10-11) are in
+  `docs/phase3_design_draft_v1.txt`.
+  - **Admin screens** (the interim interface until Phase 5):
+    - **Queue:** design order, flags, filters.
+    - **Case detail:** rule reason, facts, every dispute row for the RRN,
+      action and event history.
+    - **Action forms:** one per step, all through `services.py`. Buttons
+      follow the user's role, and the role is checked again in the
+      service.
+    - **Read-only:** event and action screens.
+  - **API** (`/api/exceptions/`): queue with filters and paging, case
+    detail, one endpoint per step, bulk endpoints. It uses session login
+    and CSRF.
+  - **Bulk** take, submit and approve. Submit and approve are
+    all-or-nothing and refused for:
+    - HIGH cases
+    - Pending Investigation cases (R06b, R07c, R13), per the owner's B3
+    - cases with warnings
+    - actions that need evidence
+  - **Flags:**
+    - **RRC already sent (A1):** set on every sync across dates.
+    - **No deadline (A4):** the result needs action but no deadline was
+      found.
+    - **Needs review (A5):** a checker clears it with a remark.
+    - **Previous-day hint (P5):** an R13 case shows when an R12 exists on
+      the day before.
+  - **New actions:** chargeback represent (A2). "Close without action" now
+    completes when approved (A3).
+  - **Code-table maker-checker** (P3, B2): editing or creating a response
+    code needs a change request (maker proposes, checker approves), logged
+    append-only. Direct create, edit and delete are blocked. Codes from an
+    approved rule-table release still load through seeding.
+  - **User activity log** (`core.UserActivity`): login, logout and failed
+    login, with IP and browser, append-only. Readable by Administrator
+    and Auditor. The append-only guard is shared in `core/append_only.py`.
+  - **Staff status (B1):** only half done. Migration 0006 gives staff
+    status to current role members. The signal that would do this
+    automatically for new members was blocked by the file-permission
+    prompt and is not built. Until it is, an Administrator ticks "staff
+    status" by hand.
+  - **Real data, PM-verified.**
+    - Cases unchanged at 306 / 88 / 594, all OPEN.
+    - The RRC warning is on 22 of 28 R06 cases on 25 Sep, plus 1 R06b on
+      26 Sep. These are ops' next-day confirmations, so the warning
+      works as intended.
+    - Previous-day hint: 11 on 26 Sep.
+    - Direct response-code create and edit are refused on the dev DB.
+  - Migrations: `core` 0007; `exception_management` 0003–0006.
+
+  Full suite: **388 tests, OK** (PM re-ran on Postgres).
+
 - **Added: Exception Management + Maker-Checker, Slice 1 (Phase 3).** New
   app `exception_management`, built to the approved design
   (`docs/phase3_design_draft_v1.txt`, approved 2026-10-10, Amendment 1

@@ -10,6 +10,9 @@ current status, applies the change and writes a CaseEvent.
                    +-------------------------------------------------+
   reassign (Administrator): OPEN / IN_PROGRESS / APPROVED -> assigned to another maker
   add_remark (Maker): any status, append-only
+  clear_review (Checker, mandatory remark): clears needs_review (Amendment 1 A5)
+  CLOSE_NO_ACTION goes straight from approval to COMPLETED (A3).
+  bulk_submit / bulk_approve: LOW/MEDIUM, one shared action, all or nothing (P2).
   CLOSED_SUPERSEDED is set only by the system (exception_management.sync).
 
 Roles: Maker = take, release, submit, mark_completed, add_remark; Checker =
@@ -38,8 +41,8 @@ from exception_management.models import (
     ExceptionCase,
     ProposedAction,
 )
-from exception_management.roles import Role, has_role
-from rule_engine.models import ResponseCode
+from exception_management.roles import Role, has_role, user_roles
+from rule_engine.models import Priority, ResponseCode, StatusCategory
 
 
 class WorkflowError(Exception):
@@ -306,10 +309,19 @@ def approve(case, user, *, remarks: str = "", source: str = "") -> ProposedActio
     action.decided_at = timezone.now()
     action.decision_remarks = (remarks or "").strip()
     action.self_approved = action.submitted_by_id == user.pk
+    completes = ACTION_SPECS[action.action_type].completes_on_approval
+    if completes:  # A3: close without action -- nothing to carry out, no external reference
+        action.completed_by = user
+        action.completed_at = action.decided_at
     action.save()
     old = _set_status(case, CaseStatus.APPROVED)
     record_event(case, EventType.APPROVED, actor=user, old_status=old, new_status=case.status, action=action,
                  remarks=action.decision_remarks, source=source)
+    if completes:
+        _set_status(case, CaseStatus.COMPLETED)
+        record_event(case, EventType.COMPLETED, actor=user, old_status=CaseStatus.APPROVED, new_status=case.status,
+                     action=action, remarks="Close without action: completed on approval (Amendment 1 A3)",
+                     source=source)
     return action
 
 
@@ -366,8 +378,147 @@ def add_remark(case, user, text: str, *, source: str = "") -> CaseEvent:
                         remarks=text, source=source)
 
 
+@transaction.atomic
+def clear_review(case, user, *, remarks: str, source: str = "") -> CaseEvent:
+    """Amendment 1 A5: a checker clears the needs_review flag a re-run set,
+    with a mandatory remark (logged with the reason that was cleared)."""
+    case = _lock(case)
+    _require(user, Role.CHECKER)
+    if not case.needs_review:
+        raise InvalidTransition(f"Case {case.pk} is not flagged for review")
+    remarks = _text(remarks, "A remark explaining the review")
+    old_reason = case.needs_review_reason
+    case.needs_review = False
+    case.needs_review_reason = ""
+    case.save()
+    return record_event(case, EventType.REVIEW_CLEARED, actor=user, old_status=case.status, new_status=case.status,
+                        remarks=remarks, changes={"needs_review": [True, False], "needs_review_reason": [old_reason, ""]},
+                        source=source)
+
+
+# ---------------------------------------------------------------------------
+# what a user may do now (admin buttons, API) -- mirrors the checks above
+# ---------------------------------------------------------------------------
+TRANSITIONS = ("take", "release", "reassign", "submit", "approve", "reject", "complete", "remark", "clear_review")
+
+
+def available_transitions(case: ExceptionCase, user) -> list[str]:
+    roles = user_roles(user)
+    maker, checker, admin = Role.MAKER in roles, Role.CHECKER in roles, Role.ADMINISTRATOR in roles
+    mine = case.assigned_to_id is not None and case.assigned_to_id == getattr(user, "pk", None)
+    s = case.status
+    allowed = {
+        "take": maker and s == CaseStatus.OPEN,
+        "release": s == CaseStatus.IN_PROGRESS and (admin or (maker and mine)),
+        "reassign": admin and s in (CaseStatus.OPEN, CaseStatus.IN_PROGRESS, CaseStatus.APPROVED),
+        "submit": maker and mine and s == CaseStatus.IN_PROGRESS,
+        "approve": checker and s == CaseStatus.PENDING_APPROVAL,
+        "reject": checker and s == CaseStatus.PENDING_APPROVAL,
+        "complete": maker and mine and s == CaseStatus.APPROVED,
+        "remark": maker,
+        "clear_review": checker and case.needs_review,
+    }
+    return [t for t in TRANSITIONS if allowed[t]]
+
+
+# ---------------------------------------------------------------------------
+# bulk (design P2): LOW / MEDIUM cases with the same action only, all or nothing
+# ---------------------------------------------------------------------------
+BULK_PRIORITIES = (Priority.LOW, Priority.MEDIUM)
+
+
+class BulkRefused(WorkflowError):
+    pass
+
+
+def _bulk_cases(case_ids) -> list[ExceptionCase]:
+    ids = sorted({c.pk if isinstance(c, ExceptionCase) else int(c) for c in case_ids})
+    if not ids:
+        raise BulkRefused("No cases selected")
+    # Lock in pk order (no deadlock between two bulk runs); the per-case
+    # services re-lock the same rows (already held by this transaction).
+    cases = list(ExceptionCase.objects.select_for_update(of=("self",)).select_related("payment_module")
+                 .filter(pk__in=ids).order_by("pk"))
+    if len(cases) != len(ids):
+        raise BulkRefused("Some selected cases do not exist")
+    high = [c for c in cases if c.priority not in BULK_PRIORITIES]
+    if high:
+        raise BulkRefused(
+            f"Bulk handling is for LOW/MEDIUM cases only; {len(high)} selected case(s) are "
+            f"{', '.join(sorted({c.priority for c in high}))} (e.g. {high[0].rrn}). Nothing was applied."
+        )
+    investigation = [c for c in cases if c.status_category == StatusCategory.PENDING_INVESTIGATION]
+    if investigation:  # Amendment 2 B3
+        raise BulkRefused(
+            f"Pending Investigation cases ({', '.join(sorted({c.rule_code for c in investigation}))}) are never "
+            f"handled in bulk; {len(investigation)} selected (e.g. {investigation[0].rrn}) must each be handled "
+            "individually. Nothing was applied."
+        )
+    flagged = [c for c in cases if c.needs_review or c.multiple_adjustment_rows or c.rrc_already_sent_on]
+    if flagged:
+        raise BulkRefused(
+            f"{len(flagged)} selected case(s) carry a warning (needs review / multiple adjustment rows / RRC already "
+            f"sent, e.g. {flagged[0].rrn}) and must be handled one by one. Nothing was applied."
+        )
+    return cases
+
+
+@transaction.atomic
+def bulk_take(case_ids, user, *, source: str = "") -> list[ExceptionCase]:
+    """Takes several OPEN cases at once, all or nothing. Taking only assigns
+    the case (no action, no money), so there is no priority restriction."""
+    ids = sorted({c.pk if isinstance(c, ExceptionCase) else int(c) for c in case_ids})
+    if not ids:
+        raise BulkRefused("No cases selected")
+    return [take(pk, user, source=source) for pk in ids]
+
+
+@transaction.atomic
+def bulk_submit(case_ids, user, *, action_type: str | None = None, response_code=None, remarks: str = "",
+                source: str = "") -> list[ProposedAction]:
+    """Submits the same action for every selected case (each taken by
+    `user`). Without action_type the cases' pre-filled action is used and must
+    be the same for all. Evidence-bearing actions are never bulk. Any refusal
+    or per-case error rolls back every case."""
+    cases = _bulk_cases(case_ids)
+    if not action_type:
+        defaults = {c.default_action_type for c in cases}
+        if len(defaults) != 1 or "" in defaults:
+            raise BulkRefused(
+                "The selected cases do not share one pre-filled action "
+                f"({', '.join(sorted(d or 'none' for d in defaults))}); choose the action. Nothing was applied."
+            )
+        action_type = defaults.pop()
+    spec = ACTION_SPECS.get(action_type)
+    if spec is not None and spec.requires_cbs_reversal_evidence:
+        raise BulkRefused(f"{action_type} needs per-case evidence and cannot be submitted in bulk")
+    return [submit(c, user, action_type=action_type, response_code=response_code, remarks=remarks, source=source)
+            for c in cases]
+
+
+@transaction.atomic
+def bulk_approve(case_ids, user, *, remarks: str = "", source: str = "") -> list[ProposedAction]:
+    cases = _bulk_cases(case_ids)
+    not_pending = [c for c in cases if c.status != CaseStatus.PENDING_APPROVAL]
+    if not_pending:
+        raise BulkRefused(f"{len(not_pending)} selected case(s) are not pending approval (e.g. {not_pending[0].rrn}). "
+                          "Nothing was applied.")
+    actions = {a.case_id: a for a in ProposedAction.objects.filter(case__in=cases, decision=Decision.PENDING)}
+    kinds = {(actions[c.pk].action_type, actions[c.pk].response_code_id) for c in cases}
+    if len(kinds) != 1:
+        raise BulkRefused(f"The selected cases' proposed actions differ ({len(kinds)} different action/code "
+                          "combinations); bulk approval needs one shared action. Nothing was applied.")
+    return [approve(c, user, remarks=remarks, source=source) for c in cases]
+
+
 __all__ = [
     "ActionType",
+    "BulkRefused",
+    "available_transitions",
+    "bulk_approve",
+    "bulk_submit",
+    "bulk_take",
+    "clear_review",
     "InvalidTransition",
     "MissingInput",
     "RoleRequired",

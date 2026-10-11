@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from core.models import BankHoliday, PaymentModule, SettlementCycle
+from core.models import BankHoliday, PaymentModule, SettlementCycle, UserActivity
 
 
 @admin.register(PaymentModule)
@@ -32,6 +32,27 @@ class BankHolidayAdmin(admin.ModelAdmin):
     @admin.display(description="Day")
     def weekday(self, obj):
         return obj.date.strftime("%a")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(UserActivity)
+class UserActivityAdmin(admin.ModelAdmin):
+    """Read-only user activity log (login / logout / failed login). Visible to
+    roles holding core.view_useractivity (Administrator, Auditor)."""
+
+    list_display = ("created_at", "activity_type", "username", "user", "ip_address", "path")
+    list_filter = ("activity_type",)
+    search_fields = ("username", "ip_address")
+    date_hierarchy = "created_at"
+    readonly_fields = ("created_at", "activity_type", "user", "username", "ip_address", "user_agent", "path")
 
     def has_add_permission(self, request, obj=None):
         return False

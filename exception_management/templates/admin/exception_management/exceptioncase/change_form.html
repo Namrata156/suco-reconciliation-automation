@@ -1,0 +1,9 @@
+{% extends "admin/change_form.html" %}
+{% comment %}Case detail: buttons for the transitions the user may do now
+(services.available_transitions). Each opens a form; the service makes the change.{% endcomment %}
+{% block object-tools-items %}
+  {% for name, label, url in transitions %}
+    <li><a href="{{ url }}" class="exception-transition-{{ name }}">{{ label }}</a></li>
+  {% endfor %}
+  {{ block.super }}
+{% endblock %}
