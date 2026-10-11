@@ -8,6 +8,30 @@ don't duplicate this history there.
 
 ## 2026-10-11
 
+- **Added: Phase 4 Slice 1 — NTSL mapping, self-check, gap analysis.**
+  New `settlement` app; it only reads `transactions.NtslSettlementLine`.
+  - **Mapping as data (S1).** Versioned NTSL description → category map
+    (exact or regex entries). Versions start PENDING; changes go
+    Maker propose → Checker approve/reject (self-approval allowed with
+    both roles, flagged). A proposal is refused if it leaves any loaded
+    description unmapped or ambiguous. Event log is append-only. v1 seeded
+    and ACTIVE: 50 entries, 267/267 seen descriptions mapped. New
+    categories beyond the design list: MANDATE_FEE(_GST), ADJUSTMENT_FEE,
+    PRE_ARBITRATION, NRP_FEE_GST.
+  - **Self-check (S2).** Per cycle: Sub Totals = sum of lines above;
+    Settlement Amount = Sub Totals net; Final = Settlement Amount + post-
+    settlement lines. Fails on unmapped lines, missing/repeated totals, or
+    two current files for one cycle. Re-runs supersede, never delete.
+    Command: `check_ntsl --date YYYY-MM-DD`. Real data: 36/36 cycles PASS.
+  - **Gap analysis (read-only, nothing built on it).** NTSL transaction
+    lines equal NPCI's own rows exactly; after attribution the unexplained
+    amount is Rs 0.00 on every date, cycle and side. DC1/DC2 tie to the
+    Adjustment file (Q6). Proposed gap rules G01–G10 and a corrected SOP
+    formula sign are in `docs/phase4_gap_rules_draft_v1.txt`; owner
+    approved both, plus the new categories, the same day.
+  - Migrations: `settlement` 0001–0002. One line in `config/settings.py`.
+    32 new tests.
+
 - **Added: email-ready alert outbox (Phase 3, design Amendment 3).** The
   mail server will be added later. Turning email on is a `.env` change
   only; steps are in `docs/email_alerts_setup.txt`.

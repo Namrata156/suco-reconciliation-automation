@@ -1,0 +1,176 @@
+================================================================================
+ PHASE 4 - SETTLEMENT GAP-EXPLANATION RULES (G-RULES)
+ DRAFT v1 - 2026-10-11 - FOR OWNER APPROVAL (nothing built on these yet)
+================================================================================
+
+Source: Phase 4 Slice 1 real-data analysis (14 Jul, 25 Sep, 26 Sep 2026),
+verified by PM 2026-10-11. Design context: docs/phase4_design_draft_v1.txt.
+
+--------------------------------------------------------------------------------
+1. WHAT SLICE 1 FOUND (in short)
+--------------------------------------------------------------------------------
+  - NTSL is internally consistent: 36 of 36 cycles pass the self-check
+    (Sub Totals, Settlement Amount and Final all tie to the paisa).
+  - NTSL's transaction lines equal NPCI's own Raw Data / Merchant Raw Data
+    / BBP rows exactly, in count and amount, per cycle x side x U2/U3 x RB.
+    So every rupee of difference is a named NPCI row.
+  - With the rules below, the UNEXPLAINED amount is Rs 0.00 and 0 txns on
+    every date, every cycle and both sides.
+  - The big beneficiary gap (Rs 17-26 lakh a day) is on-us payments: NTSL
+    settles both legs, our match group holds both legs as one payment.
+    (Same 794 on-us payments Step 5 found in ops' rev sheet on 14 Jul.)
+  - DC1/DC2 (Q6) tie exactly to the Adjustment file, not to DRC/Timeout.
+
+--------------------------------------------------------------------------------
+2. PROPOSED RULES
+--------------------------------------------------------------------------------
+  Applied per business date AND per cycle, using each NPCI row's own
+  settlement cycle. Figures: 14 Jul / 25 Sep / 26 Sep (count / Rs).
+
+  G01 Matched
+      When: rule R09, the NPCI row the group points at.
+      Treatment: counts as settled on its own side.
+
+  G02 On-us second leg
+      When: the payee NPCI row of an R09 on-us payment.
+      Treatment: counts on the beneficiary side; cancels in money.
+      794 / 17,27,785.00 ; 836 / 26,44,043.00 ; 775 / 17,02,704.00
+
+  G03 Settled, but the payment has a dispute rule
+      When: NPCI 00/RB row with CBS present and rule R04a, R04c, R06 or R07a.
+      Treatment: counts as settled and matched. The rule's own exception
+      case still stands (this only explains the money in NTSL).
+      20 / 14,032.70 ; 17 / 21,340.80 ; 14 / 14,829.70
+
+  G04 Timeout not credited
+      When: R05 (RB, SSK beneficiary).
+      Treatment: explained difference until the RET or the credit happens.
+      18 / 25,048.77 ; 0 ; 0
+
+  G05 NPCI-only success
+      When: R12.
+      Treatment: explained difference; CBS adjustment due.
+      1 / 900.00 ; 11 / 4,967.00 ; 0
+
+  G06 Remitter timeout already reversed in CBS
+      When: R06b.
+      Treatment: explained difference; offset by the RET in DC1/DC2.
+      0 ; 0 ; 1 / 200.00
+
+  G07 DRC debited, not reversed (CBS side)
+      When: R02.
+      Treatment: explained CBS-side difference.
+      6 / 19,902.00 ; 0 ; 0
+
+  G08 CBS only (CBS side)
+      When: R13.
+      Treatment: explained CBS-side difference (deposits - withdrawals).
+      1 / -1,000.00 ; 10 / -3,824.00 ; 578 / +76,634.49
+
+  G09 Dispute cycles
+      When: DC1 / DC2 "Net Adjusted Amount".
+      Treatment: compare with the signed money-moving Adjustment rows.
+        + for SSK as remitter / - for SSK as beneficiary:
+          Credit Adjustment, Online Refund, RET, Chargeback Raise
+        - for SSK as remitter / + for SSK as beneficiary:
+          Representment / Re-presentment Raise
+        No money effect: DRC, RRC, TCC, complaint rows.
+        DC1 = rows raised before 16:00 IST, DC2 = after (time read from
+        the Adjustment Uid - inferred, ops to confirm).
+      Result today: ties to the paisa on all 6 dispute cycles.
+
+  G10 Fees and taxes
+      When: all fee, GST, rebate and mandate-fee lines.
+      Treatment: checked inside NTSL only (self-check) until ops answers
+      Q3 (which CBS GL carries them).
+      -8,142.16 ; -8,390.33 ; -7,838.57
+
+  Z   No NTSL effect
+      When: R01, R03, R08, R10, R11, R07b/x/c, and DRC/RRC/TCC/complaint
+      rows.
+      Treatment: listed for audit, not attributed.
+
+  TALLIED = unexplained amount AND count are 0 after G01-G10 (within the
+  Q4 tolerance, Rs 0 by default). Otherwise a settlement exception (one
+  case per business date, cycle detail inside - Q2).
+
+--------------------------------------------------------------------------------
+3. SPEC / SOP CHANGES THESE RULES IMPLY (owner to approve)
+--------------------------------------------------------------------------------
+  C1 SOP formula sign. As written in docs/sop_reference.md:
+       (CBS deposit - withdrawal) - (NTSL credit - debit) = 0
+     gives TWICE the net, not 0. CBS deposits on GL 1535 are SSK-as-
+     remitter payments, which are NTSL DEBITS. Corrected:
+       (CBS deposit - withdrawal) - (NTSL debit - credit) = explained items
+     With the correction, the difference is fully explained on all 3 dates:
+       14 Jul 43,050.77 (R02 +19,902.00, R05 +25,048.77, R12 -900.00,
+              R13 -1,000.00)
+       25 Sep -5,047.00 (R12 -1,223.00, R13 -3,824.00)
+       26 Sep 76,434.49 (R13 +76,634.49, R06b -200.00)
+  C2 The SOP explains a non-zero difference as "Timeouts not credited +
+     DRCs not reversed". Real data also needs NPCI-only successes (R12),
+     CBS-only items (R13) and timeouts already reversed (R06b). On 26 Sep,
+     R13 is 99.7% of the difference.
+  C3 "CBS-effected amount should match the final settlement amount" cannot
+     hold as written: Final also contains fees/GST (about -8k a day) and
+     DC adjustments, which are not in the UPI GL extract.
+  C4 On-us payments appear on BOTH sides of NTSL.
+
+--------------------------------------------------------------------------------
+4. NEW NTSL CATEGORIES (refinements to the S1 list)
+--------------------------------------------------------------------------------
+  - MANDATE_FEE / MANDATE_FEE_GST: the 8 SI fee lines under "FOR NON -
+    FINANCIAL MANDATE/OD TXNs" (credits to SSK).
+  - ADJUSTMENT_FEE: "Net Adjusted Fee with Tax", "Net Debit Adjustment
+    Switching Fee with Tax".
+  - PRE_ARBITRATION: the acceptance amount, separate from penalties.
+  - NRP_FEE_GST: split out like the other fee/GST pairs.
+  Mapping v1: 50 entries, 267 of 267 seen descriptions mapped, ACTIVE.
+
+--------------------------------------------------------------------------------
+5. CAVEATS
+--------------------------------------------------------------------------------
+  - SETTLEMENT_CHARGES (assumed inside Sub Totals) and NRP / compensation
+    lines (assumed inside Final) are 0.00 in every file, so their place in
+    the arithmetic is unproven. If a real file disagrees, the self-check
+    FAILS that cycle; it never passes silently.
+  - G09 sign for chargeback / representment / pre-arbitration rests on 3
+    rows; the Uid timestamp reading is inferred. Both go to ops.
+  - 4 CBS rows have no RRN and are outside RRN matching:
+      "NULLIFICATION OF UPI TRXN AMT TRF TO GL7/1526"
+        43,13,893.12 (14 Jul), 69,53,503.79 (25 Sep)
+      "UPI TO RRC DRC TCC REVERSAL DATED ON <D-1/D-2>"
+        76,936.13 (14 Jul, does not tie), 4,677.72 (25 Sep, equals that
+        day's 22 RRC rows exactly)
+    Ops to explain.
+
+--------------------------------------------------------------------------------
+6. QUESTIONS
+--------------------------------------------------------------------------------
+  For the owner:
+    O1 Approve G01-G10 and Z as written?
+    O2 Approve the corrected SOP formula (C1) and record C2-C4 against the
+       spec?
+    O3 Approve the new categories (section 4)?
+    O4 Add "switching-fee line count = remitter txn count incl. RB" to the
+       self-check? (True on all 3 dates; not built.)
+  For ops:
+    P1 Q3: which GL carries settlement, fees and GST? Is "GL7/1526" the
+       settlement GL, and can we get its extract?
+    P2 Confirm the Uid time reading and the DC1/DC2 16:00 cut-off.
+    P3 Confirm the sign of chargeback, representment and pre-arbitration
+       in Net Adjusted Amount.
+    P4 What are the NULLIFICATION and "UPI TO RRC DRC TCC REVERSAL" entries?
+
+--------------------------------------------------------------------------------
+APPROVAL
+--------------------------------------------------------------------------------
+  2026-10-11, project owner:
+    O1 G01-G10 and Z approved as written. G09's cut-off and signs stay
+       flagged for ops (P2, P3); a wrong guess would show as an
+       unexplained DC amount, never a silent pass.
+    O2 SOP formula corrected (C1); C2-C4 recorded as spec changes against
+       docs/sop_reference.md.
+    O3 New categories approved; mapping v1 stays active.
+    O4 Switching-fee count check to be added in Slice 2.
+  Slice 2 (reconciliation result, attribution, settlement cases) may start.

@@ -1,0 +1,168 @@
+================================================================================
+ PHASE 4 - SETTLEMENT CONTROL (NTSL) + NPCI FILE GENERATION
+ DESIGN DRAFT v1 - 2026-10-11 - APPROVED (project owner), with open ops items
+================================================================================
+
+APPROVAL (2026-10-11): the owner accepted every recommendation.
+  - Q1: NTSL first. NPCI File Generation starts when ops sends the upload
+    formats.
+  - Q2: one settlement case per business date, with cycle detail inside.
+  - Q4: tolerance Rs 0, configurable by Administrator via maker-checker.
+  - Q6: DC1/DC2 are investigated on real data first, and the result
+    comes back to the owner.
+  Q3 (fee/GST GL) and Q5 (upload formats) are questions for ops.
+Build order:
+  - Slice 1: the NTSL line mapping (S1), the self-check (S2), and a
+    real-data GAP ANALYSIS (S3/S4 inputs + Q6). The rules that explain
+    the gaps are business rules, so they come back to the owner for
+    approval, as the Phase 2 rule table did.
+  - Slice 2: the reconciliation result, gap attribution and settlement
+    cases (S3-S5).
+  - Slice 3: NPCI File Generation (S6), once the formats arrive.
+
+No code is written until the owner approves this draft.
+
+--------------------------------------------------------------------------------
+WHAT EXISTS
+--------------------------------------------------------------------------------
+  - NTSL loading (built 2026-09-27, Phase 1 follow-up):
+      transactions.NtslSettlementLine holds one row per NTSL line per
+      cycle, with description, txn_count, debit, credit and the cycle.
+      The "Final Settlement Amount" line is flagged.
+      Loaded: 14 Jul / 25 Sep / 26 Sep, 12 cycles each (1C-10C, DC1, DC2),
+      about 1,600 lines per date.
+  - NTSL line families seen (1C, 14 Jul):
+      - Remitter ... Transaction Amount (debit)
+      - Beneficiary ... Transaction Amount (credit)
+      - Fee / Fee GST / NPCI Switching Fee / Switching Fee GST / Payer PSP
+        Fee lines
+      - RB ("deemed approved") lines
+      - Switching Fee Rebate
+      - Sub Totals, Settlement Amount
+      - Net Adjusted Amount / Fee, Pre-Arbitration, Deemed Good Faith
+        and Deferred lines, NRP fees, Customer Compensation
+      - Final Settlement Amount
+  - Spec (Settlement Control and NTSL Validation):
+      - Reconcile at cycle level AND business-date level.
+      - Validate debit, credit, adjustment, fee, GST, penalty, final
+        settlement amount and transaction count.
+      - Compare CBS GL debit and credit totals with NTSL.
+      - "Tallied" when the difference is 0 or within a configured
+        permissible difference.
+      - Otherwise create a settlement exception, list the contributing
+        transactions (timeout, DRC, adjustments, fees, taxes, penalties),
+        and keep the calculation for audit.
+  - SOP formula (docs/sop_reference.md):
+      (matched CBS deposit - withdrawal) - (NTSL credit - debit) = 0.
+      A non-zero difference should equal Timeouts not yet credited plus
+      DRCs effected but not reversed.
+  - Spec (NPCI File Generation): a stub ("Response/acknowledgement files
+    will be generated in NPCI formats"). The checker "authorises NPCI
+    uploads". No file format is given anywhere in the repo.
+
+--------------------------------------------------------------------------------
+FIRST LOOK AT REAL DATA (PM, read-only, 2026-10-11)
+--------------------------------------------------------------------------------
+  Amounts in Rs. "Matched" = groups with rule R09 (CBS and NPCI both
+  present, reconciled).
+
+               NTSL remitter    Matched SSK-pays   Gap     NTSL beneficiary  Matched SSK-receives  Gap
+               txn amount       (NPCI debit)               txn amount        (NPCI credit)
+  14 Jul       5,46,13,083.81   5,46,05,266.11     7,817.70   4,96,73,167.47  4,79,13,218.70   17,59,948.77
+  25 Sep       5,99,52,726.83   5,99,28,291.03    24,435.80   5,37,29,569.57  5,10,83,654.57   26,45,915.00
+  26 Sep       5,22,27,360.27   5,22,12,330.57    15,029.70   4,80,73,022.55  4,63,70,318.55   17,02,704.00
+
+  NTSL final settlement (net, all cycles): 14 Jul -49,50,941.80;
+  25 Sep -62,08,797.07; 26 Sep -41,60,003.03.
+
+  Reading:
+    - The remitter side is close. The gap is small and of the size the
+      SOP expects from Timeout and DRC items.
+    - The beneficiary side has a gap of Rs 17-26 lakh per day. Likely
+      causes: on-us payments, credits where CBS is posted differently,
+      and RB / adjustment lines. The matched set excludes these.
+    - Breaking these gaps down to named transactions is the core of
+      Phase 4. Nothing is concluded yet.
+
+--------------------------------------------------------------------------------
+PROPOSED DESIGN
+--------------------------------------------------------------------------------
+  S1 NTSL line classification. Each NTSL description maps to a category,
+     held as DATA (a versioned mapping table) and never parsed in code:
+       - TXN_REMITTER, TXN_BENEFICIARY (each with an RB variant)
+       - FEE, FEE_GST, SWITCHING_FEE, SWITCHING_FEE_GST, PSP_FEE,
+         PSP_FEE_GST, REBATE, REBATE_GST
+       - ADJUSTMENT, PENALTY, COMPENSATION
+       - SUBTOTAL, SETTLEMENT_AMOUNT, FINAL
+     An unmapped description is flagged and never silently ignored.
+     Changing the mapping goes through maker-checker, like the code table.
+
+  S2 NTSL self-check per cycle: the sum of the categorised lines must
+     equal NTSL's own Sub Totals / Settlement / Final lines. This catches
+     a bad file or a bad mapping before any comparison.
+
+  S3 Settlement reconciliation per business date and per cycle:
+     - The system side is built from the rule results and the matrix,
+       per category: matched remitter / beneficiary amounts, RB, on-us,
+       DRC, Timeout, Adjustment.
+     - A matched transaction gets its cycle from its NPCI row's
+       settlement cycle; CBS has no cycle.
+     - Compare with NTSL per category and compute the differences the
+       spec lists: debit/credit, adjustment, fees and GST, penalty,
+       final.
+     - Fees, GST and penalties have no CBS transaction counterpart. They
+       are validated as NTSL-internal totals, plus a CBS GL total if ops
+       confirms which GL carries them (question Q3).
+
+  S4 Gap explanation. The difference is attributed to named transactions
+     (SOP: Timeouts not credited, DRCs not reversed, plus whatever the
+     real data shows). The result shows "explained" and "unexplained"
+     amounts.
+     - TALLIED: the unexplained amount is 0, or within the permissible
+       difference.
+     - Otherwise a SETTLEMENT EXCEPTION.
+
+  S5 Settlement exceptions use the Phase 3 exception queue as a new
+     case type: one case per business date (and cycle if Q2 says so). It
+     carries the calculation snapshot and the contributing transactions,
+     goes through maker-checker, and is audited the same way.
+
+  S6 NPCI File Generation (second half of Phase 4). After the checker
+     approves an action (Phase 3), the system builds the NPCI bulk-upload
+     file (DRC / TCC / RET / RRC / chargeback) for ops to upload to the
+     NPCI portal. Once generated, a file is immutable and kept with its
+     checksum and approver. BLOCKED: we have no NPCI upload file format
+     (question Q5).
+
+--------------------------------------------------------------------------------
+QUESTIONS FOR THE OWNER
+--------------------------------------------------------------------------------
+  Q1 Order. Build NTSL settlement reconciliation first (data is here),
+     and start NPCI File Generation once ops gives us the upload formats?
+     Recommendation: yes.
+  Q2 Level. The spec says both cycle level and date level.
+     Recommendation:
+       - compute both
+       - raise exceptions at date level
+       - show cycle detail inside the case, to avoid up to 12 cases a day
+  Q3 GL. Which CBS GL(s) carry settlement, fees and GST? The CBS file we
+     load is the UPI GL extract. Ops to confirm whether fees and GST post
+     to a separate GL.
+  Q4 Permissible difference. The spec allows a configured tolerance.
+     Recommendation: Rs 0 by default, configurable by Administrator
+     through maker-checker.
+  Q5 NPCI upload formats. Ops to supply sample bulk-upload files or
+     templates for DRC, TCC, RET, RRC and chargeback (as used in the NPCI
+     portal / URCS / UDIR).
+  Q6 DC1/DC2. The two dispute cycles: should they be validated against
+     the DRC / Timeout / Adjustment files rather than against CBS
+     matches? (Open since 2026-09-27.)
+     Recommendation: yes, investigate on real data in the first slice.
+
+--------------------------------------------------------------------------------
+SCHEDULE NOTE
+--------------------------------------------------------------------------------
+Estimate: 3 weeks (1-2 engineers). Start 2026-10-11, 3 days after the
+original target end of 2026-10-08. The project deadline 2026-10-15 is 4
+days away, so Phase 4 cannot finish by then. The deadline is the owner's
+call.
