@@ -1,0 +1,8 @@
+Subject: [Reconciliation] Rejected: {{ action_type }} for RRN {{ rrn }} ({{ business_date }})
+{{ rejected_by }} rejected the proposed action. The case is back with you (In progress).
+
+Case:     RRN {{ rrn }}, business date {{ business_date }}, rule {{ rule_code }}
+Action:   {{ action_label }}
+Reason:   {{ reason }}
+
+{{ link }}

@@ -8,6 +8,44 @@ don't duplicate this history there.
 
 ## 2026-10-11
 
+- **Added: email-ready alert outbox (Phase 3, design Amendment 3).** The
+  mail server will be added later. Turning email on is a `.env` change
+  only; steps are in `docs/email_alerts_setup.txt`.
+  - **Outbox.** `core.Notification` holds one row per alert per recipient.
+    - Content is append-only; only the delivery status, attempts and
+      error change.
+    - Statuses: held (no mail server), queued, sent, failed, skipped (no
+      email address), dropped (stale).
+    - Read-only admin for Administrator and Auditor.
+  - **Recording and delivery** (`core/notifications.py`). Alerts are
+    recorded only when the case change commits, and nothing is sent at
+    that moment. A separate delivery run retries failures after 5 and 30
+    minutes, and stops at 3 attempts.
+  - **Alerts.** All go to role members only.
+    - R07x case, new or changed to R07x on a re-run: Makers and Checkers.
+    - Case flagged needs review: Checkers.
+    - Action submitted: Checkers.
+    - Action rejected: the case's maker.
+    - Daily digest at 09:30 IST: Makers and Checkers.
+
+    Bulk operations and sync runs send one summary.
+  - **Commands.** `send_notifications` (with
+    `--drop-held-older-than DAYS`), `send_alert_digest` (with
+    `--dry-run`) and `send_test_email`. Celery wrappers and a beat
+    schedule exist for later, but no worker is needed.
+  - **Settings.** All `EMAIL_*` and `ALERT_*` values come from the
+    environment, and mail is off by default.
+  - **`.env.example`.** Placeholders only, now committed; `.gitignore` has
+    an exception for it. `.env` stays ignored.
+  - Migrations: `core` 0008; `exception_management` 0007.
+  - **Dev DB, PM-verified.** The outbox is empty and no users exist. The
+    988 cases are unchanged. `.env` is untouched.
+  - **Engineer's check (in a rolled-back transaction).** With mail off,
+    alerts were held and nothing was sent. With the console backend they
+    went to SENT.
+
+  Full suite: **417 tests, OK** (PM re-ran on Postgres).
+
 - **Added: Exception Management + Maker-Checker, Slice 2 (Phase 3).**
   Design Amendments 1 and 2 (owner, 2026-10-11) are in
   `docs/phase3_design_draft_v1.txt`.

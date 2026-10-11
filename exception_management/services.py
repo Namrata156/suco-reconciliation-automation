@@ -32,6 +32,7 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
 
+from exception_management import alerts
 from exception_management.actions import ACTION_SPECS, ActionType
 from exception_management.models import (
     CaseEvent,
@@ -226,6 +227,7 @@ def submit(
     evidence_cbs_reversal_rrn: str = "",
     evidence_notes: str = "",
     source: str = "",
+    send_alert: bool = True,
 ) -> ProposedAction:
     """The maker proposes the action. action_type / response_code default to
     the case's pre-fill from the rule; a rule with no default (R07b/R07x,
@@ -288,6 +290,8 @@ def submit(
     old = _set_status(case, CaseStatus.PENDING_APPROVAL)
     record_event(case, EventType.SUBMITTED, actor=user, old_status=old, new_status=case.status, action=action,
                  remarks=remarks, source=source)
+    if send_alert:  # bulk_submit sends one summary instead
+        alerts.action_submitted(case, action)
     return action
 
 
@@ -341,6 +345,7 @@ def reject(case, user, *, reason: str, source: str = "") -> ProposedAction:
     old = _set_status(case, CaseStatus.IN_PROGRESS)
     record_event(case, EventType.REJECTED, actor=user, old_status=old, new_status=case.status, action=action,
                  remarks=reason, source=source)
+    alerts.action_rejected(case, action, user)
     return action
 
 
@@ -492,8 +497,10 @@ def bulk_submit(case_ids, user, *, action_type: str | None = None, response_code
     spec = ACTION_SPECS.get(action_type)
     if spec is not None and spec.requires_cbs_reversal_evidence:
         raise BulkRefused(f"{action_type} needs per-case evidence and cannot be submitted in bulk")
-    return [submit(c, user, action_type=action_type, response_code=response_code, remarks=remarks, source=source)
-            for c in cases]
+    actions = [submit(c, user, action_type=action_type, response_code=response_code, remarks=remarks, source=source,
+                      send_alert=False) for c in cases]
+    alerts.bulk_submitted(user, cases, actions)  # ONE summary alert for the whole request
+    return actions
 
 
 @transaction.atomic

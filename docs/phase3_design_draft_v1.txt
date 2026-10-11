@@ -53,6 +53,25 @@ AMENDMENT 2 (owner, 2026-10-11, after Slice 2 on real data):
   intended ("already done; close, don't credit again"). No extra rule
   needed.
 
+AMENDMENT 3 (owner, 2026-10-11): email alerts made ready, mail server
+added later.
+  C1 Every alert is recorded in an outbox (core.Notification). It is
+     held until IT provides a mail server; then only .env changes are
+     needed (docs/email_alerts_setup.txt). This replaces "email deferred"
+     in section 3.
+  C2 Alerts:
+     - new or changed-to R07x case -> Makers + Checkers
+     - case flagged needs review -> Checkers
+     - submitted -> Checkers
+     - rejected -> the case's maker
+     - daily digest at 09:30 IST -> Makers and Checkers
+     Bulk operations and sync runs send one summary.
+  C3 Only role members get alerts; superusers outside a role do not.
+  C4 Delivery runs every 5 minutes, and the digest is at 09:30 IST
+     (changeable in .env and the schedule).
+  C5 .env.example (placeholders only) is now committed, so every setting
+     is documented. .env stays ignored.
+
 Build order: Slice 1 = case model, lifecycle, audit, roles, case
 creation and re-run handling. Slice 2 = admin screens, API, bulk,
 code-table maker-checker, the P5 hint.

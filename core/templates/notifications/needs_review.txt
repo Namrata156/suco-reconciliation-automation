@@ -1,0 +1,5 @@
+Subject: [Reconciliation] {{ cases|length }} approved case{{ cases|length|pluralize }} need{{ cases|length|pluralize:"s," }} review after re-evaluation, {{ business_date }}
+Re-evaluating business date {{ business_date }} changed {{ cases|length }} case{{ cases|length|pluralize }} that had already been approved or completed. Nothing was changed silently: each is flagged "needs review". A checker clears the flag with a remark.
+{% for c in cases %}
+- RRN {{ c.rrn }} ({{ c.status }}): {{ c.reason }}
+  {{ c.link }}{% endfor %}

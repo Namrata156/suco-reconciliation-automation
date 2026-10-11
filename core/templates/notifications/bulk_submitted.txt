@@ -1,0 +1,11 @@
+Subject: [Reconciliation] Approval needed: {{ count }} cases submitted in bulk ({{ action_label }})
+{{ submitted_by }} submitted the same action for {{ count }} LOW/MEDIUM case{{ count|pluralize }}.
+
+Action:   {{ action_label }}{% if response_code %} ({{ response_code }}){% endif %}
+Remarks:  {{ remarks|default:"-" }}
+Business dates: {{ business_dates }}
+{% for c in cases %}
+- RRN {{ c.rrn }} ({{ c.business_date }}, {{ c.rule_code }}){% endfor %}{% if more %}
+- ... and {{ more }} more{% endif %}
+
+Queue (awaiting approval): {{ link }}

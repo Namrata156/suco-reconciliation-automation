@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from core.models import BankHoliday, PaymentModule, SettlementCycle, UserActivity
+from core.models import BankHoliday, Notification, PaymentModule, SettlementCycle, UserActivity
 
 
 @admin.register(PaymentModule)
@@ -53,6 +53,30 @@ class UserActivityAdmin(admin.ModelAdmin):
     search_fields = ("username", "ip_address")
     date_hierarchy = "created_at"
     readonly_fields = ("created_at", "activity_type", "user", "username", "ip_address", "user_agent", "path")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    """Read-only alert outbox. Visible to roles holding core.view_notification
+    (Administrator, Auditor). Delivery is `manage.py send_notifications`."""
+
+    list_display = ("created_at", "alert_type", "recipient_username", "recipient_email", "subject", "status",
+                    "attempts", "sent_at")
+    list_filter = ("status", "alert_type")
+    search_fields = ("recipient_username", "recipient_email", "subject")
+    date_hierarchy = "created_at"
+    readonly_fields = ("created_at", "alert_type", "recipient", "recipient_username", "recipient_email", "subject",
+                       "body", "content_type", "object_id", "dedupe_key", "status", "attempts", "last_error",
+                       "next_attempt_at", "sent_at")
 
     def has_add_permission(self, request, obj=None):
         return False

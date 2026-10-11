@@ -1,0 +1,93 @@
+================================================================================
+ EMAIL ALERTS - HOW TO TURN THEM ON
+ Built 2026-10-11 (Phase 3). Mail server not yet available.
+================================================================================
+
+WHAT EXISTS TODAY
+-----------------
+Every alert the system should send is already recorded in an OUTBOX
+(admin: Core > Notifications). Only Administrator and Auditor can see it.
+Each alert is one row per recipient. Until a mail server is configured,
+rows are kept as HELD_NO_MAIL_SERVER, and nothing is lost.
+
+Turning email on needs NO code change, only .env settings.
+
+ALERTS
+------
+  Event                                   To                      Alerts sent
+  --------------------------------------  ----------------------  -----------------------------
+  New R07x case (chargeback >35 days)     Makers + Checkers       One per case-sync run,
+                                                                  listing the new cases
+  Case flagged "needs review" (re-run)    Checkers                One per case-sync run
+  Maker submits an action                 Checkers (not the       One per submission; one
+                                          submitter, unless they  summary per bulk submit
+                                          are the only Checker)
+  Checker rejects                         The case's maker        One
+  Daily digest (09:30 IST)                Every Maker and every   One per role per user per day
+                                          Checker
+
+  Digest contents:
+    - Makers: open HIGH cases (and how many are overdue), overdue cases of
+      any priority, cases due today, their own cases, and approved cases
+      not yet marked done.
+    - Checkers: cases awaiting approval (HIGH count; how many they
+      submitted themselves), and needs-review cases.
+
+  Recipients are active users in the role groups. A user with no email
+  address on their account is recorded as SKIPPED_NO_EMAIL.
+
+STATUSES
+--------
+  HELD_NO_MAIL_SERVER  recorded; mail is off or no server is configured
+  QUEUED               waiting for the next delivery run
+  SENT                 delivered to the mail server
+  FAILED               3 attempts failed (retries after 5 min, then 30
+                       min); the error is kept
+  SKIPPED_NO_EMAIL     the recipient has no email address
+  DROPPED_STALE        an old held alert deliberately not sent (see step 5)
+
+  Alert content can never be edited or deleted. Only the delivery status
+  changes.
+
+STEPS TO TURN EMAIL ON (when IT provides the mail server)
+--------------------------------------------------------
+  1. Get these from IT and put them in .env (never commit .env):
+       EMAIL_HOST            mail server host name
+       EMAIL_PORT            e.g. 25 / 587 / 465
+       EMAIL_HOST_USER       if the server needs a login
+       EMAIL_HOST_PASSWORD   if the server needs a login
+       EMAIL_USE_TLS         true/false   (use TLS OR SSL, not both)
+       EMAIL_USE_SSL         true/false
+       EMAIL_TIMEOUT         seconds, default 30
+       DEFAULT_FROM_EMAIL    sender address, e.g. reconciliation@suco.bank.in
+     Optional:
+       ALERT_DIGEST_TIME     HH:MM IST, default 09:30
+       ALERT_LINK_BASE_URL   e.g. https://recon.bank.local (puts full links
+                             in alerts; blank gives a path only)
+  2. Set ALERTS_EMAIL_ENABLED=true.
+  3. Test: manage.py send_test_email <your address>
+  4. Make sure every Maker and Checker has an email address on their user
+     account.
+  5. If alerts have been held for a long time, run once:
+       manage.py send_notifications --drop-held-older-than 2
+     so that old alerts are not mailed in a flood.
+  6. Schedule, with the .env loaded as for any manage.py command:
+       every 5 minutes : manage.py send_notifications
+       daily at 09:30  : manage.py send_alert_digest
+     Use Windows Task Scheduler or cron. No Celery worker is needed. If a
+     Celery worker and beat are deployed later, CELERY_BEAT_SCHEDULE already
+     contains both jobs.
+
+  Checking without a server: set EMAIL_BACKEND=
+  django.core.mail.backends.console.EmailBackend and ALERTS_EMAIL_ENABLED=
+  true. Mail is then printed instead of sent.
+
+OPEN (owner / IT)
+-----------------
+  - Mail server details: IT.
+  - Who sets up the scheduled tasks on the server: IT / ops.
+  - Owner questions raised 2026-10-11 (see tracker):
+    - Should superusers get alerts?
+    - Are the 5-minute delivery interval and the 09:30 digest right?
+    - Should the R07x alert also fire when an existing case changes to
+      R07x on a re-run?

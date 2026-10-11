@@ -1,0 +1,7 @@
+Subject: [Reconciliation] Daily digest {{ today }}: {{ awaiting }} case{{ awaiting|pluralize }} awaiting approval
+Good morning {{ name }}.
+
+Awaiting approval:            {{ awaiting }} (HIGH: {{ awaiting_high }}; submitted by you: {{ awaiting_mine }})
+Flagged "needs review":       {{ needs_review }}
+
+Queue: {{ link }}

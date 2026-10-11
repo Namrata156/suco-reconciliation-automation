@@ -1,0 +1,8 @@
+Subject: [Reconciliation] Approval needed: {{ action_type }} for RRN {{ rrn }} ({{ business_date }})
+{{ submitted_by }} submitted an action for approval.
+
+Case:     RRN {{ rrn }}, business date {{ business_date }}, rule {{ rule_code }}, priority {{ priority }}
+Action:   {{ action_label }}{% if response_code %} ({{ response_code }}){% endif %}
+Remarks:  {{ remarks|default:"-" }}
+
+{{ link }}

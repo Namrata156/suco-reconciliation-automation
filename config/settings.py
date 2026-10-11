@@ -161,6 +161,59 @@ FILE_PROCESSING_WORK_DIR = os.environ.get(
     str(BASE_DIR / "var" / "file_processing"),
 )
 
+# --------------------------------------------------------------------------
+# Email alerts (Phase 3 design section 3; owner-approved plan 2026-10-11)
+# --------------------------------------------------------------------------
+# Every alert is always recorded in the core.Notification outbox. Mail is
+# only sent when ALERTS_EMAIL_ENABLED is true AND a mail server is
+# configured (EMAIL_HOST, or a non-SMTP EMAIL_BACKEND such as the console
+# backend for checking). Until then alerts are HELD_NO_MAIL_SERVER. Enabling
+# mail later is .env only: fill the EMAIL_* keys and set
+# ALERTS_EMAIL_ENABLED=true; then run `manage.py send_notifications`
+# (scheduled). See .env.example.
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name, "")
+    return default if value.strip() == "" else value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name, "").strip()
+    return int(value) if value else default
+
+
+EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "").strip() or "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "").strip()
+EMAIL_PORT = _env_int("EMAIL_PORT", 25)
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = _env_bool("EMAIL_USE_TLS")
+EMAIL_USE_SSL = _env_bool("EMAIL_USE_SSL")
+EMAIL_TIMEOUT = _env_int("EMAIL_TIMEOUT", 30)
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "").strip() or "reconciliation@localhost"
+ALERTS_EMAIL_ENABLED = _env_bool("ALERTS_EMAIL_ENABLED", False)
+ALERT_DIGEST_TIME = os.environ.get("ALERT_DIGEST_TIME", "").strip() or "09:30"  # local time (TIME_ZONE, IST)
+# Optional: prefix for links in alert emails (e.g. https://recon.bank.local); blank -> path only.
+ALERT_LINK_BASE_URL = os.environ.get("ALERT_LINK_BASE_URL", "").strip().rstrip("/")
+ALERT_MAX_ATTEMPTS = 3
+ALERT_RETRY_BACKOFF_MINUTES = (5, 30)  # wait after the 1st and 2nd failed attempt
+
+# Celery beat schedule, for when a beat + worker are deployed (none runs in
+# docker-compose today: schedule the management commands instead -- see
+# .env.example). Built from ALERT_DIGEST_TIME.
+_digest_hour, _digest_minute = (int(x) for x in ALERT_DIGEST_TIME.split(":"))
+try:
+    from celery.schedules import crontab
+
+    CELERY_BEAT_SCHEDULE = {
+        "deliver-notifications": {"task": "core.tasks.deliver_notifications", "schedule": 300.0},
+        "send-alert-digest": {
+            "task": "exception_management.tasks.send_alert_digest",
+            "schedule": crontab(hour=_digest_hour, minute=_digest_minute),
+        },
+    }
+except ImportError:  # celery is pinned in requirements.txt; defensive only
+    CELERY_BEAT_SCHEDULE = {}
+
 # Django REST Framework -- framework included per locked tech stack; no
 # endpoints designed yet (API is a Phase 5 stub, see TRACKER.md).
 REST_FRAMEWORK = {

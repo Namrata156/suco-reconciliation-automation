@@ -1,0 +1,7 @@
+Subject: [Reconciliation] Test email
+This is a test email from the UPI Reconciliation platform.
+
+Mail backend: {{ backend }}
+Mail server: {{ host }}
+
+If you received this, alert emails can be delivered.

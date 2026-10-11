@@ -1,0 +1,10 @@
+Subject: [Reconciliation] Daily digest {{ today }}: {{ high_open }} open HIGH, {{ overdue }} overdue, {{ due_today }} due today
+Good morning {{ name }}. Open exception cases needing a maker:
+
+HIGH priority, open:          {{ high_open }} (of which overdue: {{ high_overdue }})
+Overdue, any priority:        {{ overdue }}
+Due today:                    {{ due_today }}
+Assigned to you:              {{ mine }} (of which overdue: {{ mine_overdue }})
+Approved, waiting to be done: {{ approved_waiting }}
+
+Queue: {{ link }}

@@ -11,9 +11,12 @@ business-editable data.
 from __future__ import annotations
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
+from django.db.models import Q
 
-from core.append_only import AppendOnlyModel
+from core.append_only import AppendOnlyError, AppendOnlyModel
 
 
 class RegisterType(models.TextChoices):
@@ -220,3 +223,120 @@ class UserActivity(AppendOnlyModel):
 
     def __str__(self) -> str:
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.activity_type} {self.username}"
+
+
+# ---------------------------------------------------------------------------
+# Notification outbox (email-ready alerts; owner-approved plan 2026-10-11)
+# ---------------------------------------------------------------------------
+class AlertType(models.TextChoices):
+    R07X_CASE = "R07X_CASE", "R07x case created (chargeback > 35 days)"
+    NEEDS_REVIEW = "NEEDS_REVIEW", "Cases flagged for review after re-evaluation"
+    SUBMITTED = "SUBMITTED", "Action submitted for approval"
+    BULK_SUBMITTED = "BULK_SUBMITTED", "Actions submitted in bulk"
+    REJECTED = "REJECTED", "Proposed action rejected"
+    DIGEST_MAKER = "DIGEST_MAKER", "Daily digest (Maker)"
+    DIGEST_CHECKER = "DIGEST_CHECKER", "Daily digest (Checker)"
+    TEST = "TEST", "Test email"
+
+
+class NotificationStatus(models.TextChoices):
+    HELD_NO_MAIL_SERVER = "HELD_NO_MAIL_SERVER", "Held: mail not enabled / no mail server"
+    QUEUED = "QUEUED", "Queued for sending"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed (all attempts used)"
+    SKIPPED_NO_EMAIL = "SKIPPED_NO_EMAIL", "Skipped: recipient has no email address"
+    DROPPED_STALE = "DROPPED_STALE", "Dropped: held too long, not to be sent"
+
+
+PENDING_NOTIFICATION_STATUSES = (NotificationStatus.HELD_NO_MAIL_SERVER, NotificationStatus.QUEUED)
+
+# Only these may change after a row is written (core.notifications delivery).
+NOTIFICATION_DELIVERY_FIELDS = frozenset({"status", "attempts", "last_error", "sent_at", "next_attempt_at"})
+
+
+class NotificationImmutableError(AppendOnlyError):
+    pass
+
+
+class NotificationQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        changed = set(kwargs) - NOTIFICATION_DELIVERY_FIELDS
+        if changed:
+            raise NotificationImmutableError(f"Notification content is append-only; cannot update {sorted(changed)}")
+        return super().update(**kwargs)
+
+    def delete(self):
+        raise NotificationImmutableError("Notifications are never deleted")
+
+    def bulk_create(self, objs, *args, **kwargs):
+        if kwargs.get("update_conflicts"):
+            raise NotificationImmutableError("Notifications are append-only; no upsert")
+        return super().bulk_create(objs, *args, **kwargs)
+
+
+class Notification(models.Model):
+    """
+    One alert for one recipient (the outbox). Written by
+    core.notifications.notify() when the triggering transaction commits;
+    mailed later by deliver_pending() (`manage.py send_notifications`) once
+    mail is enabled. Content (who, what, about which object) is append-only;
+    only the delivery fields (NOTIFICATION_DELIVERY_FIELDS) change. Never
+    deleted: an alert that should not go out any more is DROPPED_STALE.
+    """
+
+    append_only_error = NotificationImmutableError
+
+    alert_type = models.CharField(max_length=30, choices=AlertType.choices)
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+",
+        help_text="NULL only for a test email to a typed address",
+    )
+    recipient_username = models.CharField(max_length=150, blank=True)
+    recipient_email = models.CharField(max_length=254, blank=True, help_text="Address when the alert was created")
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    object_id = models.PositiveBigIntegerField(null=True, blank=True)
+    related = GenericForeignKey("content_type", "object_id")
+    dedupe_key = models.CharField(
+        max_length=100, blank=True, help_text="Set for alerts that must go once per recipient (e.g. one digest a day)"
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    status = models.CharField(max_length=30, choices=NotificationStatus.choices)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_error = models.TextField(blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, help_text="Retry not before (backoff)")
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    objects = NotificationQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["status", "next_attempt_at"], name="notification_pending_idx")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["recipient", "dedupe_key"], condition=~Q(dedupe_key=""), name="one_notification_per_dedupe_key"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.created_at:%Y-%m-%d %H:%M} {self.alert_type} -> {self.recipient_username or self.recipient_email} [{self.status}]"
+
+    _CONTENT_FIELDS = ("alert_type", "recipient_id", "recipient_username", "recipient_email", "subject", "body",
+                       "content_type_id", "object_id", "dedupe_key", "created_at")
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and set(update_fields) - NOTIFICATION_DELIVERY_FIELDS:
+                raise NotificationImmutableError("Notification content is append-only")
+            old = Notification.objects.filter(pk=self.pk).values(*self._CONTENT_FIELDS).first()
+            if old is None or any(old[f] != getattr(self, f) for f in self._CONTENT_FIELDS):
+                raise NotificationImmutableError("Notification content is append-only")
+        elif self.pk is not None:
+            kwargs["force_insert"] = True
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise NotificationImmutableError("Notifications are never deleted")

@@ -68,8 +68,10 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from core.models import PaymentModule
+from exception_management import alerts
 from exception_management.actions import default_action_for
 from exception_management.models import (
+    ATTENTION_RULE_CODES,
     DECIDED_STATUSES,
     CaseEvent,
     CaseStatus,
@@ -226,6 +228,8 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
         withdrawn: list[ProposedAction] = []
         events: list[dict] = []
         changed: list[ExceptionCase] = []
+        flagged: list[ExceptionCase] = []
+        became_r07x: list[ExceptionCase] = []  # existing cases whose rule changed TO R07x in this run
 
         def withdraw(case: ExceptionCase, why: str) -> ProposedAction | None:
             action = pending_actions.pop(case.pk, None)
@@ -269,6 +273,8 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
                 rule_changed = "rule_code" in changes
                 old_rule = case.rule_code
                 _apply(case, values)
+                if case.rule_code in ATTENTION_RULE_CODES and old_rule not in ATTENTION_RULE_CODES:
+                    became_r07x.append(case)  # owner 2026-10-11: alert on change too, not only creation
                 if old_status == CaseStatus.CLOSED_SUPERSEDED:
                     case.status = CaseStatus.OPEN
                     if case.assigned_to_id:
@@ -282,6 +288,7 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
                     event(case, EventType.FLAGGED_FOR_REVIEW, old_status=old_status, changes=changes,
                           remarks=case.needs_review_reason)
                     summary.flagged_for_review += 1
+                    flagged.append(case)
                 elif rule_changed:
                     action = None
                     if old_status == CaseStatus.PENDING_APPROVAL:
@@ -321,6 +328,7 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
                         event(case, EventType.FLAGGED_FOR_REVIEW, old_status=old_status, changes=changes,
                               remarks=case.needs_review_reason)
                         summary.flagged_for_review += 1
+                        flagged.append(case)
                     else:
                         action = withdraw(case, f"Withdrawn: the case no longer needs action (now {now_what})")
                         case.status = CaseStatus.CLOSED_SUPERSEDED
@@ -363,6 +371,14 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
         summary.events_written = len(events)
         summary.rrc_warning_changed, n = _refresh_rrc_warnings(payment_module, rrc_dates, now, source)
         summary.events_written += n
+
+        # Alerts (written on commit): one per kind per sync run.
+        # R07x: cases new as R07x plus existing cases that became R07x -- one summary;
+        # a case already R07x before this run is not alerted again.
+        alerts.r07x_cases_created(
+            business_date, [c for c in new_cases if c.rule_code in ATTENTION_RULE_CODES] + became_r07x
+        )
+        alerts.cases_flagged_for_review(business_date, flagged)
 
         date_cases = ExceptionCase.objects.filter(payment_module=payment_module, business_date=business_date)
         summary.cases_by_rule_status = {

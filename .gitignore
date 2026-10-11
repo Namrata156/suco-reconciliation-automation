@@ -31,6 +31,8 @@ var/
 # Environment variables / secrets
 .env
 .env.*
+# The template holds placeholders only (owner, 2026-10-11) -- commit it.
+!.env.example
 
 # Testing / coverage
 .coverage

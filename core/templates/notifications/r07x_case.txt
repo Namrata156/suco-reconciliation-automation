@@ -1,0 +1,5 @@
+Subject: [Reconciliation] {{ cases|length }} chargeback case{{ cases|length|pluralize }} past 35 days (R07x), {{ business_date }}
+R07x case{{ cases|length|pluralize }} (new, or changed to R07x by re-evaluation) for business date {{ business_date }}: a chargeback-type adjustment more than 35 days after the original transaction. Check whether the response deadline has already passed.
+{% for c in cases %}
+- RRN {{ c.rrn }}, priority {{ c.priority }}, due {{ c.due_date|default:"no deadline" }}
+  {{ c.link }}{% endfor %}
