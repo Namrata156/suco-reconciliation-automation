@@ -1,0 +1,6 @@
+Subject: [Reconciliation] Settlement case needs review after re-run: {{ module }} {{ business_date }}
+Re-running the settlement reconciliation of {{ module }} business date {{ business_date }} changed the result under an existing settlement case ({{ status }}). Nothing was changed silently: the case is flagged "needs review". A checker clears the flag with a remark.
+
+Reason: {{ reason }}
+
+{{ link }}

@@ -47,6 +47,11 @@ def _iso(d) -> str:
     return d.isoformat() if d is not None else ""
 
 
+def _rule(case) -> str:
+    """The case's rule, or "settlement" for a settlement case (no rule result)."""
+    return "settlement" if case.is_settlement else case.rule_code
+
+
 def role_members(*roles):
     return list(get_user_model().objects.filter(is_active=True, groups__name__in=roles).distinct().order_by("pk"))
 
@@ -88,7 +93,7 @@ def cases_flagged_for_review(business_date, cases) -> None:
 
 def action_submitted(case, action) -> None:
     notify(AlertType.SUBMITTED, approval_recipients(action.submitted_by), {
-        "rrn": case.rrn, "business_date": _iso(case.business_date), "rule_code": case.rule_code, "priority": case.priority,
+        "rrn": case.label, "business_date": _iso(case.business_date), "rule_code": _rule(case), "priority": case.priority,
         "action_type": action.action_type, "action_label": action.get_action_type_display(),
         "response_code": str(action.response_code) if action.response_code_id else "", "remarks": action.remarks,
         "submitted_by": action.submitted_by.get_username(), "link": case_link(case),
@@ -114,7 +119,7 @@ def bulk_submitted(user, cases, actions) -> None:
 def action_rejected(case, action, checker) -> None:
     makers = [u for u in (case.assigned_to, action.submitted_by) if u is not None]
     notify(AlertType.REJECTED, makers, {
-        "rrn": case.rrn, "business_date": _iso(case.business_date), "rule_code": case.rule_code,
+        "rrn": case.label, "business_date": _iso(case.business_date), "rule_code": _rule(case),
         "action_type": action.action_type, "action_label": action.get_action_type_display(),
         "reason": action.decision_remarks, "rejected_by": checker.get_username(), "link": case_link(case),
     }, related=case)

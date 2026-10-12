@@ -75,6 +75,7 @@ from exception_management.models import (
     DECIDED_STATUSES,
     CaseEvent,
     CaseStatus,
+    CaseType,
     Decision,
     EventType,
     ExceptionCase,
@@ -198,10 +199,11 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
         actionable = {r["rrn"]: r for r in current.filter(needs_case_q()).values(*_RESULT_VALUES)}
         summary.actionable_results = len(actionable)
 
+        # Transaction cases only: settlement cases (no RRN) belong to settlement.cases.
         cases = {
             c.rrn: c
             for c in ExceptionCase.objects.select_for_update(of=("self",)).filter(
-                payment_module=payment_module, business_date=business_date
+                payment_module=payment_module, business_date=business_date, case_type=CaseType.TRANSACTION
             )
         }
         for c in cases.values():
@@ -380,7 +382,9 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
         )
         alerts.cases_flagged_for_review(business_date, flagged)
 
-        date_cases = ExceptionCase.objects.filter(payment_module=payment_module, business_date=business_date)
+        date_cases = ExceptionCase.objects.filter(
+            payment_module=payment_module, business_date=business_date, case_type=CaseType.TRANSACTION
+        )
         summary.cases_by_rule_status = {
             f"{row['rule_code']}/{row['status']}": row["n"]
             for row in date_cases.values("rule_code", "status").annotate(n=Count("id")).order_by("rule_code", "status")
@@ -398,7 +402,9 @@ def _refresh_rrc_warnings(payment_module, rrc_dates: dict, now, source: str) -> 
     """Brings rrc_already_sent_on up to date on every case of every date
     (A1); a new case got it at creation. Returns (cases changed, events)."""
     stale = [
-        c for c in ExceptionCase.objects.select_for_update(of=("self",)).filter(payment_module=payment_module).filter(
+        c for c in ExceptionCase.objects.select_for_update(of=("self",)).filter(
+            payment_module=payment_module, case_type=CaseType.TRANSACTION
+        ).filter(
             Q(rrn__in=list(rrc_dates)) | Q(rrc_already_sent_on__isnull=False)
         )
         if c.rrc_already_sent_on != rrc_dates.get(c.rrn)

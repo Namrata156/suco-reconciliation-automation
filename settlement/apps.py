@@ -9,7 +9,12 @@ class SettlementConfig(AppConfig):
     def ready(self):
         # Delete guards for the append-only tables (cascades never call delete()).
         from core.append_only import guard_deletes
-        from settlement.models import NtslCategoryMapEntry, NtslMappingEvent
+        from settlement.models import (
+            NtslCategoryMapEntry,
+            NtslMappingEvent,
+            SettlementCycleResult,
+            SettlementToleranceEvent,
+        )
 
-        guard_deletes(NtslCategoryMapEntry)
-        guard_deletes(NtslMappingEvent)
+        for model in (NtslCategoryMapEntry, NtslMappingEvent, SettlementCycleResult, SettlementToleranceEvent):
+            guard_deletes(model)

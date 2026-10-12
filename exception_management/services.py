@@ -33,7 +33,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from exception_management import alerts
-from exception_management.actions import ACTION_SPECS, ActionType
+from exception_management.actions import ACTION_SPECS, SETTLEMENT_ACTIONS, ActionType
 from exception_management.models import (
     CaseEvent,
     CaseStatus,
@@ -80,7 +80,7 @@ def _require(user, *roles: str) -> None:
 def _require_status(case: ExceptionCase, *statuses: str, verb: str) -> None:
     if case.status not in statuses:
         raise InvalidTransition(
-            f"Cannot {verb} case {case.pk} ({case.rrn}, {case.business_date}): it is {case.status}, "
+            f"Cannot {verb} case {case.pk} ({case.label}, {case.business_date}): it is {case.status}, "
             f"must be {' or '.join(statuses)}"
         )
 
@@ -243,6 +243,10 @@ def submit(
         action_type = case.default_action_type
     if action_type not in ACTION_SPECS:
         raise MissingInput(f"Unknown action type {action_type!r}")
+    if case.is_settlement and action_type not in SETTLEMENT_ACTIONS:
+        raise MissingInput(f"A settlement case takes only {', '.join(SETTLEMENT_ACTIONS)}, not {action_type}")
+    if not case.is_settlement and action_type in SETTLEMENT_ACTIONS:
+        raise MissingInput(f"{action_type} is for settlement cases only")
     if action_type == case.default_action_type and response_code is None:
         response_code = case.default_response_code
     rc = _resolve_response_code(case, action_type, response_code)
@@ -288,8 +292,10 @@ def submit(
         submitted_at=timezone.now(),
     )
     old = _set_status(case, CaseStatus.PENDING_APPROVAL)
+    # A settlement explanation is about one result's figures: record which.
+    changes = {"settlement_result_id": [None, case.settlement_case.result_id]} if case.is_settlement else None
     record_event(case, EventType.SUBMITTED, actor=user, old_status=old, new_status=case.status, action=action,
-                 remarks=remarks, source=source)
+                 remarks=remarks, changes=changes, source=source)
     if send_alert:  # bulk_submit sends one summary instead
         alerts.action_submitted(case, action)
     return action
@@ -446,6 +452,7 @@ def _bulk_cases(case_ids) -> list[ExceptionCase]:
                  .filter(pk__in=ids).order_by("pk"))
     if len(cases) != len(ids):
         raise BulkRefused("Some selected cases do not exist")
+    _refuse_settlement(cases)
     high = [c for c in cases if c.priority not in BULK_PRIORITIES]
     if high:
         raise BulkRefused(
@@ -468,13 +475,25 @@ def _bulk_cases(case_ids) -> list[ExceptionCase]:
     return cases
 
 
+def _refuse_settlement(cases) -> None:
+    """Phase 4 S5: settlement cases are never handled in bulk."""
+    settlement = [c for c in cases if c.is_settlement]
+    if settlement:
+        raise BulkRefused(
+            f"Settlement cases are never handled in bulk; {len(settlement)} selected "
+            f"(e.g. {settlement[0].business_date}) must each be handled individually. Nothing was applied."
+        )
+
+
 @transaction.atomic
 def bulk_take(case_ids, user, *, source: str = "") -> list[ExceptionCase]:
     """Takes several OPEN cases at once, all or nothing. Taking only assigns
-    the case (no action, no money), so there is no priority restriction."""
+    the case (no action, no money), so there is no priority restriction.
+    Settlement cases are refused (never bulk)."""
     ids = sorted({c.pk if isinstance(c, ExceptionCase) else int(c) for c in case_ids})
     if not ids:
         raise BulkRefused("No cases selected")
+    _refuse_settlement(ExceptionCase.objects.filter(pk__in=ids))
     return [take(pk, user, source=source) for pk in ids]
 
 

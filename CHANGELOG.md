@@ -6,6 +6,41 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-12
+
+- **Added: Phase 4 Slice 2 — settlement result, gap attribution,
+  settlement cases, tolerance.**
+  - **Gap rules as code** (`settlement/gap_rules.py`). G01–G10 and Z
+    exactly as approved 2026-10-11. Anything the rules don't cover is
+    shown as UNEXPLAINED, never passed silently.
+  - **Settlement result** (`settlement/reconcile.py`). Per module + date:
+    readiness check first (self-check PASS on every cycle, including the
+    switching-fee count check O4; current rule results for every match
+    group), else NOT_READY with reasons. Per cycle × side: NTSL vs
+    system, matched / explained / unexplained. DC1/DC2 vs Adjustment
+    rows (G09). CBS-side SOP check with the corrected sign. TALLIED or
+    UNEXPLAINED against the active tolerance. Re-runs supersede, never
+    delete; the full calculation is kept as a snapshot. Command:
+    `reconcile_settlement --date YYYY-MM-DD`; Celery wrapper in
+    `settlement/tasks.py` (not chained automatically).
+  - **Settlement cases** (`settlement/cases.py`). One date-level case
+    (new case type SETTLEMENT) in the Phase 3 exception queue when a
+    result is UNEXPLAINED. Maker explains, Checker accepts; never bulk.
+    Changed figures withdraw a pending explanation; a later TALLIED run
+    flags the case for review rather than closing it. New alerts and
+    templates for settlement cases and reviews.
+  - **Tolerance** (`settlement/tolerance.py`). Rs 0 / 0 txn by default
+    (v1 seeded). Changed only by Administrator proposal + Checker
+    approval, append-only event log, self-approval flagged.
+  - Admin screens for results, cases and tolerance; exception admin, API
+    and detail view extended for settlement cases.
+  - Migrations: `core` 0009, `exception_management` 0008, `settlement`
+    0003–0004.
+  - PM-verified: `python manage.py test` **506 tests, OK** on Postgres
+    (57 new). Real data 2026-07-14: `check_ntsl` 12/12 cycles PASS;
+    `reconcile_settlement` SOP check difference Rs 43,050.77 fully
+    explained (G04/G05/G07/G08), **unexplained Rs 0.00**.
+
 ## 2026-10-11
 
 - **Added: Phase 4 Slice 1 — NTSL mapping, self-check, gap analysis.**

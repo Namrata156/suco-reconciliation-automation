@@ -1,0 +1,11 @@
+Subject: [Reconciliation] Settlement difference unexplained: {{ module }} {{ business_date }}
+The settlement reconciliation of {{ module }} business date {{ business_date }} is UNEXPLAINED: NTSL and the system do not tie after the approved gap rules (G01-G10), beyond the permissible difference (Rs {{ tolerance_amount }} / {{ tolerance_count }} txn).
+
+A settlement case was raised in the exception queue. A maker records the explanation; a checker accepts it. No money moves in the system.
+
+Unexplained, cycle by cycle:
+{% for r in rows %}- {{ r.cycle }} {{ r.side }}: Rs {{ r.amount }}, {{ r.count }} txn
+{% endfor %}{% if sop_unexplained %}SOP check (CBS vs NTSL) unexplained: Rs {{ sop_unexplained }}
+{% endif %}{% for reason in reasons %}- {{ reason }}
+{% endfor %}
+{{ link }}

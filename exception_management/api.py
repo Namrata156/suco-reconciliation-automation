@@ -11,10 +11,16 @@ one of the five roles; every change goes through exception_management.services
   POST /api/exceptions/cases/bulk/<take|submit|approve>/   {"case_ids": [...], ...}  all or nothing
 
 Queue filters (query string): business_date, status (default: active;
-"all"; or a status), priority, rule_code, overdue=true|false,
-mine=assigned|approval, flag=<overdue|r07x|needs_review|
-multiple_adjustment_rows|rrc_already_sent|no_deadline|previous_day_r12>,
-rrn. Errors: 400 invalid input / refused bulk, 403 role, 409 wrong status.
+"all"; or a status), priority, rule_code, case_type=TRANSACTION|SETTLEMENT,
+overdue=true|false, mine=assigned|approval, flag=<settlement|overdue|r07x|
+needs_review|multiple_adjustment_rows|rrc_already_sent|no_deadline|
+previous_day_r12>, rrn. Errors: 400 invalid input / refused bulk, 403 role,
+409 wrong status.
+
+Settlement cases (Phase 4 S5) are in the same queue with case_type
+SETTLEMENT, rrn "" and rule_result null; the detail adds "settlement" (the
+result, SOP check and cycle x side rows). Their only action is
+SETTLEMENT_EXPLANATION (remarks = the explanation); never bulk.
 """
 from __future__ import annotations
 
@@ -27,7 +33,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from exception_management import services
-from exception_management.detail import case_flags, case_warnings, overlay_rows
+from exception_management.detail import case_flags, case_warnings, overlay_rows, settlement_detail
 from exception_management.forms import TRANSITIONS, BulkApproveForm, BulkSubmitForm
 from exception_management.models import (
     ACTIVE_STATUSES,
@@ -65,7 +71,7 @@ class CaseListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ExceptionCase
-        fields = ("id", "business_date", "rrn", "rule_code", "status_category", "priority", "status", "due_date",
+        fields = ("id", "business_date", "case_type", "rrn", "rule_code", "status_category", "priority", "status", "due_date",
                   "due_cutoff_time", "age_days", "ageing_bucket", "is_overdue", "assigned_to",
                   "default_action_type", "flags", "rrc_already_sent_on")
 
@@ -95,6 +101,7 @@ class CaseDetailSerializer(CaseListSerializer):
     rule_result = serializers.SerializerMethodField()
     warnings = serializers.SerializerMethodField()
     overlay_rows = serializers.SerializerMethodField()
+    settlement = serializers.SerializerMethodField()
     actions = ProposedActionSerializer(many=True, read_only=True)
     events = CaseEventSerializer(many=True, read_only=True)
     available_transitions = serializers.SerializerMethodField()
@@ -102,12 +109,15 @@ class CaseDetailSerializer(CaseListSerializer):
     class Meta(CaseListSerializer.Meta):
         fields = CaseListSerializer.Meta.fields + (
             "default_response_code", "needs_review", "needs_review_reason", "multiple_adjustment_rows", "no_deadline",
-            "result_missing", "created_at", "updated_at", "rule_result", "warnings", "overlay_rows", "actions",
+            "result_missing", "created_at", "updated_at", "rule_result", "warnings", "overlay_rows", "settlement",
+            "actions",
             "events", "available_transitions",
         )
 
     def get_rule_result(self, obj):
         r = obj.rule_result
+        if r is None:  # settlement case
+            return None
         return {"id": r.pk, "rule_code": r.rule_code, "rule_set": r.rule_set.version_label, "action": r.action,
                 "reason": r.reason, "tat_label": r.tat_label, "evaluated_at": r.evaluated_at, "facts": r.facts,
                 "is_superseded": r.is_superseded}
@@ -118,6 +128,9 @@ class CaseDetailSerializer(CaseListSerializer):
     def get_overlay_rows(self, obj):
         return overlay_rows(obj)
 
+    def get_settlement(self, obj):
+        return settlement_detail(obj)
+
     def get_available_transitions(self, obj):
         return services.available_transitions(obj, self.context["request"].user)
 
@@ -126,6 +139,7 @@ class CaseDetailSerializer(CaseListSerializer):
 # views
 # ---------------------------------------------------------------------------
 _FLAG_FILTERS = {
+    "settlement": {"case_type": "SETTLEMENT"},
     "overdue": {"is_overdue": True},
     "r07x": {"rule_code__in": ATTENTION_RULE_CODES},
     "needs_review": {"needs_review": True},
@@ -156,7 +170,7 @@ class CaseListView(CaseAPIView):
         elif st != "all":
             qs = qs.filter(status__in=st.split(","))
         for param, lookup in (("business_date", "business_date"), ("priority", "priority"),
-                              ("rule_code", "rule_code"), ("rrn", "rrn")):
+                              ("rule_code", "rule_code"), ("rrn", "rrn"), ("case_type", "case_type")):
             if p.get(param):
                 qs = qs.filter(**{lookup: p[param]})
         if p.get("overdue") in ("true", "false"):

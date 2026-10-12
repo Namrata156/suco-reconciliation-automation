@@ -38,6 +38,14 @@ class ActionType(models.TextChoices):
     CHARGEBACK_REPRESENT = "CHARGEBACK_REPRESENT", "Chargeback represent"  # Amendment 1 A2
     REFUND_CUSTOMER = "REFUND_CUSTOMER", "Refund customer (reversal)"
     CLOSE_NO_ACTION = "CLOSE_NO_ACTION", "Close without action (with finding)"
+    # Phase 4 Slice 2 (S5): the only action of a settlement case. The maker
+    # records the explanation of the NTSL difference; the checker accepts it.
+    # No money moves; any correction is made by ops outside the system.
+    SETTLEMENT_EXPLANATION = "SETTLEMENT_EXPLANATION", "Settlement difference explained (no money moves)"
+
+
+# Settlement cases take only this action; transaction cases never take it.
+SETTLEMENT_ACTIONS = (ActionType.SETTLEMENT_EXPLANATION,)
 
 
 @dataclass(frozen=True)
@@ -64,6 +72,8 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ActionType.CHARGEBACK_REPRESENT: ActionSpec(),
     ActionType.REFUND_CUSTOMER: ActionSpec(),
     ActionType.CLOSE_NO_ACTION: ActionSpec(requires_remarks=True, completes_on_approval=True),
+    # Accepted = done: nothing to carry out in the system, no external reference.
+    ActionType.SETTLEMENT_EXPLANATION: ActionSpec(requires_remarks=True, completes_on_approval=True),
 }
 
 # Rule code (rule set v3.2, docs/phase2_rule_table_v3_approved.txt) -> the

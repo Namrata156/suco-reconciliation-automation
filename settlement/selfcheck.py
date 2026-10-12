@@ -22,6 +22,11 @@ a total line is missing or repeated, the Final line disagrees with the
 loader's is_final_settlement flag, lines come from more than one current
 file, or any difference is not 0. An active cycle with no NTSL lines gets
 a MISSING result.
+
+Slice 2 (O4, owner 2026-10-11) adds one more check per cycle: the NPCI
+switching-fee lines' transaction count must equal the remitter transaction
+count incl. RB (true on every real cycle: 45,366 / 46,990 / 45,695 a day).
+The interchange-fee (FEE) line counts are not checked.
 """
 from __future__ import annotations
 
@@ -43,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 TOLERANCE = Decimal("0.00")
 ZERO = Decimal("0.00")
+REMITTER_COUNT_CATEGORIES = (NtslCategory.TXN_REMITTER, NtslCategory.TXN_REMITTER_RB)
 
 
 @dataclass
@@ -133,6 +139,18 @@ def _evaluate(lines, classifier) -> dict:
     check("Sub Totals credit", out["computed_subtotal_credit"], out["ntsl_subtotal_credit"])
     check("Settlement Amount (credit - debit)", out["computed_settlement_net"], out["ntsl_settlement_net"])
     check("Final Settlement Amount (credit - debit)", out["computed_final_net"], out["ntsl_final_net"])
+
+    # O4 (owner 2026-10-11): NPCI charges a switching fee on every remitter
+    # transaction, RB included, so the counts must be equal. The interchange
+    # FEE lines' counts are deliberately NOT checked (on U2 they differ from
+    # the remitter count and carry 0.00).
+    switching = totals[NtslCategory.SWITCHING_FEE]["txn_count"] if NtslCategory.SWITCHING_FEE in totals else 0
+    remitter = sum(totals[c]["txn_count"] for c in REMITTER_COUNT_CATEGORIES if c in totals)
+    if switching != remitter:
+        failures.append(
+            f"NPCI switching-fee line count {switching} differs from the remitter transaction count incl. RB "
+            f"{remitter} (O4)"
+        )
 
     out.update(
         status=CheckStatus.FAIL if failures else CheckStatus.PASS,

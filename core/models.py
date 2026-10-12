@@ -236,6 +236,8 @@ class AlertType(models.TextChoices):
     REJECTED = "REJECTED", "Proposed action rejected"
     DIGEST_MAKER = "DIGEST_MAKER", "Daily digest (Maker)"
     DIGEST_CHECKER = "DIGEST_CHECKER", "Daily digest (Checker)"
+    SETTLEMENT_CASE = "SETTLEMENT_CASE", "Settlement case raised (NTSL difference unexplained)"
+    SETTLEMENT_REVIEW = "SETTLEMENT_REVIEW", "Settlement case flagged for review after a re-run"
     TEST = "TEST", "Test email"
 
 

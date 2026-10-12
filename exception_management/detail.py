@@ -21,6 +21,7 @@ def annotated(case: ExceptionCase) -> ExceptionCase:
 def case_flags(case: ExceptionCase) -> dict[str, bool]:
     """Machine-readable flags (API, admin list). `case` must be annotated."""
     return {
+        "settlement": case.is_settlement,
         "overdue": bool(getattr(case, "is_overdue", False)),
         "r07x": case.rule_code in ATTENTION_RULE_CODES,
         "needs_review": case.needs_review,
@@ -34,6 +35,9 @@ def case_flags(case: ExceptionCase) -> dict[str, bool]:
 def case_warnings(case: ExceptionCase) -> list[str]:
     """Human-readable warnings, most important first. `case` must be annotated."""
     out = []
+    if case.is_settlement:
+        out.append("Settlement case: NTSL and the system do not tie for this business date. Record the explanation "
+                   "(no money moves in the system); the checker accepts it.")
     if case.needs_review:
         out.append(f"Needs review: {case.needs_review_reason}")
     if case.rrc_already_sent_on:
@@ -72,9 +76,45 @@ def _row(leg, fact, cells, original_not_loaded=None, on_case_date=True) -> dict:
     }
 
 
+def settlement_detail(case: ExceptionCase) -> dict | None:
+    """A settlement case's result (Phase 4 S5): status, reasons, SOP check
+    and the cycle x side rows. None for a transaction case. The full
+    calculation snapshot stays on the result (settlement admin)."""
+    if not case.is_settlement:
+        return None
+    link = getattr(case, "settlement_case", None)
+    if link is None:
+        return None
+    r = link.result
+    m = lambda v: None if v is None else f"{v:.2f}"  # noqa: E731
+    return {
+        "result_id": r.pk,
+        "first_result_id": link.first_result_id,
+        "result_is_current": r.is_current,
+        "status": r.status,
+        "computed_at": r.computed_at,
+        "reasons": r.reasons,
+        "tolerance": {"amount": m(r.tolerance_amount), "txn_count": r.tolerance_count},
+        "sop": {"cbs_net": m(r.sop_cbs_net), "ntsl_net": m(r.sop_ntsl_net), "difference": m(r.sop_difference),
+                "explained": m(r.sop_explained), "unexplained": m(r.sop_unexplained)},
+        "fees_net": m(r.fees_net),
+        "cycles": [
+            {"cycle": c.settlement_cycle.cycle_code if c.settlement_cycle_id else None, "side": c.side,
+             "ntsl_amount": m(c.ntsl_amount), "ntsl_count": c.ntsl_count, "matched_amount": m(c.matched_amount),
+             "matched_count": c.matched_count, "explained_amount": m(c.explained_amount),
+             "explained_count": c.explained_count, "unexplained_amount": m(c.unexplained_amount),
+             "unexplained_count": c.unexplained_count, "within_tolerance": c.within_tolerance}
+            for c in r.cycle_rows.select_related("settlement_cycle").order_by("settlement_cycle_id", "side")
+        ],
+    }
+
+
 def overlay_rows(case: ExceptionCase) -> list[dict]:
     """Every DRC / Timeout / Adjustment row belonging to the case's date for
-    its RRN, then Adjustment rows for the RRN on other loaded dates."""
+    its RRN, then Adjustment rows for the RRN on other loaded dates. None for
+    a settlement case (it has no RRN)."""
+    if case.is_settlement:
+        return []
     rows, seen = [], set()
     for leg in DEFAULT_OVERLAY_LEGS:
         for fact, cells, onl in overlay_rows_for_date(case.payment_module, case.business_date, leg).get(case.rrn, []):

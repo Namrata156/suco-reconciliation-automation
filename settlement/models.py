@@ -10,6 +10,16 @@ Slice 1 builds:
   S2  NtslCycleCheck -- NTSL's own arithmetic per business date and cycle:
       categorised lines -> Sub Totals -> Settlement Amount -> Final.
 
+Slice 2 (gap rules G01-G10 / Z, approved 2026-10-11) adds:
+  SettlementTolerance / SettlementToleranceEvent -- the permissible
+      difference (Q4), versioned, changed by an Administrator through
+      maker-checker (settlement.tolerance).
+  SettlementResult / SettlementCycleResult -- the reconciliation per
+      business date with cycle x side detail and the full snapshot
+      (settlement.reconcile).
+  SettlementCase -- links a Phase 3 ExceptionCase of type SETTLEMENT to the
+      result it is about (settlement.cases).
+
 Why a new app: Settlement Control is its own tracked component and Phase
 4 adds more to it (reconciliation results, settlement cases). The NTSL lines
 themselves stay where Phase 1 put them (transactions.NtslSettlementLine);
@@ -284,3 +294,265 @@ class NtslCycleCheck(models.Model):
     @property
     def final_diff(self):
         return self._diff(self.computed_final_net, self.ntsl_final_net)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: permissible difference (Q4) -- versioned, maker-checker
+# ---------------------------------------------------------------------------
+class ToleranceImmutableError(AppendOnlyError):
+    """A settlement tolerance version or its log was about to change outside the workflow."""
+
+
+class SettlementToleranceQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ToleranceImmutableError("Settlement tolerances change only through settlement.tolerance")
+
+    def delete(self):
+        raise ToleranceImmutableError("Settlement tolerance versions are never deleted")
+
+
+class SettlementTolerance(models.Model):
+    """The permissible difference (Q4, owner 2026-10-11): Rs 0 by default,
+    changed only by an Administrator through maker-checker
+    (settlement.tolerance). Same lifecycle and guards as
+    NtslCategoryMapVersion: created PENDING, then ACTIVE (the old one
+    RETIRED) or REJECTED; values never change, never deleted. A result
+    records the version it used."""
+
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="settlement_tolerances")
+    version = models.PositiveIntegerField()
+    status = models.CharField(max_length=10, choices=MapStatus.choices, default=MapStatus.PENDING)
+    amount = models.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text="Rs: an unexplained amount up to this (either sign) still counts as tallied",
+    )
+    txn_count = models.PositiveIntegerField(
+        default=0, help_text="Transactions: an unexplained count up to this (either sign) still counts as tallied",
+    )
+    based_on = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    reason = models.TextField()
+    proposed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+",
+        help_text="Empty for the seeded version",
+    )
+    proposed_by_username = models.CharField(max_length=150, blank=True)
+    proposed_at = models.DateTimeField()
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    decided_by_username = models.CharField(max_length=150, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_remarks = models.TextField(blank=True)
+    self_approved = models.BooleanField(default=False, help_text="Proposer and approver were the same user (flagged)")
+    activated_at = models.DateTimeField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
+
+    objects = SettlementToleranceQuerySet.as_manager()
+
+    _workflow_change = False  # set only by settlement.tolerance / seeding
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["payment_module", "version"], name="unique_settlement_tolerance_version"),
+            models.UniqueConstraint(
+                fields=["payment_module"], condition=Q(status="ACTIVE"), name="one_active_tolerance_per_module"
+            ),
+            models.UniqueConstraint(
+                fields=["payment_module"], condition=Q(status="PENDING"), name="one_pending_tolerance_per_module"
+            ),
+            models.CheckConstraint(condition=Q(amount__gte=0), name="settlement_tolerance_amount_not_negative"),
+        ]
+        ordering = ["payment_module", "-version"]
+        permissions = [
+            ("propose_tolerance_change", "Can propose a settlement tolerance change (Administrator)"),
+            ("approve_tolerance_change", "Can approve or reject a settlement tolerance change (Checker)"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Tolerance {self.payment_module_id} v{self.version}: Rs {self.amount} / {self.txn_count} txn [{self.status}]"
+
+    def save(self, *args, **kwargs):
+        try:
+            if self._state.adding:
+                if self.status != MapStatus.PENDING:
+                    raise ToleranceImmutableError("A new settlement tolerance version must start PENDING")
+            elif not self._workflow_change:
+                raise ToleranceImmutableError("Settlement tolerances change only through settlement.tolerance")
+            super().save(*args, **kwargs)
+        finally:
+            self._workflow_change = False
+
+    def delete(self, *args, **kwargs):
+        raise ToleranceImmutableError("Settlement tolerance versions are never deleted")
+
+
+class SettlementToleranceEvent(AppendOnlyModel):
+    append_only_error = ToleranceImmutableError
+
+    tolerance = models.ForeignKey(SettlementTolerance, on_delete=models.PROTECT, related_name="events")
+    event_type = models.CharField(max_length=10, choices=MappingEventType.choices)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    actor_username = models.CharField(max_length=150, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    remarks = models.TextField(blank=True)
+    changes = models.JSONField(default=dict, blank=True)
+    self_approved = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.tolerance} {self.event_type} by {self.actor_username or 'system'}"
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: settlement reconciliation result (S3/S4)
+# ---------------------------------------------------------------------------
+class ResultStatus(models.TextChoices):
+    TALLIED = "TALLIED", "Tallied"
+    UNEXPLAINED = "UNEXPLAINED", "Unexplained difference"
+    NOT_READY = "NOT_READY", "Not ready (self-check or rule results missing)"
+
+
+class SettlementResult(models.Model):
+    """One result per (module, business date) and run (settlement.reconcile).
+    A re-run marks the previous result superseded; results are never
+    deleted (audit, same pattern as NtslCycleCheck / RuleResult). Changed
+    after creation only by the supersede step."""
+
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="settlement_results")
+    business_date = models.DateField()
+    status = models.CharField(max_length=12, choices=ResultStatus.choices)
+    reasons = models.JSONField(default=list, blank=True, help_text="Why NOT_READY / what is unexplained (plain text)")
+
+    map_version = models.ForeignKey(
+        NtslCategoryMapVersion, on_delete=models.PROTECT, null=True, blank=True, related_name="settlement_results"
+    )
+    tolerance = models.ForeignKey(
+        SettlementTolerance, on_delete=models.PROTECT, null=True, blank=True, related_name="results",
+        help_text="The tolerance version applied",
+    )
+    tolerance_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    tolerance_count = models.PositiveIntegerField(default=0)
+    rule_run = models.ForeignKey(
+        "rule_engine.RuleEvaluationRun", on_delete=models.PROTECT, null=True, blank=True, related_name="+",
+        help_text="The date's latest rule evaluation run when computed",
+    )
+
+    # CBS-side SOP check (C1): (CBS deposits - withdrawals) - (NTSL TXN debit - credit) = explained items.
+    sop_cbs_net = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    sop_ntsl_net = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    sop_difference = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    sop_explained = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    sop_unexplained = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+
+    unexplained_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0,
+        help_text="Sum of |unexplained amount| over every cycle/side row (0 when tallied exactly)",
+    )
+    unexplained_count = models.IntegerField(default=0, help_text="Sum of |unexplained count| over every cycle/side row")
+    fees_net = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="G10: fee / GST / rebate / mandate-fee lines, credit - debit, all cycles (NTSL-internal)",
+    )
+    snapshot = models.JSONField(default=dict, blank=True, help_text="Full calculation incl. contributing transactions")
+
+    computed_at = models.DateTimeField()
+    source = models.CharField(max_length=150, blank=True)
+    is_current = models.BooleanField(default=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment_module", "business_date"], condition=Q(is_current=True),
+                name="one_current_settlement_result_per_date",
+            ),
+        ]
+        indexes = [models.Index(fields=["payment_module", "business_date", "is_current"], name="settleresult_date_idx")]
+        ordering = ["-business_date", "-computed_at"]
+
+    def __str__(self) -> str:
+        return f"Settlement {self.payment_module_id} {self.business_date} {self.status}"
+
+
+class Side(models.TextChoices):
+    REMITTER = "REMITTER", "Remitter (SSK pays)"
+    BENEFICIARY = "BENEFICIARY", "Beneficiary (SSK receives)"
+    ADJUSTMENT = "ADJUSTMENT", "Net adjusted amount (G09)"
+    UNCOVERED = "UNCOVERED", "NTSL lines no G rule covers"
+
+
+class SettlementCycleResultQuerySet(AppendOnlyQuerySet):
+    pass
+
+
+class SettlementCycleResult(AppendOnlyModel):
+    """One comparison of a result: cycle x side. Insert-only.
+
+    Amounts are positive in the side's own direction (remitter: what SSK
+    pays, beneficiary: what SSK receives); ADJUSTMENT / UNCOVERED rows are
+    nets, credit - debit (+ = SSK receives).
+      unexplained = ntsl - matched (G01-G03) - explained (G04-G06 / G09)
+    ntsl_count is NULL where NTSL gives no count (Net Adjusted Amount); the
+    count is then not compared."""
+
+    append_only_error = ToleranceImmutableError
+
+    result = models.ForeignKey(SettlementResult, on_delete=models.PROTECT, related_name="cycle_rows")
+    settlement_cycle = models.ForeignKey(
+        SettlementCycle, on_delete=models.PROTECT, null=True, blank=True, related_name="+",
+        help_text="NULL: NPCI rows with no settlement cycle",
+    )
+    side = models.CharField(max_length=12, choices=Side.choices)
+    ntsl_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    ntsl_count = models.IntegerField(null=True, blank=True)
+    matched_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    matched_count = models.IntegerField(default=0)
+    explained_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    explained_count = models.IntegerField(default=0)
+    unexplained_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    unexplained_count = models.IntegerField(default=0)
+    within_tolerance = models.BooleanField()
+    detail = models.JSONField(default=dict, blank=True, help_text="{G rule: {count, amount}} and notes")
+
+    objects = SettlementCycleResultQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["result", "settlement_cycle_id", "side"]
+
+    def __str__(self) -> str:
+        code = self.settlement_cycle.cycle_code if self.settlement_cycle_id else "-"
+        return f"{self.result_id} {code} {self.side}: unexplained {self.unexplained_amount} / {self.unexplained_count}"
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: settlement case (S5) -- the link from a Phase 3 case to its result
+# ---------------------------------------------------------------------------
+class SettlementCase(models.Model):
+    """The settlement-specific half of an exception_management.ExceptionCase
+    of case type SETTLEMENT (one per module + business date, Q2). The case
+    itself lives in the Phase 3 queue and goes through its maker-checker and
+    audit; this row points it at the settlement result (and so the snapshot
+    and cycle detail) it is about. Re-linked by settlement.cases on every
+    re-run; changed only there."""
+
+    case = models.OneToOneField(
+        "exception_management.ExceptionCase", on_delete=models.PROTECT, primary_key=True,
+        related_name="settlement_case",
+    )
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="+")
+    business_date = models.DateField()
+    result = models.ForeignKey(
+        SettlementResult, on_delete=models.PROTECT, related_name="cases",
+        help_text="The latest result the case was synced with (UNEXPLAINED when raised)",
+    )
+    first_result = models.ForeignKey(SettlementResult, on_delete=models.PROTECT, related_name="+")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["payment_module", "business_date"], name="one_settlement_case_per_date"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Settlement case {self.payment_module_id} {self.business_date}"

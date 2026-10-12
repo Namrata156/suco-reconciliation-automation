@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 
 from exception_management import services
-from exception_management.actions import ACTION_SPECS, ActionType
+from exception_management.actions import ACTION_SPECS, SETTLEMENT_ACTIONS, ActionType
 from exception_management.roles import Role
 from core.models import PaymentModule
 from rule_engine.models import CodeFlag, ResponseCode
@@ -71,7 +71,10 @@ class SubmitForm(CaseForm):
             self.initial.setdefault("response_code", case.default_response_code_id)
             if case.rrc_already_sent_on:  # A1: the warning is the maker's evidence for closing
                 self.initial.setdefault("evidence_notes", case.rrc_warning)
-        if case is not None and not case.default_action_type:
+        if case is not None and case.is_settlement:  # Phase 4 S5: the explanation is the only action
+            self.fields["action_type"].choices = [(a, ActionType(a).label) for a in SETTLEMENT_ACTIONS]
+            self.fields["remarks"].help_text = "The explanation of the settlement difference (required)"
+        elif case is not None and not case.default_action_type:
             self.fields["action_type"].choices = [("", "-- choose (this rule has no default) --")] + ActionType.choices
 
 

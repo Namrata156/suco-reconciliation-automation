@@ -30,7 +30,7 @@ from django.urls import path, reverse
 from django.utils.html import format_html, format_html_join
 
 from exception_management import code_changes, services
-from exception_management.detail import case_flags, case_warnings, overlay_rows
+from exception_management.detail import case_flags, case_warnings, overlay_rows, settlement_detail
 from exception_management.forms import (
     TRANSITIONS,
     BulkApproveForm,
@@ -55,6 +55,7 @@ from exception_management.models import (
 from exception_management.roles import Role, has_role
 
 _FLAG_LABELS = {
+    "settlement": "SETTLEMENT",
     "overdue": "OVERDUE",
     "r07x": "R07x >35d",
     "needs_review": "NEEDS REVIEW",
@@ -156,6 +157,7 @@ class FlagFilter(admin.SimpleListFilter):
     def queryset(self, request, queryset):
         v = self.value()
         filters = {
+            "settlement": {"case_type": "SETTLEMENT"},
             "overdue": {"is_overdue": True},
             "r07x": {"rule_code__in": ATTENTION_RULE_CODES},
             "needs_review": {"needs_review": True},
@@ -202,16 +204,19 @@ class CaseEventInline(ReadOnlyMixin, admin.TabularInline):
 @admin.register(ExceptionCase)
 class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
     change_form_template = "admin/exception_management/exceptioncase/change_form.html"
-    list_display = ("rrn", "business_date", "priority", "rule_code", "status", "due", "overdue", "ageing_bucket_col",
-                    "assigned_to", "flags")
-    list_filter = (QueueFilter, "business_date", "priority", "rule_code", OverdueFilter, MyWorkFilter, FlagFilter)
+    list_display = ("case_ref", "business_date", "priority", "rule_code", "status", "due", "overdue",
+                    "ageing_bucket_col", "assigned_to", "flags")
+    list_filter = (QueueFilter, "case_type", "business_date", "priority", "rule_code", OverdueFilter, MyWorkFilter,
+                   FlagFilter)
     search_fields = ("rrn",)
     list_per_page = 100
     list_select_related = ("assigned_to",)
     actions = ["bulk_take_action", "bulk_submit_action", "bulk_approve_action"]
     inlines = [ProposedActionInline, CaseEventInline]
     fieldsets = (
-        ("Case", {"fields": ("payment_module", "business_date", "rrn", "status", "assigned_to", "warnings")}),
+        ("Case", {"fields": ("payment_module", "business_date", "case_type", "rrn", "status", "assigned_to",
+                             "warnings")}),
+        ("Settlement (case type SETTLEMENT only)", {"fields": ("settlement_table",)}),
         ("Rule result", {"fields": ("rule_code", "status_category", "priority", "due_date", "due_cutoff_time",
                                     "age_and_bucket", "rule_result_detail", "default_action_type",
                                     "default_response_code")}),
@@ -220,7 +225,7 @@ class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
         ("Flags", {"fields": ("needs_review", "needs_review_reason", "multiple_adjustment_rows",
                               "rrc_already_sent_on", "no_deadline", "result_missing", "created_at", "updated_at")}),
     )
-    readonly_fields = ("payment_module", "business_date", "rrn", "status", "assigned_to", "warnings", "rule_code",
+    readonly_fields = ("payment_module", "business_date", "case_type", "settlement_table", "rrn", "status", "assigned_to", "warnings", "rule_code",
                        "status_category", "priority", "due_date", "due_cutoff_time", "age_and_bucket",
                        "rule_result_detail", "default_action_type", "default_response_code", "overlay_rows_table",
                        "facts_snapshot", "needs_review", "needs_review_reason", "multiple_adjustment_rows",
@@ -235,6 +240,10 @@ class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
         return list(QUEUE_ORDER)
 
     # -- list columns ------------------------------------------------------------
+    @admin.display(description="RRN / case", ordering="rrn")
+    def case_ref(self, obj):
+        return obj.label
+
     @admin.display(description="Due", ordering="due_date")
     def due(self, obj):
         if obj.due_date is None:
@@ -264,11 +273,39 @@ class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
 
     @admin.display(description="Age / bucket")
     def age_and_bucket(self, obj):
+        if obj.rule_result_id is None:
+            return "-"
         return f"{obj.age_days} days, {obj.ageing_bucket}"
+
+    @admin.display(description="Settlement result")
+    def settlement_table(self, obj):
+        d = settlement_detail(obj)
+        if d is None:
+            return "-"
+        url = reverse("admin:settlement_settlementresult_change", args=[d["result_id"]])
+        head = ("Cycle", "Side", "NTSL Rs", "NTSL txn", "Matched Rs", "Matched txn", "Explained Rs", "Explained txn",
+                "Unexplained Rs", "Unexplained txn", "Within tolerance")
+        return format_html(
+            "<p><a href='{}'>Result {}</a> ({}{}), computed {}. Tolerance Rs {} / {} txn. SOP check: difference "
+            "Rs {}, explained Rs {}, unexplained Rs {}.</p><ul>{}</ul>"
+            "<table><thead><tr>{}</tr></thead><tbody>{}</tbody></table>",
+            url, d["result_id"], d["status"], "" if d["result_is_current"] else ", superseded",
+            f"{d['computed_at']:%Y-%m-%d %H:%M}", d["tolerance"]["amount"], d["tolerance"]["txn_count"],
+            d["sop"]["difference"], d["sop"]["explained"], d["sop"]["unexplained"],
+            format_html_join("", "<li>{}</li>", ((x,) for x in d["reasons"])),
+            format_html_join("", "<th>{}</th>", ((h,) for h in head)),
+            format_html_join("", "<tr>" + "<td>{}</td>" * 11 + "</tr>", (
+                (c["cycle"] or "-", c["side"], c["ntsl_amount"], "-" if c["ntsl_count"] is None else c["ntsl_count"],
+                 c["matched_amount"], c["matched_count"], c["explained_amount"], c["explained_count"],
+                 c["unexplained_amount"], c["unexplained_count"], "yes" if c["within_tolerance"] else "NO")
+                for c in d["cycles"])),
+        )
 
     @admin.display(description="Rule result")
     def rule_result_detail(self, obj):
         r = obj.rule_result
+        if r is None:
+            return "- (settlement case: no rule result)"
         return format_html(
             "<b>{}</b> (rule set {}, evaluated {})<br>Action: {}<br>Reason: {}<br>Deadline: {}",
             r.rule_code, r.rule_set.version_label, f"{r.evaluated_at:%Y-%m-%d %H:%M}", r.action, r.reason or "-",
@@ -277,6 +314,8 @@ class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
 
     @admin.display(description="Facts the rules saw")
     def facts_snapshot(self, obj):
+        if obj.rule_result_id is None:
+            return "-"
         return format_html("<pre>{}</pre>", json.dumps(obj.rule_result.facts, indent=2, sort_keys=True, default=str))
 
     @admin.display(description="Rows")
@@ -331,7 +370,7 @@ class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
             except services.WorkflowError as exc:
                 form.add_error(None, str(exc))
             else:
-                messages.success(request, f"{t.label}: done for {case.rrn} ({case.business_date}).")
+                messages.success(request, f"{t.label}: done for {case.label} ({case.business_date}).")
                 return redirect(change_url)
         context = {
             **self.admin_site.each_context(request),
@@ -339,7 +378,7 @@ class ExceptionCaseAdmin(ReadOnlyMixin, admin.ModelAdmin):
             "case": case,
             "warnings": case_warnings(case),
             "form": form,
-            "title": f"{t.label}: {case.rrn} ({case.business_date}, {case.rule_code})",
+            "title": f"{t.label}: {case.label} ({case.business_date}{', ' + case.rule_code if case.rule_code else ''})",
             "change_url": change_url,
         }
         return TemplateResponse(request, "admin/exception_management/transition_form.html", context)

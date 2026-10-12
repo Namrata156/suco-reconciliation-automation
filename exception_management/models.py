@@ -164,17 +164,31 @@ class ExceptionCaseQuerySet(models.QuerySet):
         return self.active().with_queue_annotations(today=today, now=now).order_by(*QUEUE_ORDER)
 
 
+class CaseType(models.TextChoices):
+    TRANSACTION = "TRANSACTION", "Transaction (one RRN, from a rule result)"
+    # Phase 4 Slice 2 (design S5, Q2): one case per module + business date when
+    # the settlement reconciliation is UNEXPLAINED. It has no RRN, match group
+    # or rule result (rrn is ""); its detail is settlement.SettlementCase.
+    SETTLEMENT = "SETTLEMENT", "Settlement (NTSL difference for a business date)"
+
+
 class ExceptionCase(models.Model):
     payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="exception_cases")
     business_date = models.DateField()
-    rrn = models.CharField(max_length=20)
-    match_group = models.ForeignKey(TransactionMatchGroup, on_delete=models.PROTECT, related_name="exception_cases")
+    case_type = models.CharField(max_length=12, choices=CaseType.choices, default=CaseType.TRANSACTION)
+    rrn = models.CharField(max_length=20, help_text='Empty ("") for a settlement case')
+    match_group = models.ForeignKey(
+        TransactionMatchGroup, on_delete=models.PROTECT, related_name="exception_cases", null=True, blank=True,
+        help_text="Always set on a transaction case; empty on a settlement case",
+    )
     rule_result = models.ForeignKey(
         RuleResult,
         on_delete=models.PROTECT,
         related_name="exception_cases",
+        null=True,
+        blank=True,
         help_text="The key's current rule result (re-linked on every re-run); the last one seen if the "
-        "key has no current result any more (result_missing)",
+        "key has no current result any more (result_missing). Empty on a settlement case.",
     )
 
     # Copied from rule_result for queue sorting / filtering (refreshed by sync).
@@ -226,6 +240,15 @@ class ExceptionCase(models.Model):
             models.UniqueConstraint(
                 fields=["payment_module", "business_date", "rrn"], name="one_case_per_module_date_rrn"
             ),
+            # A transaction case always has its RRN, group and result; a
+            # settlement case never does (rrn "" also makes the unique
+            # constraint above "one settlement case per module + date").
+            models.CheckConstraint(
+                condition=(
+                    Q(case_type="TRANSACTION", match_group__isnull=False, rule_result__isnull=False) & ~Q(rrn="")
+                ) | Q(case_type="SETTLEMENT", match_group__isnull=True, rule_result__isnull=True, rrn=""),
+                name="case_type_matches_keys",
+            ),
         ]
         indexes = [
             models.Index(fields=["status", "priority", "due_date"], name="case_queue_idx"),
@@ -239,7 +262,18 @@ class ExceptionCase(models.Model):
         ]
 
     def __str__(self) -> str:
+        if self.is_settlement:
+            return f"{self.payment_module.code}:SETTLEMENT ({self.business_date}) [{self.status}]"
         return f"{self.payment_module.code}:{self.rrn} ({self.business_date}) {self.rule_code} [{self.status}]"
+
+    @property
+    def is_settlement(self) -> bool:
+        return self.case_type == CaseType.SETTLEMENT
+
+    @property
+    def label(self) -> str:
+        """The RRN, or "Settlement" for a settlement case (messages, alerts)."""
+        return "Settlement (NTSL)" if self.is_settlement else self.rrn
 
     @property
     def rrc_warning(self) -> str:
@@ -269,9 +303,10 @@ class Decision(models.TextChoices):
 class ProposedAction(models.Model):
     case = models.ForeignKey(ExceptionCase, on_delete=models.PROTECT, related_name="actions")
     rule_result = models.ForeignKey(
-        RuleResult, on_delete=models.PROTECT, related_name="+", help_text="The case's rule result when submitted"
+        RuleResult, on_delete=models.PROTECT, related_name="+", null=True, blank=True,
+        help_text="The case's rule result when submitted (empty for a settlement case)",
     )
-    rule_code = models.CharField(max_length=10, help_text="The rule the action was proposed under")
+    rule_code = models.CharField(max_length=10, blank=True, help_text="The rule the action was proposed under")
 
     action_type = models.CharField(max_length=30, choices=ActionType.choices)
     response_code = models.ForeignKey(ResponseCode, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
