@@ -87,8 +87,8 @@ disappear when the spec doc is next edited:
   End Design, API.
 - Tech stack locked 2026-08-28 (see `TRACKER.md` → Tech Stack table):
   Django/DRF, PostgreSQL, Python (pandas/openpyxl) for file parsing,
-  Celery+Redis for async jobs. One item still open within that: the
-  frontend framework (React vs. Django templates+HTMX) is undecided.
+  Celery+Redis for async jobs. Frontend framework decided 2026-10-12:
+  React.
   Encrypted-file handling was resolved 2026-09-07 by removing it from
   scope entirely — the bank/NPCI private key is confidential and will
   never be shared with this system, so the pipeline only ever receives
