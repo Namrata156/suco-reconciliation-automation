@@ -1,0 +1,1009 @@
+================================================================================
+ PHASE 5 - API + FRONT END
+ DESIGN DRAFT v1 - 2026-10-13 - AWAITING OWNER APPROVAL
+================================================================================
+
+No React, TypeScript or API code is written until the owner approves this
+draft. Node.js is not installed yet; section 8 gives the setup steps for
+later.
+
+The spec (docs/reconciliation_automation.docx) has only stubs for both "API"
+and "Front End Design". This draft fills them. It builds on decisions
+already made:
+  - Front end: React (owner, 2026-10-12). Reasons: IMPS, NEFT, RTGS and ATM
+    will later run on the same system, and the dashboards and Reporting
+    Module come in later phases.
+  - Backend: Django + Django REST Framework, PostgreSQL, Celery + Redis.
+    Login is Django's own, with the five roles (Administrator, Operations
+    User, Maker, Checker, Auditor) from exception_management/roles.py.
+  - Phase 3: the same person may be maker and checker if they hold both
+    roles (recorded as self-approved). Approval is recorded in the system;
+    ops still carries out the action in the NPCI portal / CBS. Pending
+    Investigation cases are never handled in bulk.
+  - Phase 4: settlement cases are never handled in bulk.
+  - NPCI File Generation is deferred. There are no screens for it now;
+    section 10 shows where it plugs in later.
+
+What the spec says:
+  - Architecture lists a "Web Interface" (login, upload, review, approval,
+    reporting) and an API. Neither has any design.
+  - Roles: Administrator (users, rules, settings); Operations User (upload,
+    run reconciliation, reports); Maker (review exceptions, prepare
+    adjustments); Checker (approve or reject, authorise NPCI uploads);
+    Auditor (logs, reports, approval history).
+  - Auditability: every reconciliation activity is logged.
+
+--------------------------------------------------------------------------------
+1. SCOPE AND GOALS
+--------------------------------------------------------------------------------
+Goal: everyone does their daily work in one web application instead of
+the Django admin screens. Today the Django admin is the only interface
+(Phase 3 Amendment 2 B1), and some tasks have no screen at all.
+
+IN Phase 5:
+  - Login, logout, session timeout, and menus that depend on the role.
+  - A payment-module switcher. Only UPI exists today; the switcher is
+    built so that IMPS etc. appear when they are added as data.
+  - Exception case queue, case detail, every case action, bulk actions.
+  - File upload, processing status, CBS business-date selection, and a
+    "run reconciliation for this date" step.
+  - Reconciliation results per business date (rule results, presence
+    detail) and settlement results per date and cycle.
+  - Settings changes under maker-checker: response codes, NTSL mapping,
+    settlement tolerance, plus one "pending approvals" list for checkers.
+  - In-app alerts list, audit trail and user-activity viewer.
+  - A MINIMAL home page: "my work" counts (see P4). No charts.
+  - The API behind all of the above.
+
+OUT of Phase 5:
+  - NPCI File Generation (deferred, section 10).
+  - Reporting Module and full dashboards with charts (Phase 6): daily /
+    monthly volume, reconciliation, exception, ageing, settlement,
+    approval and user-activity reports. Phase 5 only shows live lists
+    and counts. It does not export files.
+  - User and role administration screens: these stay in the Django admin
+    for now (see P3).
+  - Automatic folder/SFTP pickup of NPCI files (see P5).
+  - IMPS / NEFT / RTGS / ATM themselves. Phase 5 only makes sure they plug
+    in without new screens.
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE
+--------------------------------------------------------------------------------
+  2.1 Shape
+     - A single-page application (SPA): Vite + React + TypeScript in a new
+       top-level folder frontend/. It is a separate project from the
+       Django code, but lives in the same repository.
+     - The SPA only talks to the Django API (JSON). It never touches the
+       database and has no business rules of its own.
+     - Django stays the only backend. The Django admin stays available at
+       /admin/ (see P3).
+
+  2.2 Login: Django sessions, no separate token system
+     - The SPA logs in through a small JSON endpoint that calls Django's
+       own authenticate() and login(). The browser then holds the normal
+       Django session cookie, exactly as the admin does today.
+     - Why not tokens (JWT etc.): the SPA and the API are on the same
+       intranet address, so a session cookie is simpler and safer (the
+       cookie is HttpOnly; JavaScript can't read it). It reuses everything
+       already built:
+         - the roles (exception_management/roles.py)
+         - the existing API's SessionAuthentication
+           (exception_management/api.py)
+         - the login / logout / failed-login log, which comes from
+           Django's signals (core/signals.py -> core.UserActivity). Using
+           Django's login() keeps that log working without any change.
+     - CSRF: Django's CSRF protection stays on. The SPA reads the csrftoken
+       cookie and sends it back in the X-CSRFToken header on every write.
+       The existing API already enforces this
+       (test_session_auth_enforces_csrf in
+       exception_management/tests/test_admin_api.py).
+
+  2.3 Development
+     - Vite's dev server (port 5173) serves the SPA and forwards /api/ and
+       /admin/ to Django's runserver (port 8000). To the browser
+       everything is one address, so cookies and CSRF behave as in
+       production.
+     - One setting is needed in development only: Django must trust the
+       5173 origin for CSRF (CSRF_TRUSTED_ORIGINS, read from .env). It is
+       not needed in production, where everything is served from one
+       address.
+     - Postgres and Redis keep running in Docker (docker-compose.yml,
+       Postgres on host port 5434). Django keeps running in the host venv.
+
+  2.4 Production on the bank's intranet
+     - `npm run build` produces plain static files (HTML, JS, CSS). No
+       Node.js is needed on the server.
+     - Recommended: a web server (nginx, or IIS if that is what the bank's
+       IT runs) serves the static files and forwards /api/ and /admin/ to
+       the Django application server. Everything is served from one
+       address, so no CORS is needed.
+     - Fallback if IT wants no separate web server: Django serves the
+       built files itself through WhiteNoise (MIT). This is one extra
+       Python package.
+     - Upload size: the CBS file is about 95-100 MB per day (the three
+       sample files are 94.5 / 100.4 / 100.9 MB). The web server's upload
+       limit must allow about 150 MB. Django writes uploads to a temporary
+       file on disk, not into memory; the temporary folder must be on the
+       data drive.
+     - The server operating system, web server and HTTPS certificate are
+       questions for IT (P9).
+
+  2.5 Keeping it small for 1-2 engineers
+     - One repository, one backend, one frontend project.
+     - No server-side rendering, no micro-frontends, no GraphQL, no
+       separate auth server.
+
+--------------------------------------------------------------------------------
+3. API DESIGN
+--------------------------------------------------------------------------------
+  3.1 The payment module is in the URL
+     All work data belongs to a payment module. In the code, every case,
+     file, result, mapping and tolerance already has a payment_module
+     field. Recommendation:
+
+       /api/v1/<module>/...      work data for one module, e.g.
+                                 /api/v1/upi/cases/
+       /api/v1/...               things that are not module-specific: login,
+                                 "me", the list of modules, users, alerts,
+                                 user activity
+
+     - <module> is PaymentModule.code in lower case. An unknown or inactive
+       module returns 404.
+     - The SPA's own addresses follow the same pattern (/upi/cases/123), so
+       a bookmark or an alert link always says which module it is about.
+     - Adding IMPS later means adding data, not new screens:
+         - a PaymentModule row
+         - its FileTypeConfig rows, settlement cycles, rule set, response
+           codes and NTSL-style mapping
+       The SPA reads everything that differs between modules from one
+       endpoint, /api/v1/<module>/meta/:
+         - file types and their cycles
+         - rule codes
+         - case statuses, priorities and flags
+         - action types (with "needs evidence" / "completes on approval")
+         - response codes for the module
+         - ageing buckets
+       So no module name is ever hard-coded in a screen.
+     - One limit to note: the action types (exception_management/
+       actions.py, ActionType) are one list for the whole system today,
+       written for UPI (DRC, TCC, RET, RRC...). IMPS will need its own.
+       Making action types per module is backend work for when IMPS
+       starts; the meta endpoint hides it from the SPA, so screens won't
+       change.
+     - Roles are global today (a Maker is a Maker for every module). See
+       P10.
+
+  3.2 The existing /api/exceptions/ endpoints
+     What exists (config/urls.py, exception_management/urls.py, api.py):
+       GET  /api/exceptions/cases/                      queue
+       GET  /api/exceptions/cases/<id>/                 detail
+       POST /api/exceptions/cases/<id>/<transition>/    take, release,
+            reassign, submit, approve, reject, complete, remark,
+            clear_review
+       POST /api/exceptions/cases/bulk/<take|submit|approve>/
+     - It uses session login only, and reading needs any of the five
+       roles.
+     - The queue filters on business_date, status, priority, rule_code,
+       case_type, overdue, mine=assigned|approval, flag and rrn (exact).
+     - Pages hold 50 rows (page_size up to 500). The order is fixed:
+       HIGH first, then overdue, then due date, then age.
+     - Errors: 400 bad input, 403 role, 404 unknown, 409 wrong status.
+     - Each case response lists the actions this user may take now
+       (available_transitions). The SPA shows only those buttons.
+     Gaps for the SPA:
+       - no module filter
+       - the payment module is not in the response
+       - no choice of sort order
+       - no endpoint for the list of Makers that "reassign" needs
+       - no reference data (action types, response codes)
+     Recommendation (P2): add /api/v1/<module>/cases/... that reuses the
+     SAME view classes and serializers. It adds only the module filter,
+     the payment-module field, a sort parameter, and a 401 for "not
+     logged in" (3.4). Keep /api/exceptions/ unchanged until the end of
+     Phase 5, so its tests stay green. Then remove it and move its tests
+     to v1. Nothing is duplicated.
+
+  3.3 Thin views: no business logic in the API
+     Every API view does three things:
+       a) checks its input with the EXISTING Django form, if there is one
+          (exception_management/forms.py is already shared by the admin
+          and the API);
+       b) calls the EXISTING service function;
+       c) turns the result into JSON.
+     The service functions check roles, statuses and the maker-checker
+     rules, and write the audit record. Service functions that exist
+     today:
+       - case lifecycle and bulk: exception_management/services.py
+       - response-code change requests: exception_management/
+         code_changes.py
+       - NTSL mapping changes: settlement/mapping_changes.py
+       - tolerance changes: settlement/tolerance.py
+       - settlement run: settlement/reconcile.py
+       - presence matrix: reconciliation/presence.py
+       - rule evaluation and case sync: rule_engine/evaluator.py and
+         exception_management/sync.py
+     Where logic sits in the admin today, it moves into a service first,
+     and the admin and the API both call it. The one known case: CBS date
+     selection is written inside the admin action select_business_date in
+     file_processing/admin.py.
+
+  3.4 Common rules for every endpoint
+     - Lists are paginated on the server: 50 rows by default, at most 500,
+       response {count, next, previous, results}. This is the format the
+       queue already uses (QueuePagination).
+     - Filters are query parameters, as in the queue. Sorting uses an
+       "ordering" parameter that only accepts listed fields. Each list
+       has a sensible default order.
+     - Errors keep the existing format: {"detail": "...", "errors":
+       {field: [messages]}}. Status codes:
+         400 bad input, or bulk refused (nothing applied)
+         401 not logged in (new in v1, see below)
+         403 your role may not do this
+         404 not found
+         409 the item is in the wrong status (e.g. someone else already
+             approved it)
+       Why 401: with session login, DRF answers 403 for "not logged in"
+       as well, so the SPA cannot tell "session expired" from "not your
+       role". v1 answers 401 for "not logged in", so the SPA can send
+       the user back to the login page.
+     - Every response carries no more than the screen needs. Amounts are
+       sent as strings with 2 decimals, as the API already does, so no
+       rupee value is ever rounded by JavaScript.
+     - Dates in the API are ISO (2026-07-14). The screens format them (P8).
+
+  3.5 Permissions per role
+     - The SERVER decides. Read endpoints need any of the five roles (the
+       existing HasAnyRole). Every write goes through a service function
+       that checks the role itself. The menus and buttons in the SPA are a
+       convenience only.
+     - Planned role matrix (read = R, write = W; to be confirmed with the
+       screens in section 4):
+
+         Area                     Admin  Ops   Maker  Checker  Auditor
+         Case queue / detail      R      R     R      R        R
+         Case maker actions       -      -     W      -        -
+         Case approve / reject    -      -     -      W        -
+         Reassign                 W      -     -      -        -
+         Upload, date pick, run   W(?)   W     -      -        -
+         Results / settlement     R      R     R      R        R
+         Code / mapping proposal  -      -     W      -        -
+         Tolerance proposal       W      -     -      -        -
+         Settings approval        -      -     -      W        -
+         Alerts (own)             R      R     R      R        R
+         Audit / user activity    R      -     -      -        R
+         Users and roles          W (Django admin)
+
+       The table follows the code as built. Two things are new:
+         - Upload is not role-checked in the code today (there is no
+           upload service yet). The spec gives it to the Operations
+           User. Whether an Administrator may also upload is P10b.
+         - Who reads the audit and user-activity screens is not set in
+           the code. The table gives them to the Auditor (spec) and the
+           Administrator.
+
+  3.6 Audit of every write
+     Already audited (append-only event tables):
+       - case changes: CaseEvent
+       - response codes: ResponseCodeChangeEvent
+       - NTSL mapping: NtslMappingEvent
+       - tolerance: SettlementToleranceEvent
+       - login, logout and failed login: UserActivity
+       - rule runs: RuleEvaluationRun.triggered_by
+     Each API call passes source="api" and the user, as the existing
+     transition views do.
+     NOT audited yet. These are the new writes Phase 5 adds:
+       - uploading a file: UploadedFile.uploaded_by and uploaded_at cover
+         who and when
+       - choosing the CBS business date: who chose it is NOT recorded
+         today
+       - "run reconciliation for this date": who started it
+     Recommendation (a backend item): one small append-only operations
+     log in core, using the same append-only pattern as the event tables
+     above (core/append_only.py). It records who, when, what, the module,
+     the date and the file. Writes through the Django admin are kept in
+     Django's own admin log.
+
+--------------------------------------------------------------------------------
+4. SCREEN INVENTORY
+--------------------------------------------------------------------------------
+API status:
+  EXISTS   = endpoint is in the code today
+  PARTIAL  = the service/data exists, the endpoint is missing or incomplete
+  TO BUILD = needs new backend work as well
+Roles: A = Administrator, O = Operations User, M = Maker, C = Checker,
+U = Auditor. "All" = all five.
+LARGE = the data is large; only pages of it are ever loaded (see 7.6).
+
+  4.1 Login                                    All         TO BUILD
+      Username and password. A failed login says only "invalid
+      credentials". Shows a "session expired" message when sent back
+      after a timeout.
+      API: GET /api/v1/auth/csrf/, POST /api/v1/auth/login/,
+           POST /api/v1/auth/logout/, GET /api/v1/me/ (username, name,
+           roles, modules). The login and logout endpoints must call
+           Django's login()/logout(), so core/signals.py keeps logging.
+
+  4.2 App shell                                All         TO BUILD
+      The frame around every screen:
+        - header: bank name, module switcher, alerts bell, user menu and
+          logout
+        - a left menu built from the user's roles
+        - a warning 2 minutes before the session times out
+      The module switcher is hidden while only UPI exists.
+      API: /api/v1/me/, GET /api/v1/modules/.
+
+  4.3 Home - "my work" (minimal dashboard)     All         PARTIAL
+      Counts only, each a link into the filtered queue (no charts):
+        - Maker: HIGH open, overdue, due today, cases assigned to me,
+          approved cases waiting to be marked done
+        - Checker: awaiting approval (HIGH among them), needs review,
+          settings changes awaiting approval
+        - Operations User: latest business date's files received /
+          missing / awaiting date selection, and its settlement status
+        - Auditor / Administrator: the totals above
+      exception_management/alerts.py digest_counts() already computes
+      the case counts for the 09:30 digest, but across all modules and
+      with no endpoint. API: GET /api/v1/<module>/summary/.
+      Owner decision: P4.
+
+  4.4 Exception case queue                     All         EXISTS (v1 PARTIAL)
+      A table of cases, 50 per page. Filters:
+        - business date, status, priority, rule
+        - case type (transaction / settlement)
+        - overdue, flags, RRN search
+        - "assigned to me", "awaiting my approval"
+      Each row shows: badges for priority and flags (overdue, R07x, needs
+      review, RRC already sent, multiple adjustment rows, no deadline,
+      previous-day R12), age, ageing bucket, due date, and who holds it.
+      Ticking boxes on rows opens the bulk bar (4.7).
+      API: GET /api/exceptions/cases/ (exists); v1 adds the module filter
+      and "ordering". The case count grows every day (594 on 26 Sep
+      alone), so paging stays on the server.
+
+  4.5 Case detail and history                  All         EXISTS
+      Shows:
+        - the case header
+        - warnings, most important first (detail.case_warnings)
+        - the rule result: rule, rule set, reason, deadline and the facts
+          it used
+        - every DRC / Timeout / Adjustment row for the RRN, including
+          Adjustment rows on other loaded dates (detail.overlay_rows)
+        - every proposed action with its decision, including
+          self-approved
+        - the full event history
+      Settlement cases also show the settlement block (4.15).
+      API: GET /api/exceptions/cases/<id>/.
+      Note for backend: overlay_rows() reads EVERY Adjustment row of the
+      module on each detail view (reconciliation/presence.py
+      adjustment_rows_any_date). This is fine at today's few hundred
+      rows, but it grows every day. It should be narrowed to the case's
+      RRN before production.
+
+  4.6 Record action / approve / reject         M, C, A     EXISTS
+      Buttons appear only for the actions in available_transitions:
+        - Maker: take, release, submit, mark done, remark
+        - Checker: approve, reject, clear review
+        - Administrator: reassign
+      Submit form:
+        - the action is pre-filled from the rule
+        - a response-code list (RET reasons)
+        - remarks
+        - the evidence fields (CBS reversal date, amount, RRN), shown and
+          required only for "RRC 501 without a new credit"
+        - the RRC-already-sent warning is pre-filled as evidence, as in
+          the admin
+      Reject needs a reason. Mark done needs the NPCI portal / CBS
+      reference. Clear review needs a remark.
+      Self-approval: if the checker submitted the action themselves, the
+      approve button asks for confirmation: "You submitted this action;
+      approving it will be recorded as self-approved." (Phase 3 P4.)
+      A 409 (someone else acted first) reloads the case and says so.
+      API: POST .../cases/<id>/<transition>/ (exists). The action and
+      code lists come from /meta/ and the Maker list for reassign from
+      /api/v1/users/?role=Maker (both TO BUILD).
+
+  4.7 Bulk actions                             M, C        EXISTS
+      Bulk take (Maker), bulk submit with one shared action (Maker), bulk
+      approve (Checker). Either all selected cases are applied, or none.
+      Before sending, the bulk bar explains why a selection cannot go in
+      bulk:
+        - HIGH priority
+        - Pending Investigation
+        - settlement case
+        - warning flags
+        - different actions
+      The server rule (services._bulk_cases) still decides. There is no
+      bulk reject or bulk mark-done; this matches the code and the
+      approved design.
+      API: POST .../cases/bulk/<take|submit|approve>/ (exists).
+
+  4.8 File upload                              O (A?)      TO BUILD
+      Today there is NO upload service or upload screen. Files were
+      registered by the team directly. The pipeline that runs after
+      registration exists: file_processing/tasks.py
+      build_processing_chain (sniff -> validate -> stage -> normalise ->
+      fact, or the NTSL summary).
+      Proposed screen (owner decision P5):
+        - choose files, or a whole day's folder (59 files for UPI on
+          14 Jul: 1 CBS, 12 NTSL, 43 Raw Data / Merchant / BBP files,
+          DRC, Timeout, Adjustment)
+        - for each file the system PROPOSES a file type, cycle and
+          business date:
+            - from the file name patterns already held as data
+              (FileTypeConfig.outer_filename_pattern)
+            - from the content: CBS has no fixed name (one sample was
+              "b5rg090oa.xls"), so it is recognised by content (the
+              SpreadsheetML sniff in file_processing/parsers/sniff.py
+              plus its worksheet layout)
+        - the user confirms or corrects each row in a review table
+          before anything is saved
+        - a file whose content does not match the chosen type is refused
+        - a file uploaded before (same SHA-256) is refused with "already
+          uploaded on <date> by <user>"; the constraint on UploadedFile
+          already exists
+      Backend needed:
+        - an intake service: store the file, hash it, create the
+          UploadedFile, queue the chain
+        - a detection service (dry run, no save)
+        - a role check
+        - API: POST /api/v1/<module>/files/detect/,
+               POST /api/v1/<module>/files/
+
+  4.9 Files and processing status              All (read)  TO BUILD
+      A list of uploaded files (filters: date, type, cycle, status) with
+      the pipeline status:
+        RECEIVED -> PARSED -> VALIDATED -> STAGED
+          -> (AWAITING_DATE_SELECTION) -> NORMALIZED -> LOADED,
+        or VALIDATION_FAILED / FAILED
+      It also shows valid/rejected row counts. The file detail lists its
+      validation exceptions (FileValidationException, paginated). The
+      list refreshes itself every few seconds while any file is still
+      processing.
+      Data exists (file_processing/models.py). API: GET
+      /api/v1/<module>/files/, GET .../files/<id>/. The list grows about
+      60 files a day, so it is paginated.
+
+  4.10 CBS business-date selection             O (A?)      TO BUILD
+      For a file paused at AWAITING_DATE_SELECTION, the screen shows its
+      detected dates (UploadedFile.detected_dates). The user picks one;
+      the date is checked against the detected list and processing
+      resumes.
+      This replaces the Django-admin stand-in (file_processing/admin.py
+      select_business_date). That logic moves into a service first
+      (3.3), and the choice is audited (3.6).
+      API: POST /api/v1/<module>/files/<id>/select-date/.
+
+  4.11 Business-date overview and "run"        All (run: O)  TO BUILD
+      One row per business date, showing:
+        - files expected vs received, as a type x cycle checklist built
+          from FileTypeConfig.cycle_set, so any missing cycle file shows
+          up
+        - matrix built (yes/no)
+        - rule evaluation run (time, rule set)
+        - number of cases, settlement status
+      A "Run reconciliation" button queues, in order: presence matrix ->
+      rule evaluation + case sync -> settlement reconciliation.
+      These three exist only as separate Celery tasks today
+      (reconciliation/tasks.py, rule_engine/tasks.py,
+      settlement/tasks.py); "nothing in the pipeline chains tasks today"
+      (settlement/tasks.py). Backend needs a chain task and a status
+      record. Owner decision: P6.
+      API: GET /api/v1/<module>/dates/, POST .../dates/<date>/run/.
+
+  4.12 Reconciliation results per date         All         TO BUILD   LARGE
+      Two parts:
+        - Summary: count per rule and status, from
+          RuleEvaluationRun.rule_counts, which already exists.
+        - Paginated list of match groups with their current rule result:
+          RRN, rule, status, priority, amount, CBS / NPCI presence,
+          on-us, reversed. Filters: rule, status category, priority,
+          RRN, presence pattern.
+      This is the large screen: about 68,000-71,000 match groups per date
+      (68,000 / 70,969 / 68,569 matched on the three loaded dates). Only
+      one page of 50 is ever sent.
+      API: GET /api/v1/<module>/dates/<date>/results/ (+ /summary/).
+
+  4.13 Match group / presence detail           All         TO BUILD
+      One RRN on one date:
+        - each leg (CBS, NPCI) with amount, direction and response code
+        - the overlay rows (DRC / Timeout / Adjustment)
+        - the flags (amount match, direction match, CBS reversed, on-us)
+        - the current rule result, plus earlier superseded ones
+        - a link to its case, if there is one
+      The data and helpers exist: reconciliation/models.py and
+      presence.py overlay_rows_for_date.
+      API: GET .../dates/<date>/groups/<id>/.
+
+  4.14 Settlement result per date and cycle    All         PARTIAL
+      Shows:
+        - status: TALLIED, UNEXPLAINED or NOT_READY, with the reasons
+        - the SOP check (CBS net, NTSL net, difference, explained,
+          unexplained)
+        - the tolerance used
+        - fees net
+        - a cycle x side table (NTSL vs matched vs explained vs
+          unexplained, amount and count)
+        - the NTSL self-check per cycle (PASS / FAIL / MISSING, with any
+          unmapped descriptions)
+      exception_management/detail.py settlement_detail() already builds
+      most of this, but it can only be reached through a settlement CASE.
+      TALLIED dates have no case, so there is no endpoint today.
+      API: GET /api/v1/<module>/dates/<date>/settlement/.
+
+  4.15 Settlement case explanation             M, C        EXISTS (PARTIAL)
+      The case detail (4.5) with the settlement block. The maker submits
+      SETTLEMENT_EXPLANATION (the remarks are the explanation) and the
+      checker accepts it. Never bulk.
+      Missing: the contributing transactions behind each explained amount
+      (Timeouts not credited, DRCs not reversed, R12 / R13 / R06b items).
+      They are stored in SettlementResult.snapshot but not exposed by the
+      API ("the full calculation snapshot stays on the result",
+      detail.py). The API needs a paginated list of them.
+
+  4.16 Settings changes and approvals          M, A, C     PARTIAL
+      One "Settings" area with three tabs. Each tab shows: the active
+      version, the history, "propose a change" (with a reason), and
+      pending proposals for checkers to approve or reject.
+        a) Response codes (Maker proposes an edit or a new code, Checker
+           decides). Services and forms exist
+           (exception_management/code_changes.py, forms.py); today only
+           the admin screens use them.
+        b) NTSL category mapping (Maker proposes entries to add / remove,
+           Checker decides). The service exists
+           (settlement/mapping_changes.py). There is NO screen today; the
+           tracker carries "mapping-change screen/API" to Phase 5.
+        c) Settlement tolerance (Administrator proposes amount and count,
+           Checker decides). The service exists (settlement/tolerance.py).
+           There is no screen today.
+      Plus one "Pending approvals" list for checkers. It brings together
+      cases awaiting approval and the three kinds of settings proposals,
+      so nothing waits unseen.
+      Self-approval is allowed and flagged, as in Phase 3.
+      API: /api/v1/<module>/settings/response-codes/...,
+           .../ntsl-mapping/..., .../tolerance/...
+
+  4.17 Users and roles                         A           (Django admin)
+      Stays in the Django admin in Phase 5 (P3). The SPA menu links to it
+      for Administrators. A read-only "who holds which role" list in the
+      SPA is optional (TO BUILD, small).
+
+  4.18 Alerts / notifications                  All         PARTIAL
+      A bell with a count, and a list of my alerts: R07x case, needs
+      review, submitted, rejected, settlement case / review, digest. Each
+      alert links to the item.
+      The alerts are already recorded in the outbox (core.Notification).
+      Two problems:
+        - The outbox has no "read" status. It is append-only apart from
+          its delivery fields (core/models.py NotificationQuerySet), so
+          backend must add a separate small "read" record.
+        - Alert links point at Django admin pages
+          (exception_management/alerts.py case_link, queue_link). They
+          should point at the SPA once its case screen exists.
+      API: GET /api/v1/notifications/, POST .../<id>/read/.
+
+  4.19 Audit trail and user activity           U, A        TO BUILD   LARGE
+      Three read-only searchable lists:
+        - case events across all cases (who / what / when / filter by
+          user, event type, date)
+        - settings change events (codes, mapping, tolerance)
+        - user activity (login, logout, failed login, with IP)
+      All of these grow forever, so they are paginated and filtered on
+      the server. The data exists (CaseEvent, ResponseCodeChangeEvent,
+      NtslMappingEvent, SettlementToleranceEvent, core.UserActivity).
+      The formal approval and user-activity REPORTS are Phase 6.
+      API: GET /api/v1/audit/case-events/, .../settings-events/,
+           .../user-activity/.
+
+  4.20 Dashboards and reports                  All         Phase 6
+      Charts, the 7 spec reports, and exports. Not in Phase 5.
+
+  4.21 NPCI uploads                            C, M        DEFERRED
+      A menu slot is reserved, hidden until built (section 10).
+
+--------------------------------------------------------------------------------
+5. SLICE PLAN
+--------------------------------------------------------------------------------
+Each slice ends with:
+  (a) backend API tests and frontend tests passing, and
+  (b) something the owner can click through on the real data of 14 Jul /
+      25 Sep / 26 Sep.
+Sizes are rough, for 1 engineer full time. They include the backend
+endpoints each slice needs.
+
+  Slice 1 - Foundation + cases (about 2 weeks)
+    - Node setup (section 8), frontend/ project, Vite proxy, lint and
+      test set-up, production build served by Django.
+    - Auth endpoints, /me, modules, /meta, the Maker list.
+    - Login, app shell, role menus, module switcher (UPI only), session
+      timeout warning.
+    - /api/v1/<module>/cases/ wrapping the existing views (P2).
+    - Case queue, case detail and history, every action, bulk bar,
+      self-approval confirmation.
+    - Home "my work" counts, if P4 is yes. The counts already exist, so
+      this is small.
+    Click-through: log in as a Maker, take an R01 case, submit DRC 102,
+    log in as a Checker, approve it, see the history. Bulk-submit a set of
+    LOW R01 cases. See a bulk refusal on R13 Pending Investigation.
+    Why first: the API mostly exists, and it is the screen makers and
+    checkers use all day.
+
+  Slice 2 - Files and running a day (about 1.5 weeks)
+    - Backend: intake + detection services, the date-selection service
+      (moved out of the admin), the run-chain task, the operations log.
+    - Upload with review table, files list and detail, CBS date
+      selection, business-date overview with the checklist and the "Run"
+      button.
+    Click-through: upload the 14 Jul folder into a fresh database, pick
+    14 Jul for CBS, run, and see 306 cases appear.
+    Why second: it replaces the last Django-admin stand-in (CBS date) and
+    holds the biggest backend unknowns (intake, chaining). Doing it early
+    surfaces problems while there is still time.
+
+  Slice 3 - Results, settlement and settings (about 1.5-2 weeks)
+    - Reconciliation results summary and paginated list, match group
+      detail.
+    - Settlement result per date and cycle, self-check, contributing
+      transactions on settlement cases.
+    - Settings: response codes, NTSL mapping, tolerance, and the "pending
+      approvals" list.
+    Click-through: open 14 Jul results (12/12 cycles PASS, unexplained
+    Rs 0.00). Propose a tolerance change as Administrator and approve it
+    as Checker.
+
+  Slice 4 - Alerts, audit, users (about 1 week)
+    - Read status for alerts, alerts bell and list, alert links pointing
+      at SPA screens.
+    - Audit: case events, settings events, user activity.
+    - Optional read-only users-and-roles list, plus the link to the
+      Django admin.
+    Click-through: an Auditor sees the day's case events and the login
+    log, and cannot change anything.
+
+  Phase 6 - Dashboards with charts, the 7 reports, exports.
+
+  Total: about 6-6.5 weeks for 1 engineer, against the Phase 5 estimate of
+  4-5 weeks. With 2 engineers (one backend, one frontend), Slices 2-4 can
+  partly overlap: about 4-5 weeks. See the schedule note.
+
+--------------------------------------------------------------------------------
+6. LIBRARIES (all free / open source; no paid tiers)
+--------------------------------------------------------------------------------
+Aim: about a dozen direct packages. Bank IT will review each one, so each
+must earn its place.
+
+  Purpose                 Package                         Licence
+  ----------------------  ------------------------------  ------------
+  UI library              react, react-dom                MIT
+  Build / dev server      vite, @vitejs/plugin-react      MIT
+  Language                typescript                      Apache-2.0
+  Routing                 react-router                    MIT
+  Server data / caching   @tanstack/react-query           MIT
+  Tables (server-paged)   @tanstack/react-table           MIT
+  Forms / validation      react-hook-form, zod,           MIT
+                          @hookform/resolvers
+  UI component kit (P1)   @mantine/core, @mantine/hooks,  MIT
+                          @mantine/dates (uses dayjs,
+                          MIT), @mantine/notifications
+  Charts (Phase 6 only)   recharts (or @mantine/charts,   MIT
+                          built on it)
+  Unit / component tests  vitest, @testing-library/react, MIT
+                          @testing-library/user-event,
+                          jsdom
+  End-to-end tests        @playwright/test                Apache-2.0
+  Lint / format           eslint, prettier                MIT
+
+  Notes:
+  - The table library is "headless": it keeps the paging, sorting and
+    selection logic and draws nothing itself, so it fits server-side
+    paging and the UI kit's look. Grids with paid editions (AG Grid
+    Enterprise, MUI X Pro / Premium) are avoided on purpose.
+  - No date library beyond dayjs (it comes with the UI kit). Number and
+    rupee formatting use the browser's own Intl.NumberFormat("en-IN"),
+    so no extra package is needed.
+  - Playwright can drive the Microsoft Edge already on the machine, so no
+    browser download is needed (section 8).
+  - Optional, not in Slice 1: generating TypeScript types from the API
+    (drf-spectacular, BSD-3, on the backend + openapi-typescript, MIT).
+    It is worth it once there are 30+ endpoints; decide at Slice 3.
+  - Backend additions: none required. WhiteNoise (MIT) only if IT wants
+    no separate web server (2.4).
+  - The owner approves: the UI kit (P1). Bank IT reviews the list as a
+    whole.
+
+--------------------------------------------------------------------------------
+7. NON-FUNCTIONAL
+--------------------------------------------------------------------------------
+  7.1 Security
+     - The server enforces roles (3.5). Hiding a button is not security,
+       and every API test checks all five roles, allowed and refused.
+     - CSRF stays on for every write (2.2).
+     - Cookies: HttpOnly session cookie; Secure cookies once the intranet
+       address uses HTTPS (P9).
+     - DEBUG must be off in production; it is already read from .env.
+     - The SPA stores nothing sensitive in the browser (no tokens, no
+       case data in local storage).
+  7.2 Session timeout
+     - Today no timeout is set (config/settings.py), so Django's default
+       applies: a session lasts 2 weeks. That is too long for a bank.
+     - Recommendation (P7): 15 minutes idle, renewed on each request, and
+       the session also ends when the browser closes. The SPA warns at 13
+       minutes, and after expiry returns to login, keeping the address so
+       the user lands back where they were.
+  7.3 Maker-checker visibility
+     - Everyone with a role can SEE every case (as the API allows today);
+       only the allowed buttons show.
+     - Self-approval is allowed but always flagged and confirmed (4.6).
+       The approval history shows a "self-approved" badge, so the Auditor
+       sees it.
+     - Rejection reasons are shown prominently to the maker.
+  7.4 Accessibility basics
+     - Every input has a label, everything works with the keyboard, focus
+       is visible, and contrast meets WCAG 2.1 AA.
+     - Priority and status are never shown by colour alone (text +
+       colour).
+     - Tables have proper headers, so screen readers can follow them.
+  7.5 Browser support
+     - Current Microsoft Edge and Google Chrome on the bank's Windows
+       desktops. No Internet Explorer.
+     - Layout designed for 1366x768 and above.
+     - To be confirmed by IT (P9).
+  7.6 Performance on large tables
+     - Every list is paged on the server; the SPA never downloads a
+       whole date (about 70,000 groups) or a whole log.
+     - Filters are sent to the server after a short pause in typing.
+     - Recently viewed pages are cached for a short time, so going back
+       is instant.
+     - Counts come from summaries that already exist (rule_counts,
+       digest_counts) where possible.
+     - Needed indexes are checked for each new list endpoint. Note: the
+       case queue already has one (case_queue_idx).
+  7.7 Tests
+     - Backend: API tests in the existing Django test suite (about 500
+       tests today; 506 at Phase 4 close, per the tracker). For each
+       endpoint: the role matrix, CSRF, pagination, filters, error
+       codes, and that the audit record is written.
+     - Frontend unit/component tests (Vitest): the forms, the bulk
+       eligibility messages, the role menus.
+     - End-to-end (Playwright): one click-through script per slice
+       against a running Django with a small seeded data set, not the
+       full 450K-row database.
+     - The exact build, test and run commands are added to claude.md
+       when Slice 1 lands, not guessed now.
+
+--------------------------------------------------------------------------------
+8. DEVELOPER SETUP ON THIS LAPTOP (steps for later - not done now)
+--------------------------------------------------------------------------------
+The laptop has 7.6 GB RAM, only 4.9 GB free on C:, and 224 GB free on D:.
+Everything Node-related goes on D:.
+
+  1. Install Node.js on D:
+     - Download the current LTS release from nodejs.org (24.x at the time
+       of writing; check the site).
+     - Choose the Windows .zip (or the .msi with a custom folder) and
+       unpack it to D:\tools\nodejs.
+     - Add D:\tools\nodejs to the user PATH.
+     - Check: `node -v`, `npm -v`.
+  2. Keep npm's files off C::
+       npm config set cache D:\npm-cache
+       npm config set prefix D:\npm-global
+     (add D:\npm-global to PATH)
+  3. Temporary files: set TEMP and TMP to D:\tmp for the terminal used
+     for npm, so large installs don't fill C:.
+  4. Playwright: use the installed Edge (channel "msedge"), so no browsers
+     are downloaded. If a bundled browser is ever needed, set
+     PLAYWRIGHT_BROWSERS_PATH=D:\ms-playwright first.
+  5. The project is already on D:. node_modules and Vite's cache sit
+     inside frontend/ and are git-ignored.
+  6. Memory (Docker + Vite + browser on 7.6 GB):
+     - Limit Docker's WSL2 VM to about 2 GB (memory=2GB in
+       %UserProfile%\.wslconfig).
+     - Stop Adminer when not needed (it is the third container in
+       docker-compose.yml).
+     - Start the Celery worker only when testing uploads or runs.
+     - Run Playwright headless with 1 worker.
+     - Don't run the full Django test suite, Vite and an end-to-end run
+       at the same time.
+     - Expect about 0.5 GB for Vite + the TypeScript editor service.
+     - Keep browser tabs few.
+  7. The CBS sample files are about 100 MB each. Upload tests use small
+     cut-down fixtures; the full files are only for the Slice 2
+     click-through.
+
+--------------------------------------------------------------------------------
+9. OPEN QUESTIONS FOR THE OWNER
+--------------------------------------------------------------------------------
+  P1 UI component kit. Options:
+       a) Mantine (MIT; all components free; forms, dates, notifications,
+          modals included; good keyboard support)
+       b) MUI core (MIT; very common; but its data grid's useful features
+          are in paid editions, a temptation to avoid)
+       c) shadcn/ui + Radix + Tailwind (MIT; code is copied into the
+          project; more pieces to assemble and review)
+       d) no kit, own CSS (slowest; accessibility is on us)
+     Recommendation: a) Mantine. It is the fewest packages for a complete
+     set, with no paid tier.
+
+  P2 Existing /api/exceptions/ endpoints. Options:
+       a) keep them as they are and add a ?module= parameter
+       b) add /api/v1/<module>/... reusing the same views; keep
+          /api/exceptions/ until the end of Phase 5, then remove it and
+          move its tests
+       c) move them now and rewrite the tests
+     Recommendation: b). Nothing breaks, no logic is duplicated, and every
+     endpoint follows one module-aware pattern.
+
+  P3 Django admin during Phase 5. Options:
+       a) keep it for Administrator tasks (users and roles, file-type
+          configs, holidays) and as a fallback; daily work moves to the
+          SPA
+       b) build user / role screens in the SPA now
+     Recommendation: a). Also, once Slices 1-3 cover their daily work,
+     remove Django staff status from non-Administrator users. This
+     reverses Phase 3 Amendment 2 B1, and makes the unbuilt "automatic
+     staff status" gap moot. It should be decided at that point.
+
+  P4 Minimal home page in Phase 5? Options:
+       a) yes: "my work" counts per role, each linking to the filtered
+          queue, no charts
+       b) no: land on the queue; everything waits for Phase 6
+     Recommendation: a). The counts already exist (digest_counts), so it
+     costs about a day. Charts wait for Phase 6.
+
+  P5 Upload flow (tracker rows: "single-file vs bulk-folder" and "choose
+     type vs auto-detect"). Options:
+       a) the user picks the file type (and cycle / date) for each file,
+          one file at a time
+       b) auto-detect only
+       c) multi-file or whole-folder upload; the system proposes type,
+          cycle and date (name patterns + content); the user confirms or
+          corrects each row; a mismatch is refused
+     Recommendation: c). It handles a 59-file day in one step, still lets
+     a human confirm, and CBS (no fixed name) is recognised by content or
+     chosen by hand. Automatic pickup from a server folder / SFTP stays
+     out of Phase 5.
+
+  P6 Running a day's reconciliation. Options:
+       a) an Operations User presses "Run" on the business-date overview,
+          which shows the file checklist first
+       b) it runs automatically once all expected files are LOADED
+     Recommendation: a) for Phase 5. Whether a day's files are complete
+     is shown, not assumed. A re-run (after a corrected file) is the same
+     button. b) can follow once ops trust the checklist.
+
+  P7 Session timeout and login policy. Options:
+       a) 15 minutes idle
+       b) 30 minutes idle
+       c) the bank's own policy, if IT has one
+     Also:
+       - lock an account after N failed logins? (needs a small extra
+         package or a little backend code)
+       - is Active Directory / LDAP login required? (django-auth-ldap,
+         BSD, could be added later)
+     Recommendation: a) 15 minutes, plus ask IT for the bank's password,
+     lockout and AD policy before UAT. Django accounts in Phase 5.
+
+  P8 Language, branding, formats. Recommendation:
+       - English only
+       - the bank's name and logo in the header (please supply the logo
+         file)
+       - amounts in Indian grouping (Rs 5,46,13,083.81)
+       - dates shown as 14-Jul-2026 (unambiguous)
+       - times in IST
+     Confirm, or say what differs.
+
+  P9 Deployment (question for IT):
+       - the server operating system
+       - the web server (nginx or IIS)
+       - an HTTPS certificate for the intranet address
+       - the browser versions on bank desktops, and the screen size
+     Recommendation: one intranet address, a web server serving the
+     built SPA and forwarding to Django, and HTTPS. Without an answer,
+     Slice 1 builds for "Django serves everything" (WhiteNoise), which
+     works either way.
+
+  P10 Roles and modules.
+       a) Are roles global (a UPI Maker is also the IMPS Maker), or per
+          module?
+          Recommendation: global now, as built. Per-module roles can be
+          added later as data (e.g. a "UPI Maker" group) without screen
+          changes.
+       b) May an Administrator also upload files and pick CBS dates, or
+          only the Operations User (spec)?
+          Recommendation: Operations User only. An Administrator who
+          needs to can also hold that role.
+
+  P11 Exports from lists (CSV / Excel) in Phase 5?
+     Recommendation: no. Exports belong to the Phase 6 reports, which
+     can be produced in the background for large dates. Phase 5 shows
+     live data only.
+
+--------------------------------------------------------------------------------
+10. CARRIED-FORWARD AND DEFERRED ITEMS
+--------------------------------------------------------------------------------
+Landing in Phase 5 (from tracker.md Open Questions and component notes):
+  - Upload flow: file-type selection vs auto-detect: 4.8, P5.
+  - Single-file upload vs bulk folder: 4.8, P5.
+  - CBS business-date selection, replacing the Django-admin stand-in:
+    4.10.
+  - NTSL mapping-change screen / API (carried from Phase 4): 4.16 b.
+  - Settlement auto-run after NTSL load (carried from Phase 4): becomes
+    the "Run" chain, 4.11 / P6.
+  - Role permissions on the settlement tables (noted at Phase 4 Slice 1
+    as "superuser-only admin"): read access was since given to every role
+    by migration settlement/0004; the API applies the 3.5 matrix.
+  - Automatic staff status for new role members (Phase 3 gap): made moot
+    by the SPA, P3.
+  - Alert links pointing at the Django admin: change to SPA addresses,
+    4.18.
+
+Noted, not Phase 5:
+  - Archival of fact / results / cases once a date's cases are all closed
+    (Phase 3 carry-forward): no screen in Phase 5. An archived date must
+    later show as "archived" in 4.11 and 4.12.
+  - Reprocessing after archival (before UAT): the upload screen will
+    refuse a file for an archived date until that rule is decided.
+  - NPCI direction labels possibly reversed (confirm with ops before
+    Phase 6): affects report labels, not Phase 5 screens.
+  - Mail server (IT): independent of Phase 5. The in-app list (4.18)
+    works without it.
+
+Deferred: NPCI File Generation (owner, 2026-10-12; blocked on upload
+formats from ops). Where it plugs in later:
+  - A module menu item "NPCI uploads" (4.21), for Checker (authorise) and
+    Maker (view).
+  - It lists APPROVED actions not yet completed, grouped by action type
+    (DRC / TCC / RET / RRC / chargeback) and date. The checker
+    authorises generation, and the file is downloaded and kept unchanged
+    with its checksum and approver (Phase 4 design S6).
+  - API slot: /api/v1/<module>/npci-files/.
+  - "Mark done" on a case could later take the generated file's
+    reference.
+  None of this changes the Phase 5 screens; the menu slot stays hidden
+  until it is built.
+
+--------------------------------------------------------------------------------
+SCHEDULE NOTE
+--------------------------------------------------------------------------------
+Phase 5 estimate: 4-5 weeks (1-2 engineers). It started 2026-10-12, its
+re-baselined target end. The project deadline 2026-10-15 is 2 days away,
+so Phase 5 cannot finish by then. The slices above add up to about 6-6.5
+weeks for one engineer (about 4-5 with two), so the slice plan itself
+runs past the estimate. Cutting scope (e.g. Slice 4 moved to Phase 6) or
+re-baselining is the owner's decision.
+
+--------------------------------------------------------------------------------
+OWNER APPROVAL (2026-10-13)
+--------------------------------------------------------------------------------
+Approved by the project owner 2026-10-13: P1-P11 as recommended.
+
+Amendment 1 (owner, 2026-10-13) - upload, date and run flow (refines P5/P6):
+  The user does all three steps:
+    1. Uploads the day's files (multi-file / folder, as P5 c).
+    2. Picks the business date. The system pre-fills it, and the user
+       confirms or changes it:
+         - NPCI files (Raw Data, Merchant Raw Data, BBP, DRC, Timeout,
+           Adjustment, NTSL) carry the date in the file name and in every
+           row; the system proposes it and refuses a file whose rows do
+           not match the chosen date (existing EXACT_MATCH check).
+         - CBS GL Extract covers a range (e.g. 13-15 Jul). The system
+           lists the dates actually found in the file (existing
+           detected_dates) and pre-selects the date chosen for the batch;
+           the user confirms. Replaces the Django-admin stand-in.
+       Who picked the date and when is recorded in the audit log.
+    3. Starts the reconciliation run with the "Run" button (as P6 a),
+       after the file checklist. Who started it is recorded.
+
+--------------------------------------------------------------------------------
+SOURCES (code read for this draft; nothing was changed)
+--------------------------------------------------------------------------------
+  config/settings.py, config/urls.py; exception_management/api.py,
+  urls.py, services.py, forms.py, actions.py, detail.py, roles.py,
+  code_changes.py, alerts.py, models.py, sync.py; settlement/reconcile.py,
+  cases.py, tolerance.py, mapping_changes.py, selfcheck.py, models.py,
+  tasks.py, admin.py; file_processing/models.py, tasks.py, admin.py,
+  parsers/sniff.py, management/commands/seed_file_type_configs.py;
+  reconciliation/models.py, presence.py, tasks.py; rule_engine/models.py,
+  tasks.py; core/models.py, signals.py, notifications.py;
+  docker-compose.yml, requirements.txt; tracker.md; docs/phase3_design_
+  draft_v1.txt, docs/phase4_design_draft_v1.txt, docs/sop_reference.md.
