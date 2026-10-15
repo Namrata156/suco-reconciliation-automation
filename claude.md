@@ -11,11 +11,10 @@ Source of truth for requirements: `docs/Reconciliation_Automation.docx`
 (or its markdown export). Do not restate or fork requirements elsewhere —
 update the tracker's links back to this doc instead.
 
-No application code exists yet. Until it does, your job here is **project
-management**, not development: tracking scope, flagging gaps, and keeping
-status and schedule current. Once code starts, this file should be
-extended with real build/test/lint commands — don't invent them before
-then.
+Your job here is **project management**, not development: tracking
+scope, flagging gaps, and keeping status and schedule current. Engineer
+agents build; real build/test/run commands are in the "Development"
+section at the end of this file.
 
 Team size: 1–2 engineers. Use this when reasoning about what can run in
 parallel vs what must be sequential.
@@ -121,3 +120,31 @@ anything "done."
   or phases it affects, rather than silently re-syncing.
 - Once real development starts, add a "Development" section here with
   actual build/test/run commands — do not guess these in advance.
+
+## Development
+
+Commands verified 2026-10-15 (Phase 5 Slice 1). Windows dev laptop,
+7.6 GB RAM: run the Django suite, Vite and Playwright one at a time.
+
+**Services** (PostgreSQL on host port 5434, Redis 6379, Adminer 8083):
+`docker compose up -d` from the project root.
+
+**Backend** (project root; `.env` is loaded automatically by
+`config/settings.py`, shell variables win):
+- `.venv\Scripts\activate`
+- `python manage.py migrate`
+- `python manage.py runserver` (port 8000; also serves `frontend/dist`)
+- `python manage.py test` — full suite, takes ~17 min
+
+**Frontend** (`frontend/`; set `TEMP`/`TMP` to `D:\tmp` first; npm cache
+and prefix are on D:):
+- `npm run dev` — Vite on 5173, proxies `/api`, `/admin`, `/static` to
+  8000 (needs `DJANGO_CSRF_TRUSTED_ORIGINS=http://localhost:5173` in `.env`)
+- `npm run build` — type-check + build into `frontend/dist`
+- `npm run lint`, `npm run type-check`, `npm run test` (Vitest)
+- `npm run e2e` — Playwright click-through (Edge, headless, 1 worker).
+  Needs Django + Vite running and `E2E_MAKER_USER/PASSWORD`,
+  `E2E_CHECKER_USER/PASSWORD`. Run it against the database copy, not dev
+  data: start Django with `POSTGRES_DB=reconciliation_e2e` (users
+  `e2e_maker` / `e2e_checker`). It changes cases, so re-clone the copy
+  from `reconciliation` when it runs out of OPEN LOW R01 cases.

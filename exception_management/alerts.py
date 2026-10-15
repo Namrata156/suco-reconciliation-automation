@@ -130,12 +130,18 @@ _MAKER_WORK = (CaseStatus.OPEN, CaseStatus.IN_PROGRESS)
 _MAKER_ALL = (CaseStatus.OPEN, CaseStatus.IN_PROGRESS, CaseStatus.APPROVED)
 
 
-def digest_counts(now=None) -> dict:
+def digest_counts(now=None, *, payment_module=None) -> dict:
     """Queue-wide counts for the digest (overdue as in the queue: due date +
-    16:00 RET cutoff, RuleResultQuerySet.with_ageing)."""
+    16:00 RET cutoff, RuleResultQuerySet.with_ageing). All modules by
+    default; one module for the Phase 5 home page (/api/v1/<module>/summary/)."""
     now = timezone.localtime(now) if now else timezone.localtime()
     today = now.date()
-    rows = list(ExceptionCase.objects.filter(status__in=ACTIVE_STATUSES).with_ageing(now=now)
+    cases = ExceptionCase.objects.all()
+    actions = ProposedAction.objects.all()
+    if payment_module is not None:
+        cases = cases.filter(payment_module=payment_module)
+        actions = actions.filter(case__payment_module=payment_module)
+    rows = list(cases.filter(status__in=ACTIVE_STATUSES).with_ageing(now=now)
                 .values("status", "priority", "is_overdue", "due_date", "assigned_to_id", "needs_review"))
     c = Counter()
     mine, mine_overdue = Counter(), Counter()
@@ -155,8 +161,8 @@ def digest_counts(now=None) -> dict:
         if r["assigned_to_id"] and s in (CaseStatus.IN_PROGRESS, CaseStatus.APPROVED):
             mine[r["assigned_to_id"]] += 1
             mine_overdue[r["assigned_to_id"]] += overdue
-    c["needs_review"] = ExceptionCase.objects.filter(needs_review=True).count()
-    submitted = Counter(ProposedAction.objects.filter(decision=Decision.PENDING).values_list("submitted_by_id", flat=True))
+    c["needs_review"] = cases.filter(needs_review=True).count()
+    submitted = Counter(actions.filter(decision=Decision.PENDING).values_list("submitted_by_id", flat=True))
     return {"today": today, "totals": c, "mine": mine, "mine_overdue": mine_overdue, "submitted": submitted}
 
 

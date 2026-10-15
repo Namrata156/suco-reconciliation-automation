@@ -9,7 +9,7 @@
 #   1. cp .env.example .env   (fill in a real dev-only POSTGRES_PASSWORD)
 #   2. docker compose up -d
 #   3. Run `python manage.py migrate` etc. from the host venv as usual --
-#      Django connects to these containers over localhost:5432 / localhost:6379.
+#      Django connects to these containers over localhost:5434 / localhost:6379.
 
 services:
   postgres:

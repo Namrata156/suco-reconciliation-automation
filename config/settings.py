@@ -10,6 +10,8 @@ repository, response codes, ageing buckets) added 2026-10-09.
 
 All environment-specific values (DB credentials, Celery/Redis URLs, secret
 key) are read from environment variables with local-dev-only fallbacks.
+For local dev, a `.env` file in the project root is loaded automatically;
+variables already set in the shell/deployment always take precedence.
 Never hardcode real credentials here.
 """
 from __future__ import annotations
@@ -18,6 +20,22 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# --------------------------------------------------------------------------
+# Local .env loading (stdlib only -- no python-dotenv, see requirements.txt)
+# --------------------------------------------------------------------------
+# setdefault: a variable already set in the environment wins over `.env`.
+_env_file = BASE_DIR / ".env"
+if _env_file.is_file():
+    for _line in _env_file.read_text(encoding="utf-8-sig").splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _key, _value = _line.split("=", 1)
+        _value = _value.strip()
+        if len(_value) >= 2 and _value[0] == _value[-1] and _value[0] in ("'", '"'):
+            _value = _value[1:-1]
+        os.environ.setdefault(_key.strip(), _value)
 
 # --------------------------------------------------------------------------
 # Core / security
@@ -54,6 +72,7 @@ INSTALLED_APPS = [
     "rule_engine",
     "exception_management",
     "settlement",
+    "api",
 ]
 
 MIDDLEWARE = [
@@ -142,6 +161,34 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 # --------------------------------------------------------------------------
+# Session and CSRF (Phase 5 design 2.2, 7.1, 7.2; owner P7 2026-10-13)
+# --------------------------------------------------------------------------
+# 15 minutes idle: every request saves the session, which renews the
+# 15 minutes; the cookie has no expiry date, so the session also ends when
+# the browser closes. Applies to the SPA and the Django admin alike. The SPA
+# warns 2 minutes before (it reads the value from /api/v1/me/).
+SESSION_COOKIE_AGE = 15 * 60
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+SESSION_COOKIE_HTTPONLY = True  # Django's default, stated: JavaScript never reads the session cookie
+# The SPA reads the csrftoken cookie and sends it back as X-CSRFToken on every
+# write, so that cookie stays readable by JavaScript (Django's default).
+# Secure cookies once the intranet address uses HTTPS (P9): set both in .env.
+SESSION_COOKIE_SECURE = os.environ.get("DJANGO_SECURE_COOKIES", "").strip().lower() in ("1", "true", "yes", "on")
+CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
+# Development only (design 2.3): the Vite dev server's origin, e.g.
+# http://localhost:5173, comma-separated. Not needed in production, where the
+# SPA and the API are served from one address.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()
+]
+
+# Production SPA build (Phase 5 design 2.4 / P9 fallback): when this folder
+# holds a `npm run build` output (index.html + assets/), Django serves it for
+# every path outside /api/ and /admin/ (api.spa). Inert when it is absent.
+FRONTEND_DIST_DIR = Path(os.environ.get("FRONTEND_DIST_DIR", "").strip() or BASE_DIR / "frontend" / "dist")
+
+# --------------------------------------------------------------------------
 # Celery / Redis -- async file-processing pipeline (approved plan Phase 1 §5)
 # --------------------------------------------------------------------------
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
@@ -215,8 +262,9 @@ try:
 except ImportError:  # celery is pinned in requirements.txt; defensive only
     CELERY_BEAT_SCHEDULE = {}
 
-# Django REST Framework -- framework included per locked tech stack; no
-# endpoints designed yet (API is a Phase 5 stub, see TRACKER.md).
+# Django REST Framework -- per locked tech stack. Endpoints: /api/exceptions/
+# (exception_management.api) and /api/v1/ (api app, Phase 5); each view sets
+# its own session authentication and role permission.
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",

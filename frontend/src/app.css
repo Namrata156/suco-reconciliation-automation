@@ -1,0 +1,28 @@
+/* Skip link: hidden until focused with the keyboard (design 7.4). */
+.skip-link {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  z-index: 1000;
+  padding: 8px 12px;
+  background: #fff;
+  color: #1c3f8c;
+  font-weight: 600;
+}
+.skip-link:focus {
+  left: 8px;
+  top: 8px;
+  outline: 2px solid #1c3f8c;
+}
+
+/* Long RRNs and remarks wrap instead of widening tables at 1366x768. */
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+}
+
+/* Bulk bar stays visible while scrolling a long page. */
+.bulk-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+}

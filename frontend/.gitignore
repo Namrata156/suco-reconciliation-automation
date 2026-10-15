@@ -1,0 +1,17 @@
+# Dependencies and build output (design section 8.5)
+node_modules/
+dist/
+
+# Vite cache (normally inside node_modules/.vite; listed in case cacheDir moves)
+.vite/
+
+# Test output
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Editor / OS
+*.local
+.DS_Store

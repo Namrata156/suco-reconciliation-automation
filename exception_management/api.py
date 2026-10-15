@@ -58,6 +58,11 @@ class CaseAPIView(APIView):
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated, HasAnyRole]
 
+    def scope(self, qs):
+        """Hook: the cases this view may see (all here; one payment module in
+        /api/v1/<module>/, api.views)."""
+        return qs
+
 
 # ---------------------------------------------------------------------------
 # serializers
@@ -160,29 +165,38 @@ def _annotated():
     return ExceptionCase.objects.with_queue_annotations().select_related("assigned_to", "payment_module")
 
 
+def filter_queue(qs, request):
+    """Applies the queue filters in the query string (module docstring) to
+    `qs`. Returns (queryset, None), or (None, 400 response) for an unknown
+    flag. Shared by this queue and /api/v1/<module>/cases/ (Phase 5 P2)."""
+    p = request.query_params
+    st = p.get("status")
+    if not st:
+        qs = qs.filter(status__in=ACTIVE_STATUSES)
+    elif st != "all":
+        qs = qs.filter(status__in=st.split(","))
+    for param, lookup in (("business_date", "business_date"), ("priority", "priority"),
+                          ("rule_code", "rule_code"), ("rrn", "rrn"), ("case_type", "case_type")):
+        if p.get(param):
+            qs = qs.filter(**{lookup: p[param]})
+    if p.get("overdue") in ("true", "false"):
+        qs = qs.filter(is_overdue=True) if p["overdue"] == "true" else qs.exclude(is_overdue=True)
+    if p.get("mine") == "assigned":
+        qs = qs.filter(assigned_to=request.user)
+    elif p.get("mine") == "approval":
+        qs = qs.filter(status=CaseStatus.PENDING_APPROVAL) if has_role(request.user, Role.CHECKER) else qs.none()
+    if p.get("flag"):
+        if p["flag"] not in _FLAG_FILTERS:
+            return None, Response({"detail": f"Unknown flag {p['flag']!r}"}, status=status.HTTP_400_BAD_REQUEST)
+        qs = qs.filter(**_FLAG_FILTERS[p["flag"]])
+    return qs, None
+
+
 class CaseListView(CaseAPIView):
     def get(self, request):
-        p = request.query_params
-        qs = _annotated()
-        st = p.get("status")
-        if not st:
-            qs = qs.filter(status__in=ACTIVE_STATUSES)
-        elif st != "all":
-            qs = qs.filter(status__in=st.split(","))
-        for param, lookup in (("business_date", "business_date"), ("priority", "priority"),
-                              ("rule_code", "rule_code"), ("rrn", "rrn"), ("case_type", "case_type")):
-            if p.get(param):
-                qs = qs.filter(**{lookup: p[param]})
-        if p.get("overdue") in ("true", "false"):
-            qs = qs.filter(is_overdue=True) if p["overdue"] == "true" else qs.exclude(is_overdue=True)
-        if p.get("mine") == "assigned":
-            qs = qs.filter(assigned_to=request.user)
-        elif p.get("mine") == "approval":
-            qs = qs.filter(status=CaseStatus.PENDING_APPROVAL) if has_role(request.user, Role.CHECKER) else qs.none()
-        if p.get("flag"):
-            if p["flag"] not in _FLAG_FILTERS:
-                return Response({"detail": f"Unknown flag {p['flag']!r}"}, status=status.HTTP_400_BAD_REQUEST)
-            qs = qs.filter(**_FLAG_FILTERS[p["flag"]])
+        qs, error = filter_queue(_annotated(), request)
+        if error is not None:
+            return error
         qs = qs.order_by(*QUEUE_ORDER)
         paginator = QueuePagination()
         page = paginator.paginate_queryset(qs, request, view=self)
@@ -190,9 +204,11 @@ class CaseListView(CaseAPIView):
 
 
 class CaseDetailView(CaseAPIView):
+    detail_serializer = CaseDetailSerializer
+
     def get(self, request, pk):
-        case = get_object_or_404(_annotated(), pk=pk)
-        return Response(CaseDetailSerializer(case, context={"request": request}).data)
+        case = get_object_or_404(self.scope(_annotated()), pk=pk)
+        return Response(self.detail_serializer(case, context={"request": request}).data)
 
 
 def _error_response(exc: services.WorkflowError) -> Response:
@@ -206,20 +222,29 @@ def _error_response(exc: services.WorkflowError) -> Response:
 
 
 class CaseTransitionView(CaseAPIView):
+    detail_serializer = CaseDetailSerializer
+
+    def before_run(self, request, case, name, cleaned_data):
+        """Hook: return a Response to stop before the service is called."""
+        return None
+
     def post(self, request, pk, name):
         if name not in TRANSITIONS:
             return Response({"detail": f"Unknown transition {name!r}"}, status=status.HTTP_404_NOT_FOUND)
-        case = get_object_or_404(ExceptionCase.objects.select_related("payment_module"), pk=pk)
+        case = get_object_or_404(self.scope(ExceptionCase.objects.select_related("payment_module")), pk=pk)
         t = TRANSITIONS[name]
         form = t.form(data=request.data, case=case, user=request.user)
         if not form.is_valid():
             return Response({"detail": "Invalid input", "errors": form.errors}, status=status.HTTP_400_BAD_REQUEST)
+        stop = self.before_run(request, case, name, form.cleaned_data)
+        if stop is not None:
+            return stop
         try:
             t.run(case, request.user, form.cleaned_data, "api")
         except services.WorkflowError as exc:
             return _error_response(exc)
         case = _annotated().get(pk=pk)
-        return Response(CaseDetailSerializer(case, context={"request": request}).data)
+        return Response(self.detail_serializer(case, context={"request": request}).data)
 
 
 class BulkView(CaseAPIView):

@@ -6,6 +6,46 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-15
+
+- **Added: Phase 5 Slice 1 — Foundation + cases (API + React frontend).**
+  - **API v1** (new `api` app). `/api/v1/auth/{csrf,login,logout}/`,
+    `/api/v1/me/` (roles, permissions, modules, session timings),
+    `/api/v1/modules/`, `/api/v1/users/?role=`, and per module
+    `/api/v1/<module>/{meta,summary,cases}/`: case list (server-paged,
+    filters incl. new `due_date`, `ordering`), detail, history, every
+    case action, bulk take/submit/approve. Case views subclass the
+    existing `exception_management/api.py` views, so the same services
+    run. `/api/exceptions/` unchanged (P2). Self-approval needs
+    `confirm_self_approval: true` (server-enforced). Accounts with no
+    role can't log in.
+  - **Session timeout (P7)**: 15 min idle, renewed per request, ends on
+    browser close. New settings: `DJANGO_CSRF_TRUSTED_ORIGINS`,
+    `DJANGO_SECURE_COOKIES`, `FRONTEND_DIST_DIR` (see `.env.example`).
+  - **Django serves the production build** (`api/spa.py`): any non-api/
+    admin/static path → `frontend/dist`. No WhiteNoise (new package;
+    pending P9).
+  - **`config/settings.py` loads `.env` automatically** (stdlib only;
+    shell variables win).
+  - **Frontend** (new `frontend/`): Vite + React 19 + TypeScript +
+    Mantine 8. Login, app shell, permission-driven role menus, module
+    switcher (hidden while UPI only), 13-min timeout warning with return
+    to the same address, Home "my work" counts, case queue, case detail
+    and history, all case actions, bulk bar with eligibility reasons
+    (incl. R13 refusal), self-approval confirmation. No background
+    polling (would defeat the idle timeout). Bank name/logo is a text
+    placeholder (P8).
+  - Refactor: queue filters moved to `filter_queue()` in
+    `exception_management/api.py`; `digest_counts()` takes an optional
+    module.
+  - PM-verified: `python manage.py test` **540 tests, OK** on Postgres
+    (34 new); frontend type-check, lint, **Vitest 53/53**; Playwright
+    click-through **3/3** (Maker takes R01 → DRC 102 → Checker approves
+    → history; bulk-submit 3 LOW R01; R13 bulk refusal) run against a
+    copy of the dev database (`reconciliation_e2e`), so dev cases are
+    untouched. Production build served by Django checked (200 on `/`
+    and deep links; 401 on `/api/v1/me/` when logged out).
+
 ## 2026-10-12
 
 - **Added: Phase 4 Slice 2 — settlement result, gap attribution,
