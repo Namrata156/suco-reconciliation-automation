@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from core.models import BankHoliday, Notification, PaymentModule, SettlementCycle, UserActivity
+from core.models import BankHoliday, Notification, OperationLog, PaymentModule, SettlementCycle, UserActivity
 
 
 @admin.register(PaymentModule)
@@ -77,6 +77,30 @@ class NotificationAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "alert_type", "recipient", "recipient_username", "recipient_email", "subject",
                        "body", "content_type", "object_id", "dedupe_key", "status", "attempts", "last_error",
                        "next_attempt_at", "sent_at")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(OperationLog)
+class OperationLogAdmin(admin.ModelAdmin):
+    """Read-only operations log (upload, refused upload, CBS date selection,
+    run started; Phase 5 design 3.6). Visible to roles holding
+    core.view_operationlog (Administrator, Auditor)."""
+
+    list_display = ("created_at", "operation", "username", "payment_module", "business_date", "uploaded_file_id",
+                    "run_id", "source")
+    list_filter = ("operation", "payment_module", "source")
+    search_fields = ("username",)
+    date_hierarchy = "created_at"
+    readonly_fields = ("created_at", "operation", "user", "username", "payment_module", "business_date",
+                       "uploaded_file_id", "run_id", "source", "details")
 
     def has_add_permission(self, request, obj=None):
         return False

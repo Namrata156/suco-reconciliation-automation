@@ -46,6 +46,7 @@ from exception_management.models import (
 )
 from exception_management.roles import Role, has_role, user_roles
 from exception_management.services import BULK_PRIORITIES
+from file_processing.intake import date_checklists
 from file_processing.models import FileTypeConfig, ProcessingStatus, UploadedFile
 from rule_engine.models import AgeingBucket, Priority, RuleSet, RuleSetStatus, StatusCategory
 from settlement.models import MapStatus, NtslCategoryMapVersion, SettlementResult, SettlementTolerance
@@ -233,9 +234,9 @@ class SummaryView(ModuleView):
         return Response(body)
 
     def _operations(self) -> dict:
-        """Latest business date's files and settlement status. "Missing"
-        files need the expected type x cycle checklist of the business-date
-        overview (design 4.11, Slice 2) and are not counted yet (None)."""
+        """Latest business date's files and settlement status. "Missing" is
+        the expected type x cycle checklist of the business-date overview
+        (design 4.11, Slice 2)."""
         files = UploadedFile.objects.filter(payment_module=self.module, is_current=True)
         latest = files.exclude(business_date=None).order_by("-business_date").values_list("business_date", flat=True).first()
         on_date = files.filter(business_date=latest) if latest else files.none()
@@ -247,7 +248,7 @@ class SummaryView(ModuleView):
             "files_loaded": on_date.filter(processing_status=ProcessingStatus.LOADED).count(),
             "files_failed": on_date.filter(processing_status__in=(ProcessingStatus.FAILED,
                                                                   ProcessingStatus.VALIDATION_FAILED)).count(),
-            "files_missing": None,
+            "files_missing": date_checklists(self.module, [latest])[latest]["summary"]["missing"] if latest else None,
             # CBS files waiting for their date have no business date yet: all of them.
             "awaiting_date_selection": files.filter(processing_status=ProcessingStatus.AWAITING_DATE_SELECTION).count(),
             "settlement_status": result.status if result else None,

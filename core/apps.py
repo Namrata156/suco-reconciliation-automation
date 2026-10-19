@@ -11,7 +11,8 @@ class CoreConfig(AppConfig):
         # and the append-only delete guard.
         from core import signals  # noqa: F401
         from core.append_only import guard_deletes
-        from core.models import Notification, UserActivity
+        from core.models import Notification, OperationLog, UserActivity
 
         guard_deletes(UserActivity)
         guard_deletes(Notification)
+        guard_deletes(OperationLog)

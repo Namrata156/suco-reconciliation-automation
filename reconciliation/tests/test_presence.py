@@ -366,6 +366,9 @@ class ExtensibilityProofTests(TestCase):
                 "RegisterPresence",
                 "TransactionMatchGroupHistory",
                 "RegisterPresenceHistory",
+                # Phase 5 Slice 2 run tracking (migration 0004); one row per
+                # reconciliation run, unrelated to presence legs.
+                "ReconciliationRun",
             },
         )
         self.assertNotIn("switch_present", {f.name for f in RegisterPresence._meta.get_fields()})

@@ -45,11 +45,11 @@ mapping choice wasn't already resolved in doubts.md/TRACKER.md (Adjustment's
 invented -- see this backend engineer's handoff report for the full list of
 flagged assumptions.
 
-`outer_filename_pattern` values document the real observed filenames for
-future use (e.g. a real upload API/UI auto-selecting FileTypeConfig by
-filename) -- no code currently matches on these fields; UploadedFile.
-file_type_config is still chosen manually (admin/tests) since the upload
-API is a Phase 5 stub.
+`outer_filename_pattern` values document the real observed filenames. Since
+Phase 5 Slice 2 the upload detection (file_processing/intake.py) uses them,
+with `outer_date_format` (the date written in the file name; added
+2026-10-15, existing rows filled by data migration file_processing 0010),
+to propose each file's type, cycle and business date; the user confirms.
 """
 from __future__ import annotations
 
@@ -164,6 +164,7 @@ _CONFIGS = [
         is_cycle_wise=True,
         cycle_set=_CYCLES_1_TO_10,
         outer_filename_pattern=r"^UPIRAWDATAACQSSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_date_format="%d%m%y",
     ),
     dict(
         file_type_code="RAW_DATA",
@@ -186,6 +187,7 @@ _CONFIGS = [
         is_cycle_wise=True,
         cycle_set=_CYCLES_1_TO_10,
         outer_filename_pattern=r"^UPIRAWDATAISSSSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_date_format="%d%m%y",
     ),
     dict(
         file_type_code="MERCHANT_RAW_DATA",
@@ -209,6 +211,7 @@ _CONFIGS = [
         is_cycle_wise=True,
         cycle_set=_CYCLES_1_TO_10,
         outer_filename_pattern=r"^UPIMERCHANTRAWDATAACQSSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_date_format="%d%m%y",
     ),
     dict(
         file_type_code="MERCHANT_RAW_DATA",
@@ -229,6 +232,7 @@ _CONFIGS = [
         is_cycle_wise=True,
         cycle_set=_CYCLES_1_TO_10,
         outer_filename_pattern=r"^UPIMERCHANTRAWDATAISSSSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_date_format="%d%m%y",
     ),
     dict(
         file_type_code="MERCHANT_RAW_DATA_BBP",
@@ -255,6 +259,7 @@ _CONFIGS = [
         # what the 2026-07-14 sample data happened to contain.
         cycle_set=_CYCLES_1_TO_10,
         outer_filename_pattern=r"^UPIBBPMERCHANTRAWDATAACQSSK\d{6}_(?:[1-9]|10)C\.csv$",
+        outer_date_format="%d%m%y",
     ),
     dict(
         file_type_code="DRC",
@@ -294,6 +299,7 @@ _CONFIGS = [
         date_validation_mode="EXACT_MATCH",
         is_cycle_wise=False,
         outer_filename_pattern=r"^Debit Reversal Confirmation Report__SSK_\d{4}-\d{2}-\d{2}\.csv$",
+        outer_date_format="%Y-%m-%d",
     ),
     dict(
         file_type_code="TIMEOUT",
@@ -328,6 +334,7 @@ _CONFIGS = [
         date_validation_mode="EXACT_MATCH",
         is_cycle_wise=False,
         outer_filename_pattern=r"^UPI Time Out Cases Report_SSK_\d{4}-\d{2}-\d{2}\.csv$",
+        outer_date_format="%Y-%m-%d",
     ),
     dict(
         file_type_code="ADJUSTMENT",
@@ -370,6 +377,7 @@ _CONFIGS = [
         date_validation_mode="EXACT_MATCH",
         is_cycle_wise=False,
         outer_filename_pattern=r"^UPI Adjustment Report_SSK_\d{4}-\d{2}-\d{2}\.csv$",
+        outer_date_format="%Y-%m-%d",
     ),
     dict(
         file_type_code="NTSL",
@@ -398,6 +406,7 @@ _CONFIGS = [
         is_cycle_wise=True,
         cycle_set=[*_CYCLES_1_TO_10, "DC1", "DC2"],
         outer_filename_pattern=r"^UPI_NTSLSSK\d{6}_(?:(?:[1-9]|10)C|DC[12])\.xls$",
+        outer_date_format="%d%m%y",
     ),
 ]
 

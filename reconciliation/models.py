@@ -35,6 +35,7 @@ approved plan for this slice):
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import models
 
 from core.models import PaymentModule, SettlementCycle
@@ -337,3 +338,71 @@ class RegisterPresenceHistory(models.Model):
 
     def __str__(self) -> str:
         return f"History:{self.match_group_id}:{self.leg} present={self.present} (orig {self.original_id})"
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation run for one business date (Phase 5 design 4.11, owner P6 a)
+# ---------------------------------------------------------------------------
+class RunStatus(models.TextChoices):
+    QUEUED = "QUEUED", "Queued"
+    RUNNING = "RUNNING", "Running"
+    SUCCEEDED = "SUCCEEDED", "Succeeded"
+    FAILED = "FAILED", "Failed"
+
+
+ACTIVE_RUN_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
+
+
+class RunStep(models.TextChoices):
+    """The run's steps, in the order design 4.11 gives."""
+
+    PRESENCE = "PRESENCE", "Presence matrix"
+    RULES = "RULES", "Rule evaluation + case sync"
+    SETTLEMENT = "SETTLEMENT", "Settlement reconciliation"
+
+
+RUN_STEPS = (RunStep.PRESENCE, RunStep.RULES, RunStep.SETTLEMENT)
+
+
+class ReconciliationRun(models.Model):
+    """
+    One press of "Run reconciliation" for one (payment module, business
+    date): the status record of the chain presence matrix -> rule
+    evaluation + case sync -> settlement reconciliation
+    (reconciliation.runs). Who started it is `requested_by` (and the
+    core.OperationLog RUN_STARTED row). A re-run is a new row; rows are
+    never deleted. At most one QUEUED / RUNNING run per date.
+
+    `steps` = {step: {"status", "started_at", "finished_at", "summary"}};
+    `summary` is what the existing service returned (presence counts, rule
+    counts and case sync counts, settlement status).
+    """
+
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="reconciliation_runs")
+    business_date = models.DateField()
+    status = models.CharField(max_length=10, choices=RunStatus.choices, default=RunStatus.QUEUED)
+    current_step = models.CharField(max_length=12, choices=RunStep.choices, blank=True)
+    steps = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    requested_by_username = models.CharField(max_length=150, blank=True)
+    source = models.CharField(max_length=30, blank=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+        indexes = [models.Index(fields=["payment_module", "business_date"], name="reconrun_date_idx")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment_module", "business_date"],
+                condition=models.Q(status__in=["QUEUED", "RUNNING"]),
+                name="one_active_reconciliation_run_per_date",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Run #{self.pk} {self.payment_module_id} {self.business_date} {self.status}"

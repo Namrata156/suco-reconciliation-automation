@@ -226,6 +226,52 @@ class UserActivity(AppendOnlyModel):
 
 
 # ---------------------------------------------------------------------------
+# Operations log (Phase 5 design 3.6 + Amendment 1; Slice 2)
+# ---------------------------------------------------------------------------
+class OperationType(models.TextChoices):
+    FILE_UPLOADED = "FILE_UPLOADED", "File uploaded"
+    FILE_REFUSED = "FILE_REFUSED", "File upload refused"
+    BUSINESS_DATE_SELECTED = "BUSINESS_DATE_SELECTED", "Business date selected (CBS)"
+    RUN_STARTED = "RUN_STARTED", "Reconciliation run started"
+
+
+class OperationLog(AppendOnlyModel):
+    """
+    Who did which operations step, when (design 3.6): uploading a file,
+    refusing one, choosing a CBS business date, starting a reconciliation
+    run. Append-only (core.append_only), like CaseEvent and UserActivity.
+
+    `uploaded_file_id` and `run_id` are plain ids, not foreign keys: core is
+    below file_processing and reconciliation, and an audit row must outlive
+    anything it mentions. `details` holds what the step needs to be read
+    later (file name, hash, refusal reasons, detected dates...).
+    """
+
+    operation = models.CharField(max_length=30, choices=OperationType.choices)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    username = models.CharField(max_length=150, blank=True)
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="+")
+    business_date = models.DateField(null=True, blank=True)
+    uploaded_file_id = models.BigIntegerField(null=True, blank=True)
+    run_id = models.BigIntegerField(null=True, blank=True)
+    source = models.CharField(max_length=30, blank=True, help_text="api / admin / ...")
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["payment_module", "business_date"], name="oplog_module_date_idx"),
+            models.Index(fields=["uploaded_file_id"], name="oplog_file_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.operation} {self.username}"
+
+
+# ---------------------------------------------------------------------------
 # Notification outbox (email-ready alerts; owner-approved plan 2026-10-11)
 # ---------------------------------------------------------------------------
 class AlertType(models.TextChoices):

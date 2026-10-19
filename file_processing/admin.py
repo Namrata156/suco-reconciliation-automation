@@ -1,14 +1,14 @@
-from celery import chain
 from django.contrib import admin, messages
 from django.template.response import TemplateResponse
 
+from core.operations import OperationError
+from file_processing.intake import select_business_date as select_business_date_service
 from file_processing.models import (
     FileTypeConfig,
     FileValidationException,
     ProcessingStatus,
     UploadedFile,
 )
-from file_processing.tasks import normalize_rows, promote_to_fact
 
 
 @admin.register(FileTypeConfig)
@@ -42,12 +42,10 @@ class UploadedFileAdmin(admin.ModelAdmin):
     @admin.action(description="Select business date for detected date range")
     def select_business_date(self, request, queryset):
         """
-        Django-admin stand-in for the interactive business-date picker
-        needed by RANGE_CONTAINS file types (e.g. CBS GL Extract): there is
-        no upload API/frontend yet (API + Front End is a Phase 5 stub), so
-        this is a custom admin action with an intermediate page rather than
-        a real product-facing UI. A real UI/API "pick from detected dates"
-        flow belongs in Phase 5 -- see tracker.md.
+        Django-admin fallback for the business-date picker needed by
+        RANGE_CONTAINS file types (e.g. CBS GL Extract). Since Phase 5
+        Slice 2 the logic lives in file_processing.intake.
+        select_business_date, shared with the API/SPA screen (design 4.10).
         """
         if queryset.count() != 1:
             self.message_user(
@@ -68,33 +66,17 @@ class UploadedFileAdmin(admin.ModelAdmin):
             return None
 
         if request.POST.get("apply"):
-            chosen_date = request.POST.get("business_date")
-            if chosen_date not in (uploaded_file.detected_dates or []):
-                self.message_user(
-                    request,
-                    f"'{chosen_date}' is not one of the dates detected in this file "
-                    f"({uploaded_file.detected_dates}).",
-                    level=messages.ERROR,
-                )
+            # Same service as the API (POST /api/v1/<module>/files/<id>/select-date/):
+            # Operations User only (P10b), date must be one of detected_dates,
+            # audited in core.OperationLog, processing resumed after commit.
+            try:
+                select_business_date_service(request.user, uploaded_file, request.POST.get("business_date"), source="admin")
+            except OperationError as exc:
+                self.message_user(request, exc.detail, level=messages.ERROR)
                 return None
-
-            # Rows were already written to the staging table by
-            # load_to_staging before the pause, so the resumed chain only
-            # needs the file id -- normalize_rows reads the staged rows back.
-            # (Any legacy pre-staging payload still sitting in
-            # pending_pipeline_context is deliberately not forwarded.)
-            uploaded_file.business_date = chosen_date
-            uploaded_file.processing_status = ProcessingStatus.STAGED
-            uploaded_file.save(update_fields=["business_date", "processing_status"])
-
-            chain(
-                normalize_rows.s({"uploaded_file_id": uploaded_file.id, "halted": False}),
-                promote_to_fact.s(),
-            ).apply_async()
-
             self.message_user(
                 request,
-                f"Business date {chosen_date} applied to '{uploaded_file.filename}'; "
+                f"Business date {request.POST.get('business_date')} applied to '{uploaded_file.filename}'; "
                 "normalization and load re-queued.",
                 level=messages.SUCCESS,
             )

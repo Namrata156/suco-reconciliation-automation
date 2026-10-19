@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.contrib import admin
 
 from reconciliation.models import (
+    ReconciliationRun,
     RegisterPresence,
     RegisterPresenceHistory,
     TransactionMatchGroup,
@@ -107,6 +108,28 @@ class RegisterPresenceHistoryAdmin(admin.ModelAdmin):
     list_filter = ("leg", "present")
 
     def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ReconciliationRun)
+class ReconciliationRunAdmin(admin.ModelAdmin):
+    """Read-only: runs are started from the business-date overview
+    (POST /api/v1/<module>/dates/<date>/run/, reconciliation.runs)."""
+
+    list_display = ("id", "payment_module", "business_date", "status", "current_step", "requested_by_username",
+                    "requested_at", "finished_at")
+    list_filter = ("status", "payment_module")
+    date_hierarchy = "business_date"
+    readonly_fields = ("payment_module", "business_date", "status", "current_step", "steps", "error", "requested_by",
+                       "requested_by_username", "source", "requested_at", "started_at", "finished_at")
+
+    def has_add_permission(self, request, obj=None):
         return False
 
     def has_change_permission(self, request, obj=None):

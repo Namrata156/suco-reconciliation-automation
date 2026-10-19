@@ -251,6 +251,15 @@ class UploadedFile(models.Model):
             "choices without re-parsing. Unused for EXACT_MATCH file types."
         ),
     )
+    batch_business_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "The business date the uploader chose for the upload batch (Phase 5 Amendment 1). "
+            "EXACT_MATCH files get it as business_date at upload. RANGE_CONTAINS files (CBS) keep "
+            "business_date empty until the date is confirmed; this is the date pre-selected then."
+        ),
+    )
     pending_pipeline_context = models.JSONField(
         null=True,
         blank=True,

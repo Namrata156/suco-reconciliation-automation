@@ -209,6 +209,15 @@ FILE_PROCESSING_WORK_DIR = os.environ.get(
     str(BASE_DIR / "var" / "file_processing"),
 )
 
+# Web upload (Phase 5 design 2.4 / 4.8). The CBS file is about 95-100 MB a
+# day, so one file may be up to 150 MB (the web server's limit must allow
+# the same). Django writes any upload over FILE_UPLOAD_MAX_MEMORY_SIZE to a
+# temporary file, never into memory; FILE_UPLOAD_TEMP_DIR puts those on the
+# data drive (blank = the OS temp folder). Uploaded files are kept under
+# FILE_PROCESSING_WORK_DIR/uploads/<module>/<business date>/.
+UPLOAD_MAX_FILE_BYTES = int(os.environ.get("UPLOAD_MAX_FILE_BYTES", "").strip() or 150 * 1024 * 1024)
+FILE_UPLOAD_TEMP_DIR = os.environ.get("FILE_UPLOAD_TEMP_DIR", "").strip() or None
+
 # --------------------------------------------------------------------------
 # Email alerts (Phase 3 design section 3; owner-approved plan 2026-10-11)
 # --------------------------------------------------------------------------

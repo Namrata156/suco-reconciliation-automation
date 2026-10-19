@@ -14,8 +14,12 @@ direct-call pattern used against this file in test_cbs_parser.py) against
 the real 154,661-row sample `14072026/cbs_report/b5rg090oa.xls`, confirmed
 "From 13/07/2026 To 15/07/2026". The second class is a lighter-weight
 admin-level smoke test using Django's test Client against the actual
-admin.py code path, with a stub `pending_pipeline_context` and Celery's `chain`/`apply_async`
-mocked out so it doesn't require a live broker.
+admin.py code path, with a stub `pending_pipeline_context` and Celery's `chain`
+mocked out so it doesn't require a live broker. Since Phase 5 Slice 2 the
+admin action delegates to file_processing.intake.select_business_date, which
+writes core.OperationLog and queues the resume chain on transaction commit,
+so `chain` is patched in file_processing.intake and on-commit callbacks are
+captured and executed.
 """
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from core.models import PaymentModule, RegisterType
+from core.models import OperationLog, OperationType, PaymentModule, RegisterType
 from file_processing.models import (
     ContainerFormat,
     DateValidationMode,
@@ -178,8 +182,10 @@ class SelectBusinessDateAdminActionTests(TestCase):
     """Admin-level smoke test exercising the actual admin.py code path (the
     Phase-1 Django-admin stand-in for the real Phase 5 upload API/UI) --
     not just the task functions directly. Uses a stub (post-redesign shaped)
-    `pending_pipeline_context`, and mocks `chain`/`apply_async` so this doesn't require a live
-    Celery broker."""
+    `pending_pipeline_context`, and mocks `chain` (in file_processing.intake,
+    where the Slice 2 service queues the resume after commit) so this doesn't
+    require a live Celery broker. Role refusal and the audit row's user/source
+    are covered by api.tests.test_slice2.AdminDateSelectionAuditTests."""
 
     def setUp(self):
         self.payment_module = _build_payment_module()
@@ -215,7 +221,10 @@ class SelectBusinessDateAdminActionTests(TestCase):
         self.assertEqual(intermediate_response.status_code, 200)
         self.assertIn(b"2026-07-14", intermediate_response.content)
 
-        with mock.patch("file_processing.admin.chain") as mock_chain:
+        with (
+            mock.patch("file_processing.intake.chain") as mock_chain,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             apply_response = self.client.post(
                 changelist_url,
                 data={
@@ -235,6 +244,11 @@ class SelectBusinessDateAdminActionTests(TestCase):
             normalize_sig.args, ({"uploaded_file_id": self.uploaded_file.id, "halted": False},)
         )
         self.assertEqual(promote_sig.task, "file_processing.tasks.promote_to_fact")
+        mock_chain.return_value.apply_async.assert_called_once_with()
+        # Audited (Slice 2): one BUSINESS_DATE_SELECTED row for this file and date.
+        log = OperationLog.objects.get(operation=OperationType.BUSINESS_DATE_SELECTED)
+        self.assertEqual(log.uploaded_file_id, self.uploaded_file.id)
+        self.assertEqual(log.business_date, date(2026, 7, 14))
 
         self.uploaded_file.refresh_from_db()
         self.assertEqual(self.uploaded_file.business_date, date(2026, 7, 14))
@@ -245,7 +259,10 @@ class SelectBusinessDateAdminActionTests(TestCase):
     def test_action_rejects_date_not_in_detected_dates(self):
         changelist_url = reverse("admin:file_processing_uploadedfile_changelist")
 
-        with mock.patch("file_processing.admin.chain") as mock_chain:
+        with (
+            mock.patch("file_processing.intake.chain") as mock_chain,
+            self.captureOnCommitCallbacks(execute=True) as callbacks,
+        ):
             response = self.client.post(
                 changelist_url,
                 data={
@@ -257,7 +274,9 @@ class SelectBusinessDateAdminActionTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(callbacks, [])
         mock_chain.assert_not_called()
+        self.assertFalse(OperationLog.objects.filter(operation=OperationType.BUSINESS_DATE_SELECTED).exists())
 
         self.uploaded_file.refresh_from_db()
         self.assertIsNone(self.uploaded_file.business_date)

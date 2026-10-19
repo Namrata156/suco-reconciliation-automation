@@ -22,3 +22,14 @@ def generate_presence_matrix(payment_module_id: int, business_date_iso: str) -> 
     business_date_ = date.fromisoformat(business_date_iso)
     result = build_presence_matrix(payment_module, business_date_)
     return result.as_dict()
+
+
+@shared_task
+def run_business_date(run_id: int) -> dict:
+    """The "Run reconciliation" chain for one date (Phase 5 design 4.11):
+    presence matrix -> rule evaluation + case sync -> settlement. See
+    reconciliation.runs.execute_run."""
+    from reconciliation.runs import execute_run
+
+    run = execute_run(run_id)
+    return {"run_id": run.pk, "status": run.status, "error": run.error}
