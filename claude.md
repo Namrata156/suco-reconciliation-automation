@@ -123,8 +123,11 @@ anything "done."
 
 ## Development
 
-Commands verified 2026-10-15 (Phase 5 Slice 1). Windows dev laptop,
-7.6 GB RAM: run the Django suite, Vite and Playwright one at a time.
+Commands verified 2026-10-15 (Phase 5 Slice 1), updated 2026-10-20
+(Slice 2). Windows dev laptop, 11.6 GB RAM (was 7.6 GB): still run the
+full Django suite alone — next to a frontend build it took 77 min
+instead of ~15. Keep the laptop on mains power and awake during long
+e2e runs (a standby mid-run froze the worker and expired the session).
 
 **Services** (PostgreSQL on host port 5434, Redis 6379, Adminer 8083):
 `docker compose up -d` from the project root.
@@ -134,7 +137,13 @@ Commands verified 2026-10-15 (Phase 5 Slice 1). Windows dev laptop,
 - `.venv\Scripts\activate`
 - `python manage.py migrate`
 - `python manage.py runserver` (port 8000; also serves `frontend/dist`)
-- `python manage.py test` — full suite, takes ~17 min
+- `python manage.py test` — full suite (622 tests), takes ~15 min
+- Brand-new database: `migrate` alone leaves no rule set or NTSL
+  mapping (their seed migrations skip on an empty DB). Then run
+  `seed_settlement_cycles`, `seed_file_type_configs`, `seed_rule_sets`,
+  `seed_ntsl_category_map`. Tolerance v1 seeds itself on first use.
+- Celery worker (needed for uploads and runs):
+  `.venv\Scripts\celery.exe -A config worker --pool=solo -l info`
 
 **Frontend** (`frontend/`; set `TEMP`/`TMP` to `D:\tmp` first; npm cache
 and prefix are on D:):
@@ -148,3 +157,12 @@ and prefix are on D:):
   data: start Django with `POSTGRES_DB=reconciliation_e2e` (users
   `e2e_maker` / `e2e_checker`). It changes cases, so re-clone the copy
   from `reconciliation` when it runs out of OPEN LOW R01 cases.
+- Slice 2 click-through, run on its own:
+  `npx playwright test e2e/slice2.spec.ts` with
+  `E2E_BASE_URL=http://localhost:8000` (the build served by Django),
+  `E2E_OPS_USER`/`E2E_OPS_PASSWORD` (user `suco`, Operations User), and
+  Django + Celery started with `POSTGRES_DB=reconciliation_e2e_s2`,
+  `FILE_PROCESSING_WORK_DIR=D:/tmp/e2e_s2_work`. It needs a brand-new
+  DB each time (the same files are refused as duplicates): drop and
+  re-create `reconciliation_e2e_s2`, migrate, seed (above), add the
+  user, empty the work folder. Takes ~3 min.
