@@ -21,17 +21,44 @@ import type {
   CaseEventInfo,
   CaseFilters,
   CaseListItem,
+  CodeChangeProposal,
+  CodeChangeRequest,
+  CodeRequestFilters,
   DateFilters,
   DetectResult,
   FileFilters,
   FileListPage,
   FileValidationExceptionInfo,
+  GroupDetail,
+  MapEntry,
+  MapEntryFilters,
+  MappingProposal,
+  MapVersion,
+  MapVersionDetail,
   Me,
   ModuleMeta,
   ModuleSummary,
+  NtslMappingState,
   Paginated,
   PaymentModuleRef,
+  PendingApprovalsPage,
   ReconciliationRunInfo,
+  ResponseCodeFilters,
+  ResponseCodeListPage,
+  ResultFilters,
+  ResultRow,
+  ResultSummary,
+  SettingsApprovePayload,
+  SettingsDecisionResults,
+  SettingsKind,
+  SettingsRejectPayload,
+  SettlementDate,
+  SettlementTransactionFilters,
+  SettlementTransactionsPage,
+  ToleranceDetail,
+  ToleranceProposal,
+  ToleranceState,
+  ToleranceVersion,
   TransitionName,
   TransitionPayloads,
   UploadedFileDetail,
@@ -393,4 +420,156 @@ export function getDate(module: string, businessDate: string): Promise<BusinessD
 /** Queues presence -> rules + case sync -> settlement (202). Poll getDate for its progress. */
 export function startRun(module: string, businessDate: string): Promise<ReconciliationRunInfo> {
   return request<ReconciliationRunInfo>('POST', `${mod(module)}/dates/${encodeURIComponent(businessDate)}/run/`);
+}
+
+// ---------------------------------------------------------------------------
+// results and settlement (design 4.12-4.15, Slice 3): read-only, all roles.
+// 404 = nothing computed for the date yet.
+// ---------------------------------------------------------------------------
+const day = (module: string, businessDate: string) => `${mod(module)}/dates/${encodeURIComponent(businessDate)}`;
+
+export function getResultSummary(module: string, businessDate: string): Promise<ResultSummary> {
+  return request<ResultSummary>('GET', `${day(module, businessDate)}/results/summary/`);
+}
+
+export function listResults(
+  module: string,
+  businessDate: string,
+  filters: ResultFilters,
+): Promise<Paginated<ResultRow>> {
+  return request<Paginated<ResultRow>>('GET', `${day(module, businessDate)}/results/`, { query: { ...filters } });
+}
+
+export function getGroup(module: string, businessDate: string, id: number): Promise<GroupDetail> {
+  return request<GroupDetail>('GET', `${day(module, businessDate)}/groups/${id}/`);
+}
+
+export function getSettlement(module: string, businessDate: string): Promise<SettlementDate> {
+  return request<SettlementDate>('GET', `${day(module, businessDate)}/settlement/`);
+}
+
+/** Where the contributing transactions come from: a date's current result, or a settlement case's. */
+export type SettlementSource = { businessDate: string } | { caseId: number };
+
+export function listSettlementTransactions(
+  module: string,
+  source: SettlementSource,
+  filters: SettlementTransactionFilters,
+): Promise<SettlementTransactionsPage> {
+  const path =
+    'caseId' in source
+      ? `${mod(module)}/cases/${source.caseId}/settlement/transactions/`
+      : `${day(module, source.businessDate)}/settlement/transactions/`;
+  return request<SettlementTransactionsPage>('GET', path, { query: { ...filters } });
+}
+
+// ---------------------------------------------------------------------------
+// settings and approvals (design 4.16, Slice 3). The services check the role
+// (403), the status (409, someone decided first) and the input (400).
+// ---------------------------------------------------------------------------
+const settings = (module: string) => `${mod(module)}/settings`;
+
+export function listResponseCodes(module: string, filters: ResponseCodeFilters): Promise<ResponseCodeListPage> {
+  return request<ResponseCodeListPage>('GET', `${settings(module)}/response-codes/`, { query: { ...filters } });
+}
+
+export function listCodeRequests(module: string, filters: CodeRequestFilters): Promise<Paginated<CodeChangeRequest>> {
+  return request<Paginated<CodeChangeRequest>>('GET', `${settings(module)}/response-codes/requests/`, {
+    query: { ...filters },
+  });
+}
+
+/** Maker: 201 with the new PENDING request. */
+export function proposeCodeChange(module: string, payload: CodeChangeProposal): Promise<CodeChangeRequest> {
+  return request<CodeChangeRequest>('POST', `${settings(module)}/response-codes/requests/`, { body: payload });
+}
+
+export function getNtslMapping(module: string): Promise<NtslMappingState> {
+  return request<NtslMappingState>('GET', `${settings(module)}/ntsl-mapping/`);
+}
+
+/** Maker: 201 with the new PENDING version (refused if a loaded description would be unmapped). */
+export function proposeMappingChange(module: string, payload: MappingProposal): Promise<MapVersionDetail> {
+  return request<MapVersionDetail>('POST', `${settings(module)}/ntsl-mapping/`, { body: payload });
+}
+
+export function listMapVersions(
+  module: string,
+  filters: { status?: string; page?: number; page_size?: number } = {},
+): Promise<Paginated<MapVersion>> {
+  return request<Paginated<MapVersion>>('GET', `${settings(module)}/ntsl-mapping/versions/`, {
+    query: { ...filters },
+  });
+}
+
+export function getMapVersion(module: string, id: number): Promise<MapVersionDetail> {
+  return request<MapVersionDetail>('GET', `${settings(module)}/ntsl-mapping/versions/${id}/`);
+}
+
+export function listMapEntries(module: string, versionId: number, filters: MapEntryFilters): Promise<Paginated<MapEntry>> {
+  return request<Paginated<MapEntry>>('GET', `${settings(module)}/ntsl-mapping/versions/${versionId}/entries/`, {
+    query: { ...filters },
+  });
+}
+
+export function getTolerance(module: string): Promise<ToleranceState> {
+  return request<ToleranceState>('GET', `${settings(module)}/tolerance/`);
+}
+
+/** Administrator: 201 with the new PENDING version. */
+export function proposeTolerance(module: string, payload: ToleranceProposal): Promise<ToleranceDetail> {
+  return request<ToleranceDetail>('POST', `${settings(module)}/tolerance/`, { body: payload });
+}
+
+export function listToleranceVersions(
+  module: string,
+  filters: { status?: string; page?: number; page_size?: number } = {},
+): Promise<Paginated<ToleranceVersion>> {
+  return request<Paginated<ToleranceVersion>>('GET', `${settings(module)}/tolerance/versions/`, {
+    query: { ...filters },
+  });
+}
+
+export function listPendingApprovals(
+  module: string,
+  filters: { kind?: string; page?: number; page_size?: number } = {},
+): Promise<PendingApprovalsPage> {
+  return request<PendingApprovalsPage>('GET', `${settings(module)}/pending/`, { query: { ...filters } });
+}
+
+const DECISION_PATH: Record<SettingsKind, string> = {
+  response_code: 'response-codes/requests',
+  ntsl_mapping: 'ntsl-mapping',
+  tolerance: 'tolerance',
+};
+
+/**
+ * Checker: approve or reject a settings proposal. Approving your own
+ * proposal needs confirm_self_approval: true (else 400 with
+ * errors.confirm_self_approval, as for cases); reject needs a reason.
+ */
+export function decideSetting<K extends SettingsKind>(
+  module: string,
+  kind: K,
+  id: number,
+  decision: 'approve',
+  payload: SettingsApprovePayload,
+): Promise<SettingsDecisionResults[K]>;
+export function decideSetting<K extends SettingsKind>(
+  module: string,
+  kind: K,
+  id: number,
+  decision: 'reject',
+  payload: SettingsRejectPayload,
+): Promise<SettingsDecisionResults[K]>;
+export function decideSetting<K extends SettingsKind>(
+  module: string,
+  kind: K,
+  id: number,
+  decision: 'approve' | 'reject',
+  payload: SettingsApprovePayload | SettingsRejectPayload,
+): Promise<SettingsDecisionResults[K]> {
+  return request<SettingsDecisionResults[K]>('POST', `${settings(module)}/${DECISION_PATH[kind]}/${id}/${decision}/`, {
+    body: payload,
+  });
 }

@@ -2,6 +2,7 @@
 import { render } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router';
+import { vi } from 'vitest';
 
 import type {
   ActionTypeMeta,
@@ -146,6 +147,71 @@ export const META: ModuleMeta = {
   bulk_priorities: ['LOW', 'MEDIUM'],
   case_orderings: ['age', 'business_date', 'due_date', 'priority'],
   self_approval_message: 'You submitted this action; approving it will be recorded as self-approved.',
+  // Slice 3 (api/views.py MetaView); file_type_configs is FILE_TYPES below.
+  file_type_configs: [],
+  processing_statuses: [
+    { value: 'RECEIVED', label: 'Received', state: 'PROCESSING' },
+    { value: 'STAGED', label: 'Staged (raw rows written to the per-file-type staging table)', state: 'PROCESSING' },
+    { value: 'AWAITING_DATE_SELECTION', label: 'Awaiting business date selection', state: 'AWAITING_DATE_SELECTION' },
+    { value: 'LOADED', label: 'Loaded', state: 'LOADED' },
+    { value: 'VALIDATION_FAILED', label: 'Validation failed', state: 'FAILED' },
+    { value: 'FAILED', label: 'Failed', state: 'FAILED' },
+  ],
+  match_group_statuses: [
+    { value: 'MATCHED', label: 'Matched' },
+    { value: 'UNMATCHED', label: 'Unmatched' },
+  ],
+  presence_patterns: [
+    { value: 'CBS_AND_NPCI', label: 'CBS and NPCI' },
+    { value: 'CBS_ONLY', label: 'CBS only' },
+    { value: 'NPCI_ONLY', label: 'NPCI only' },
+    { value: 'NEITHER', label: 'Neither (overlay rows only)' },
+  ],
+  result_orderings: ['due_date', 'priority', 'processing_status', 'rrn', 'rule_code', 'status_category'],
+  settlement_statuses: [
+    { value: 'TALLIED', label: 'Tallied' },
+    { value: 'UNEXPLAINED', label: 'Unexplained difference' },
+    { value: 'NOT_READY', label: 'Not ready (self-check or rule results missing)' },
+  ],
+  self_check_statuses: [
+    { value: 'PASS', label: 'Pass' },
+    { value: 'FAIL', label: 'Fail' },
+    { value: 'MISSING', label: 'No NTSL lines loaded for this cycle' },
+  ],
+  settlement_sides: [
+    { value: 'REMITTER', label: 'Remitter (SSK pays)' },
+    { value: 'BENEFICIARY', label: 'Beneficiary (SSK receives)' },
+  ],
+  settlement_transaction_kinds: [
+    { value: 'npci', label: 'NTSL-settled NPCI rows other than G01 (G02-G06)' },
+    { value: 'sop', label: "SOP check items: the RRN's CBS net minus its NTSL net (G07, G08, R06b...)" },
+    { value: 'adjustments', label: 'Money-moving Adjustment rows assigned to DC1 / DC2 (G09)' },
+    { value: 'z', label: 'Rule results that move no NTSL money (Z)' },
+  ],
+  ntsl_categories: [
+    { value: 'TXN_REMITTER', label: 'Remitter transaction amount (SSK pays)' },
+    { value: 'FEE', label: 'Interchange fee' },
+  ],
+  code_flags: [
+    { value: 'DRC', label: 'DRC (Debit Reversal Confirmation)' },
+    { value: 'RET', label: 'RET (Return)' },
+  ],
+  settings_statuses: [
+    { value: 'PENDING', label: 'Pending approval' },
+    { value: 'ACTIVE', label: 'Active' },
+    { value: 'RETIRED', label: 'Retired' },
+    { value: 'REJECTED', label: 'Rejected' },
+  ],
+  change_request_statuses: [
+    { value: 'PENDING', label: 'Pending approval' },
+    { value: 'APPROVED', label: 'Approved and applied' },
+    { value: 'REJECTED', label: 'Rejected' },
+  ],
+  settings_kinds: [
+    { value: 'response_code', label: 'Response code change' },
+    { value: 'ntsl_mapping', label: 'NTSL category mapping change' },
+    { value: 'tolerance', label: 'Settlement tolerance change' },
+  ],
 };
 
 const NO_FLAGS = {
@@ -288,6 +354,33 @@ export function makeDateOverview(over: Partial<BusinessDateOverview> = {}): Busi
     ...over,
   };
 }
+
+// --- Slice 3: fetch routed by address ---------------------------------------
+export const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+type Reply = unknown | ((init: RequestInit | undefined, url: string) => Response);
+
+/**
+ * A fetch stub answering by address: the first route whose path (without the
+ * query) ends with the key wins; a function gets (init, url) and returns a
+ * Response, anything else is sent as JSON 200. Unknown addresses are 404.
+ */
+export function routeFetch(routes: Record<string, Reply>) {
+  const keys = Object.keys(routes).sort((a, b) => b.length - a.length);
+  return vi.fn(async (input: string, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split('?')[0] ?? '';
+    const key = keys.find((k) => path.endsWith(k));
+    if (key === undefined) return json(404, { detail: `No route for ${url}` });
+    const reply = routes[key];
+    return typeof reply === 'function' ? (reply as (i: RequestInit | undefined, u: string) => Response)(init, url) : json(200, reply);
+  });
+}
+
+/** The JSON body a stubbed fetch call sent. */
+export const sentBody = (call: unknown[] | undefined) =>
+  JSON.parse(String((call?.[1] as RequestInit | undefined)?.body ?? 'null')) as unknown;
 
 export function renderWithProviders(ui: ReactElement, { route = '/' }: { route?: string } = {}) {
   const client = makeQueryClient();

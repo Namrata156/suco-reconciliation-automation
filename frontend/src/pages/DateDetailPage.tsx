@@ -2,7 +2,8 @@
  * One business date (design 4.11, Amendment 1 step 3): the summary, the run
  * panel with the "Run" button (Operations User), the expected-files
  * checklist, files outside the checklist, earlier runs and the operations
- * history. Refreshes itself while a run is active or files are being
+ * history, and the reconciliation results summary (design 4.12, Slice 3)
+ * with links to the results list and the settlement. Refreshes itself while a run is active or files are being
  * processed (lib/polling.ts).
  */
 import { Alert, Anchor, Card, List, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
@@ -18,6 +19,7 @@ import { AutoRefresh } from '../components/AutoRefresh';
 import { RunStatusBadge, SettlementStatusBadge } from '../components/Badges';
 import { Checklist } from '../features/dates/Checklist';
 import { RunPanel } from '../features/dates/RunPanel';
+import { ResultsSummaryPanel } from '../features/results/ResultsSummaryPanel';
 import { OperationHistory } from '../features/files/OperationHistory';
 import { useModuleCode } from '../hooks/module';
 import { formatCount, formatDate, formatDateTime, formatRupees } from '../lib/format';
@@ -69,6 +71,8 @@ export function DateDetailPage() {
       void qc.invalidateQueries({ queryKey: ['dates', module] });
       void qc.invalidateQueries({ queryKey: ['summary', module] });
       void qc.invalidateQueries({ queryKey: ['cases', module] });
+      void qc.invalidateQueries({ queryKey: ['results-summary', module, businessDate] });
+      void qc.invalidateQueries({ queryKey: ['settlement', module, businessDate] });
     }
   };
 
@@ -150,10 +154,22 @@ export function DateDetailPage() {
         <Tile label="Settlement">
           <SettlementStatusBadge value={d.settlement?.status} />
           {d.settlement && <Text size="xs">Unexplained {formatRupees(d.settlement.unexplained_amount)}</Text>}
+          {d.settlement && (
+            <Anchor component={Link} to={`/${module}/dates/${d.business_date}/settlement`} size="sm">
+              Open the settlement
+            </Anchor>
+          )}
         </Tile>
       </SimpleGrid>
 
       <RunPanel overview={d} canRun={can(me.permissions, 'files.upload')} onRun={run} />
+
+      <ResultsSummaryPanel
+        module={module}
+        businessDate={d.business_date}
+        runId={d.rule_evaluation?.id ?? null}
+        enabled={d.matrix.built || d.rule_evaluation !== null}
+      />
 
       <Stack gap="xs" component="section" aria-labelledby="checklist-title">
         <Title order={2} size="h4" id="checklist-title">

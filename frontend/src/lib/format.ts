@@ -70,6 +70,20 @@ export function formatDateTime(iso: string | null | undefined): string {
   return `${p.day}-${MONTHS[Number(p.month) - 1]}-${p.year} ${p.hour}:${p.minute} IST`;
 }
 
+/** Any JSON value as one line of text: null/"" -> "-", objects as JSON. */
+export function displayValue(v: unknown): string {
+  if (v === null || v === undefined || v === '') return '-';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+/** A 2-decimal amount string as the API sends it ("35.00", "-1070.50"). */
+export const isAmountString = (v: unknown): v is string => typeof v === 'string' && /^-?\d+\.\d{2}$/.test(v);
+
+/** Yes / No / - for a nullable flag. */
+export const yesNo = (v: boolean | null | undefined) =>
+  v === null || v === undefined ? '-' : v ? 'Yes' : 'No';
+
 /** Today's date in IST as ISO (the bank's business day). */
 export function todayIst(now = new Date()): string {
   const p = Object.fromEntries(IST_PARTS.formatToParts(now).map((x) => [x.type, x.value]));

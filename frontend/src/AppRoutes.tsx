@@ -1,3 +1,4 @@
+import { lazy } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
 
 import { RequireAuth, useMe } from './auth/auth';
@@ -12,6 +13,24 @@ import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { UploadPage } from './pages/UploadPage';
+
+// Slice 3 screens load on first use (the main bundle was already over Vite's
+// 500 kB advisory). AppLayout shows a placeholder while a chunk loads.
+const settingsChunk = () => import('./pages/SettingsPage');
+const ResultsPage = lazy(() => import('./pages/ResultsPage').then((m) => ({ default: m.ResultsPage })));
+const GroupDetailPage = lazy(() =>
+  import('./pages/GroupDetailPage').then((m) => ({ default: m.GroupDetailPage })),
+);
+const SettlementPage = lazy(() =>
+  import('./pages/SettlementPage').then((m) => ({ default: m.SettlementPage })),
+);
+const SettingsPage = lazy(() => settingsChunk().then((m) => ({ default: m.SettingsPage })));
+const ResponseCodesTab = lazy(() => settingsChunk().then((m) => ({ default: m.ResponseCodesTab })));
+const NtslMappingTab = lazy(() => settingsChunk().then((m) => ({ default: m.NtslMappingTab })));
+const ToleranceTab = lazy(() => settingsChunk().then((m) => ({ default: m.ToleranceTab })));
+const PendingApprovalsPage = lazy(() =>
+  import('./pages/PendingApprovalsPage').then((m) => ({ default: m.PendingApprovalsPage })),
+);
 
 function IndexRedirect() {
   const me = useMe();
@@ -48,6 +67,16 @@ export function AppRoutes() {
         <Route path="files/:fileId" element={<FileDetailPage />} />
         <Route path="dates" element={<DatesPage />} />
         <Route path="dates/:businessDate" element={<DateDetailPage />} />
+        <Route path="dates/:businessDate/results" element={<ResultsPage />} />
+        <Route path="dates/:businessDate/groups/:groupId" element={<GroupDetailPage />} />
+        <Route path="dates/:businessDate/settlement" element={<SettlementPage />} />
+        <Route path="settings" element={<SettingsPage />}>
+          <Route index element={<Navigate to="response-codes" replace />} />
+          <Route path="response-codes" element={<ResponseCodesTab />} />
+          <Route path="ntsl-mapping" element={<NtslMappingTab />} />
+          <Route path="tolerance" element={<ToleranceTab />} />
+        </Route>
+        <Route path="approvals" element={<PendingApprovalsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />

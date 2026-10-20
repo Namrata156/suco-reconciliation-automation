@@ -8,16 +8,32 @@ const keys = (roles: RoleName[], builtSlice?: number) =>
   menuFor(makeMe(roles), builtSlice ? { builtSlice } : undefined).map((i) => i.key);
 
 describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
-  it('Maker: home, cases, my cases, files, business dates', () => {
-    expect(keys(['Maker'])).toEqual(['home', 'cases', 'my-cases', 'files', 'dates']);
+  it('Maker: home, cases, my cases, files, business dates, settings, pending approvals', () => {
+    expect(keys(['Maker'])).toEqual(['home', 'cases', 'my-cases', 'files', 'dates', 'settings', 'pending-approvals']);
   });
 
-  it('Checker: home, cases, awaiting my approval, files, business dates', () => {
-    expect(keys(['Checker'])).toEqual(['home', 'cases', 'awaiting-approval', 'files', 'dates']);
+  it('Checker: home, cases, awaiting my approval, files, business dates, settings, pending approvals', () => {
+    expect(keys(['Checker'])).toEqual([
+      'home',
+      'cases',
+      'awaiting-approval',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+    ]);
   });
 
   it('Administrator: the Django admin link, no maker/checker items, no upload (P10b)', () => {
-    expect(keys(['Administrator'])).toEqual(['home', 'cases', 'files', 'dates', 'django-admin']);
+    expect(keys(['Administrator'])).toEqual([
+      'home',
+      'cases',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+      'django-admin',
+    ]);
   });
 
   it('Administrator without staff status (admin_url null): no admin link', () => {
@@ -25,12 +41,12 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(items).not.toContain('django-admin');
   });
 
-  it('Operations User: upload, files and business dates (Slice 2)', () => {
-    expect(keys(['Operations User'])).toEqual(['home', 'cases', 'upload', 'files', 'dates']);
+  it('Operations User: upload, files and business dates (Slice 2), settings read-only (Slice 3)', () => {
+    expect(keys(['Operations User'])).toEqual(['home', 'cases', 'upload', 'files', 'dates', 'settings', 'pending-approvals']);
   });
 
   it('Auditor: read-only files and business dates, no upload', () => {
-    expect(keys(['Auditor'])).toEqual(['home', 'cases', 'files', 'dates']);
+    expect(keys(['Auditor'])).toEqual(['home', 'cases', 'files', 'dates', 'settings', 'pending-approvals']);
   });
 
   it('Slice 1 build: no file screens', () => {
@@ -38,7 +54,16 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
   });
 
   it('a user holding Maker and Checker sees both work lists', () => {
-    expect(keys(['Maker', 'Checker'])).toEqual(['home', 'cases', 'my-cases', 'awaiting-approval', 'files', 'dates']);
+    expect(keys(['Maker', 'Checker'])).toEqual([
+      'home',
+      'cases',
+      'my-cases',
+      'awaiting-approval',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+    ]);
   });
 
   it('no permissions: no menu', () => {
@@ -52,6 +77,18 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(keys(['Auditor'], 4)).toContain('audit');
     expect(keys(['Maker'], 4)).not.toContain('audit');
     expect(keys(['Checker'], 4)).toContain('pending-approvals');
+  });
+
+  it('Slice 2 build: no settings screens', () => {
+    expect(keys(['Checker'], 2)).toEqual(['home', 'cases', 'awaiting-approval', 'files', 'dates']);
+  });
+
+  it('pending approvals: all five roles read it (owner 2026-10-20); no results / settlement menu items', () => {
+    for (const role of ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'] as RoleName[]) {
+      expect(keys([role])).toContain('pending-approvals');
+    }
+    expect(MENU.map((i) => i.key)).not.toContain('results');
+    expect(MENU.find((i) => i.key === 'settings')?.matchPrefix).toBe(true);
   });
 
   it('never shows deferred items (NPCI uploads)', () => {

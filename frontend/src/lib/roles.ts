@@ -35,6 +35,8 @@ export interface MenuItem {
   capability: Capability;
   /** First slice whose screen backs the item; later slices are hidden. */
   slice: 1 | 2 | 3 | 4 | 'deferred';
+  /** Also highlighted on the addresses below it (settings tabs). */
+  matchPrefix?: boolean;
 }
 
 export const MENU: readonly MenuItem[] = [
@@ -66,29 +68,24 @@ export const MENU: readonly MenuItem[] = [
   },
   { key: 'files', label: 'Files', to: 'files', scoped: true, capability: 'files.view', slice: 2 },
   { key: 'dates', label: 'Business dates', to: 'dates', scoped: true, capability: 'files.view', slice: 2 },
+  // Results and settlement are per business date (design 4.12 / 4.14): they
+  // open from the business-date list and overview, not from a menu item.
   {
-    key: 'results',
-    label: 'Reconciliation results',
-    to: 'results',
+    key: 'settings',
+    label: 'Settings',
+    to: 'settings',
     scoped: true,
-    capability: 'results.view',
+    capability: 'settings.view',
     slice: 3,
+    matchPrefix: true,
   },
-  {
-    key: 'settlement',
-    label: 'Settlement',
-    to: 'settlement',
-    scoped: true,
-    capability: 'results.view',
-    slice: 3,
-  },
-  { key: 'settings', label: 'Settings', to: 'settings', scoped: true, capability: 'settings.view', slice: 3 },
+  // All five roles read the pending list; only Checkers act (owner 2026-10-20).
   {
     key: 'pending-approvals',
     label: 'Pending approvals',
     to: 'approvals',
     scoped: true,
-    capability: 'settings.approve',
+    capability: 'settings.view',
     slice: 3,
   },
   { key: 'alerts', label: 'Alerts', to: '/alerts', scoped: false, capability: 'alerts.view', slice: 4 },
@@ -113,7 +110,7 @@ export const MENU: readonly MenuItem[] = [
 ];
 
 /** The slice the running build implements. */
-export const BUILT_SLICE = 2;
+export const BUILT_SLICE = 3;
 
 /** Menu items for a user, limited to screens already built. */
 export function menuFor(

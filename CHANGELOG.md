@@ -41,6 +41,18 @@ don't duplicate this history there.
   date overlay rows split out for reuse (case detail output unchanged).
 - Verified: 622/622 Django tests, Vitest 92/92, lint/type-check/build
   clean, Slice 2 click-through passed on a fresh DB (306 cases, TALLIED).
+- **Added: Phase 5 Slice 3 frontend.** Date overview gains a results
+  summary and settlement link; new screens: results list
+  (`/:module/dates/:date/results`, filters in the address), match group
+  detail, settlement per date (SOP check, per-cycle self-check, linked
+  case, earlier results, contributing transactions), Settings tabs
+  (response codes, NTSL mapping, tolerance with propose/approve/reject and
+  the older-tolerance dates list) and Pending approvals (all roles read,
+  Checkers decide). Case detail shows contributing transactions for
+  settlement cases. Files list: statuses from meta, ACQ/ISS filter. New
+  routes lazy-loaded. Playwright `e2e/slice3.spec.ts` (needs
+  `E2E_ADMIN_*`, `E2E_CHECKER_*`; changes the tolerance, alternates Rs 1/2).
+  Verified: Vitest 121/121, lint/type-check/build clean, slice3 e2e 2/2.
 
 ## 2026-10-15
 

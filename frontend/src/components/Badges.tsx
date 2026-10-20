@@ -136,6 +136,41 @@ export function SettlementStatusBadge({ value }: { value: string | null | undefi
   );
 }
 
+// --- results, self-check and settings (Slice 3) -------------------------------
+const CHECK_STATUS: Record<string, { label: string; color: string; variant: Variant }> = {
+  PASS: { label: 'PASS', color: 'green', variant: 'light' },
+  FAIL: { label: 'FAIL', color: 'red', variant: 'filled' },
+  MISSING: { label: 'MISSING', color: 'gray', variant: 'outline' },
+};
+
+/** NTSL self-check of one cycle. */
+export function CheckStatusBadge({ value, title }: { value: string; title?: string }) {
+  const s = CHECK_STATUS[value] ?? { label: value, color: 'gray', variant: 'light' as Variant };
+  return (
+    <Badge color={s.color} variant={s.variant} title={title}>
+      {s.label}
+    </Badge>
+  );
+}
+
+const VERSION_STATUS: Record<string, { label: string; color: string; variant: Variant }> = {
+  PENDING: { label: 'Pending approval', color: 'violet', variant: 'filled' },
+  ACTIVE: { label: 'Active', color: 'green', variant: 'light' },
+  APPROVED: { label: 'Approved', color: 'teal', variant: 'light' },
+  RETIRED: { label: 'Retired', color: 'gray', variant: 'light' },
+  REJECTED: { label: 'Rejected', color: 'red', variant: 'light' },
+};
+
+/** A settings version (mapping / tolerance) or a response-code change request. */
+export function VersionStatusBadge({ value }: { value: string }) {
+  const s = VERSION_STATUS[value] ?? { label: value, color: 'gray', variant: 'light' as Variant };
+  return (
+    <Badge color={s.color} variant={s.variant}>
+      {s.label}
+    </Badge>
+  );
+}
+
 export function FlagBadges({ flags }: { flags: CaseFlags }) {
   const on = (Object.keys(FLAG_LABELS) as (keyof CaseFlags)[]).filter((k) => flags[k]);
   if (on.length === 0) return null;

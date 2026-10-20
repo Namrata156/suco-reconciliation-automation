@@ -1,5 +1,16 @@
-import { AppShell, Burger, Group, Menu, NavLink, Select, Text, UnstyledButton } from '@mantine/core';
+import {
+  AppShell,
+  Burger,
+  Group,
+  Menu,
+  NavLink,
+  Select,
+  Skeleton,
+  Text,
+  UnstyledButton,
+} from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
+import { Suspense } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 
 import { logout } from '../api/client';
@@ -10,10 +21,14 @@ import { useModuleCode } from '../hooks/module';
 import { menuFor, menuHref } from '../lib/roles';
 import { NotFoundPage } from '../pages/NotFoundPage';
 
-/** True when the menu href matches the current address (path + mine filter). */
-function isActive(href: string, pathname: string, search: string): boolean {
-  const [path, query = ''] = href.split('?');
-  if (path !== pathname.replace(/\/$/, '')) return false;
+/**
+ * True when the menu href matches the current address (path + mine filter);
+ * with matchPrefix also for the addresses below it (the settings tabs).
+ */
+export function isActive(href: string, pathname: string, search: string, matchPrefix = false): boolean {
+  const [path = '', query = ''] = href.split('?');
+  const here = pathname.replace(/\/$/, '');
+  if (path !== here && !(matchPrefix && here.startsWith(`${path}/`))) return false;
   const want = new URLSearchParams(query).get('mine') ?? '';
   const have = new URLSearchParams(search).get('mine') ?? '';
   return want === have;
@@ -36,7 +51,9 @@ export function AppLayout() {
     if (!code) return;
     // Same screen in the other module; a case / file id or date would not carry over.
     const rest = location.pathname.split('/').slice(2);
-    const section = ['cases', 'files', 'dates'].includes(rest[0] ?? '') ? `/${rest[0]}` : '';
+    const section = ['cases', 'files', 'dates', 'settings', 'approvals'].includes(rest[0] ?? '')
+      ? `/${rest[0]}`
+      : '';
     navigate(`/${me.modules.find((m) => m.code === code)?.slug ?? code.toLowerCase()}${section}`);
   };
 
@@ -125,14 +142,16 @@ export function AppLayout() {
               component={Link}
               to={href}
               onClick={close}
-              active={isActive(href, location.pathname, location.search)}
+              active={isActive(href, location.pathname, location.search, item.matchPrefix)}
             />
           );
         })}
       </AppShell.Navbar>
 
       <AppShell.Main id="main" tabIndex={-1} style={{ outline: 'none' }}>
-        <Outlet />
+        <Suspense fallback={<Skeleton h={300} aria-label="Loading the screen" />}>
+          <Outlet />
+        </Suspense>
       </AppShell.Main>
       <SessionWatcher />
     </AppShell>

@@ -2,7 +2,8 @@
  * Files and processing status (design 4.9). Paged on the server (50 per
  * page); the filters live in the address, as in the case queue. The list
  * refreshes itself while any file of the module is still being processed
- * (processing_count), within the idle-timeout rule of lib/polling.ts.
+ * (processing_count), within the idle-timeout rule of lib/polling.ts. The
+ * status and file-type choices come from /meta/ (Slice 3).
  */
 import { Alert, Anchor, Button, Group, Pagination, Select, Stack, Table, Text, Title } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
@@ -11,7 +12,7 @@ import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router';
 
 import { listFiles } from '../api/client';
-import type { FileFilters, FileListPage, ProcessingStatus, UploadedFileRow } from '../api/types';
+import type { FileFilters, FileListPage, ModuleMeta, UploadedFileRow } from '../api/types';
 import { useMe } from '../auth/auth';
 import { AutoRefresh } from '../components/AutoRefresh';
 import { FileStateBadge } from '../components/Badges';
@@ -21,23 +22,6 @@ import { pollInterval, pollingState, useUserActive } from '../lib/polling';
 import { can } from '../lib/roles';
 
 export const PAGE_SIZE = 50;
-
-/**
- * file_processing/models.py ProcessingStatus, in pipeline order. Hard-coded
- * for now: /meta/ does not list them yet (API gap logged as an open question,
- * owner 2026-10-19). Move to meta when the backend adds it.
- */
-export const FILE_STATUSES: { value: ProcessingStatus; label: string }[] = [
-  { value: 'RECEIVED', label: 'Received' },
-  { value: 'PARSED', label: 'Parsed' },
-  { value: 'VALIDATED', label: 'Validated' },
-  { value: 'STAGED', label: 'Staged' },
-  { value: 'AWAITING_DATE_SELECTION', label: 'Awaiting date selection' },
-  { value: 'NORMALIZED', label: 'Normalized' },
-  { value: 'LOADED', label: 'Loaded' },
-  { value: 'VALIDATION_FAILED', label: 'Validation failed' },
-  { value: 'FAILED', label: 'Failed' },
-];
 
 const ORDERINGS = [
   { value: '', label: 'Newest upload first (default)' },
@@ -49,7 +33,17 @@ const ORDERINGS = [
   { value: 'processing_status', label: 'Status (A-Z)' },
 ];
 
-const FILTER_KEYS = ['business_date', 'file_type', 'cycle', 'status', 'current', 'ordering'] as const;
+// file_type (a type code, both sides) still works in an address; the screen
+// filters on file_type_config (one side: Raw Data ACQ vs ISS; meta, Slice 3).
+const FILTER_KEYS = [
+  'business_date',
+  'file_type',
+  'file_type_config',
+  'cycle',
+  'status',
+  'current',
+  'ordering',
+] as const;
 type FilterKey = (typeof FILTER_KEYS)[number];
 
 export function fileFiltersFromParams(params: URLSearchParams): FileFilters {
@@ -62,6 +56,16 @@ export function fileFiltersFromParams(params: URLSearchParams): FileFilters {
   f.page = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
   f.page_size = PAGE_SIZE;
   return f;
+}
+
+/** meta.processing_statuses (pipeline order) with the short labels. */
+export function fileStatusChoices(meta: ModuleMeta | undefined): { value: string; label: string }[] {
+  return (meta?.processing_statuses ?? []).map((s) => ({ value: s.value, label: shortStatus(s.label) }));
+}
+
+/** meta.file_type_configs: "Raw Data ACQ", "Raw Data ISS" ... (id = ?file_type_config=). */
+export function fileTypeChoices(meta: ModuleMeta | undefined): { value: string; label: string }[] {
+  return (meta?.file_type_configs ?? []).map((c) => ({ value: String(c.id), label: c.label }));
 }
 
 /** The short form of the server's status label ("Staged (raw rows ...)" -> "Staged"). */
@@ -108,14 +112,14 @@ export function FilesPage() {
   const first = count === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const last = Math.min(count, page * PAGE_SIZE);
   const opt = (list: { value: string; label: string }[]) => [{ value: '', label: 'Any' }, ...list];
+  const statusData = opt(fileStatusChoices(meta));
   // A comma list from a home-page link ("VALIDATION_FAILED,FAILED") is shown as one choice.
-  const statusData = opt(FILE_STATUSES);
   if (filters.status && !statusData.some((s) => s.value === filters.status)) {
     statusData.push({
       value: filters.status,
       label: filters.status
         .split(',')
-        .map((s) => FILE_STATUSES.find((x) => x.value === s)?.label ?? s)
+        .map((s) => statusData.find((x) => x.value === s)?.label ?? s)
         .join(' / '),
     });
   }
@@ -144,12 +148,13 @@ export function FilesPage() {
         />
         <Select
           label="File type"
-          // By type code only: meta lists one entry per code (ACQ / ISS together).
-          data={opt((meta?.file_types ?? []).map((t) => ({ value: t.code, label: t.code })))}
-          value={filters.file_type ?? ''}
-          onChange={(v) => setFilter('file_type', v)}
-          w={210}
+          // One entry per FileTypeConfig, so ACQ and ISS are separate choices.
+          data={opt(fileTypeChoices(meta))}
+          value={filters.file_type_config ?? ''}
+          onChange={(v) => setFilter('file_type_config', v)}
+          w={260}
           allowDeselect={false}
+          searchable
         />
         <Select
           label="Cycle"

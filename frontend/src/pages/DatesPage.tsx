@@ -1,7 +1,7 @@
 /**
  * Business-date overview list (design 4.11): one row per date with the file
  * checklist counts, matrix, rule evaluation, cases, settlement and the last
- * run. Paged on the server; refreshes itself while a run is active or files
+ * run, with links to the date's results and settlement (Slice 3). Paged on the server; refreshes itself while a run is active or files
  * are being processed on a shown date (lib/polling.ts).
  */
 import { Alert, Anchor, Button, Group, Pagination, Select, Stack, Table, Text, Title } from '@mantine/core';
@@ -141,6 +141,28 @@ export function DatesPage() {
                   <Anchor component={Link} to={`/${module}/dates/${o.business_date}`}>
                     {formatDate(o.business_date)}
                   </Anchor>
+                  <Group gap={8}>
+                    {(o.matrix.built || o.rule_evaluation) && (
+                      <Anchor
+                        component={Link}
+                        to={`/${module}/dates/${o.business_date}/results`}
+                        size="xs"
+                        aria-label={`Results for ${formatDate(o.business_date)}`}
+                      >
+                        Results
+                      </Anchor>
+                    )}
+                    {o.settlement && (
+                      <Anchor
+                        component={Link}
+                        to={`/${module}/dates/${o.business_date}/settlement`}
+                        size="xs"
+                        aria-label={`Settlement for ${formatDate(o.business_date)}`}
+                      >
+                        Settlement
+                      </Anchor>
+                    )}
+                  </Group>
                 </Table.Td>
                 <Table.Td>
                   {o.files.expected - o.files.missing} of {o.files.expected} ({o.files.loaded} loaded)

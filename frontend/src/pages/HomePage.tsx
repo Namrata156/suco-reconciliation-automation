@@ -74,7 +74,8 @@ export function checkerTiles(s: ModuleSummary): CountTile[] {
       label: 'Settings changes awaiting approval',
       value: sa.response_codes + sa.ntsl_mapping + sa.tolerance,
       query: null,
-      note: `Response codes ${sa.response_codes}, NTSL mapping ${sa.ntsl_mapping}, tolerance ${sa.tolerance}. Screens arrive in Slice 3.`,
+      href: 'approvals',
+      note: `Response codes ${sa.response_codes}, NTSL mapping ${sa.ntsl_mapping}, tolerance ${sa.tolerance}.`,
     },
   ];
 }

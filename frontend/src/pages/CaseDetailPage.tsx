@@ -7,7 +7,6 @@
 import {
   Alert,
   Anchor,
-  Badge,
   Button,
   Card,
   Group,
@@ -26,13 +25,7 @@ import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router';
 
 import { ApiError, caseTransition, getCase, listUsers } from '../api/client';
-import type {
-  CaseDetail,
-  ModuleMeta,
-  ProposedActionInfo,
-  TransitionName,
-  TransitionPayloads,
-} from '../api/types';
+import type { ModuleMeta, ProposedActionInfo, TransitionName, TransitionPayloads } from '../api/types';
 import {
   DecisionBadge,
   FlagBadges,
@@ -50,8 +43,11 @@ import {
   RemarksOnlyForm,
   SubmitActionForm,
 } from '../features/cases/actionForms';
+import { OverlayRowsTable } from '../components/OverlayRowsTable';
+import { SettlementBlock } from '../features/settlement/SettlementBlock';
+import { SettlementTransactions } from '../features/settlement/SettlementTransactions';
 import { labelOf, useMeta, useModuleCode } from '../hooks/module';
-import { formatCount, formatDate, formatDateTime, formatRupees } from '../lib/format';
+import { formatDate, formatDateTime, formatRupees } from '../lib/format';
 
 const TRANSITION_LABELS: Record<TransitionName, string> = {
   take: 'Take',
@@ -153,100 +149,6 @@ function renderValue(v: unknown): string {
   if (v === null || v === undefined || v === '') return '-';
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
-}
-
-function SettlementBlock({ s }: { s: NonNullable<CaseDetail['settlement']> }) {
-  const reasons = Array.isArray(s.reasons)
-    ? s.reasons
-    : Object.entries(s.reasons).map(([k, v]) => `${k}: ${renderValue(v)}`);
-  return (
-    <Stack gap="xs">
-      <Title order={2} size="h4">
-        Settlement result
-      </Title>
-      <Group gap="xs">
-        <Badge
-          variant="filled"
-          color={s.status === 'TALLIED' ? 'green' : s.status === 'UNEXPLAINED' ? 'red' : 'gray'}
-        >
-          {s.status}
-        </Badge>
-        <Text size="sm">
-          Computed {formatDateTime(s.computed_at)}
-          {s.result_is_current ? '' : ' (no longer the current result)'}
-        </Text>
-      </Group>
-      {reasons.length > 0 && (
-        <List size="sm">
-          {reasons.map((r) => (
-            <List.Item key={String(r)}>{String(r)}</List.Item>
-          ))}
-        </List>
-      )}
-      <Table withTableBorder aria-label="SOP check" maw={700}>
-        <Table.Thead>
-          <Table.Tr>
-            {['CBS net', 'NTSL net', 'Difference', 'Explained', 'Unexplained'].map((h) => (
-              <Table.Th key={h} scope="col" ta="right">
-                {h}
-              </Table.Th>
-            ))}
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          <Table.Tr>
-            {[s.sop.cbs_net, s.sop.ntsl_net, s.sop.difference, s.sop.explained, s.sop.unexplained].map(
-              (v, i) => (
-                <Table.Td key={i} ta="right">
-                  {formatRupees(v)}
-                </Table.Td>
-              ),
-            )}
-          </Table.Tr>
-        </Table.Tbody>
-      </Table>
-      <Text size="sm">
-        Tolerance: {formatRupees(s.tolerance.amount)} / {formatCount(s.tolerance.txn_count)} transactions.
-        Fees net: {formatRupees(s.fees_net)}
-      </Text>
-      <Table.ScrollContainer minWidth={900}>
-        <Table withTableBorder aria-label="Cycle by side">
-          <Table.Thead>
-            <Table.Tr>
-              {['Cycle', 'Side', 'NTSL', 'Matched', 'Explained', 'Unexplained', 'Within tolerance'].map(
-                (h) => (
-                  <Table.Th key={h} scope="col">
-                    {h}
-                  </Table.Th>
-                ),
-              )}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {s.cycles.map((c, i) => (
-              <Table.Tr key={`${c.cycle}-${c.side}-${i}`}>
-                <Table.Td>{c.cycle ?? '-'}</Table.Td>
-                <Table.Td>{c.side}</Table.Td>
-                <Table.Td>
-                  {formatRupees(c.ntsl_amount)} ({formatCount(c.ntsl_count)})
-                </Table.Td>
-                <Table.Td>
-                  {formatRupees(c.matched_amount)} ({formatCount(c.matched_count)})
-                </Table.Td>
-                <Table.Td>
-                  {formatRupees(c.explained_amount)} ({formatCount(c.explained_count)})
-                </Table.Td>
-                <Table.Td>
-                  {formatRupees(c.unexplained_amount)} ({formatCount(c.unexplained_count)})
-                </Table.Td>
-                <Table.Td>{c.within_tolerance === null ? '-' : c.within_tolerance ? 'Yes' : 'No'}</Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
-    </Stack>
-  );
 }
 
 export function CaseDetailPage() {
@@ -423,60 +325,24 @@ export function CaseDetailPage() {
 
       {c.settlement && <SettlementBlock s={c.settlement} />}
 
+      {isSettlement && (
+        <Stack gap="xs" component="section" aria-labelledby="case-settlement-tx-title">
+          <Title order={2} size="h4" id="case-settlement-tx-title">
+            Contributing transactions
+          </Title>
+          <Text size="sm" c="dimmed">
+            The transactions behind the explained amounts of the result this case is about.
+          </Text>
+          <SettlementTransactions module={module} source={{ caseId: id }} meta={meta} />
+        </Stack>
+      )}
+
       {!isSettlement && (
         <Stack gap="xs">
           <Title order={2} size="h4">
             DRC / Timeout / Adjustment rows for this RRN
           </Title>
-          {c.overlay_rows.length === 0 ? (
-            <Text size="sm">None.</Text>
-          ) : (
-            <Table.ScrollContainer minWidth={900}>
-              <Table withTableBorder aria-label="Dispute rows">
-                <Table.Thead>
-                  <Table.Tr>
-                    {[
-                      'Leg',
-                      'File date',
-                      'Amount',
-                      'Direction',
-                      'Response code',
-                      'SSK side',
-                      'Dispute type',
-                      'Txn date',
-                      'Note',
-                    ].map((h) => (
-                      <Table.Th key={h} scope="col">
-                        {h}
-                      </Table.Th>
-                    ))}
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {c.overlay_rows.map((r) => (
-                    <Table.Tr key={`${r.leg}-${r.fact_id}`}>
-                      <Table.Td>{r.leg}</Table.Td>
-                      <Table.Td>{formatDate(r.file_date)}</Table.Td>
-                      <Table.Td ta="right">{formatRupees(r.amount)}</Table.Td>
-                      <Table.Td>{r.direction || '-'}</Table.Td>
-                      <Table.Td>{r.response_code || '-'}</Table.Td>
-                      <Table.Td>{r.ssk_side || '-'}</Table.Td>
-                      <Table.Td>{r.dispute_type || '-'}</Table.Td>
-                      <Table.Td>{r.txn_date || '-'}</Table.Td>
-                      <Table.Td>
-                        {[
-                          r.belongs_to_case_date ? '' : 'From another loaded date',
-                          r.original_not_loaded ? 'Original transaction not loaded' : '',
-                        ]
-                          .filter(Boolean)
-                          .join('; ') || '-'}
-                      </Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
-            </Table.ScrollContainer>
-          )}
+          <OverlayRowsTable rows={c.overlay_rows} />
         </Stack>
       )}
 

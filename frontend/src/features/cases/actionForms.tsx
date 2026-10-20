@@ -56,7 +56,7 @@ interface FormProps<P> {
   onCancel: () => void;
 }
 
-function Actions({
+export function Actions({
   submitLabel,
   busy,
   onCancel,
@@ -77,7 +77,7 @@ function Actions({
   );
 }
 
-function RootError({ message }: { message?: string }) {
+export function RootError({ message }: { message?: string }) {
   if (!message) return null;
   return (
     <Alert color="red" role="alert" title="Not saved">
@@ -150,12 +150,15 @@ export function ApproveForm({
   selfApproval: selfApprovalProp,
   selfApprovalMessage = SELF_APPROVAL_TEXT,
   actionSummary,
+  confirmLabel = 'I confirm this approval of my own submission',
   onSubmit,
   onCancel,
 }: FormProps<ApprovePayload> & {
   selfApproval: boolean;
   selfApprovalMessage?: string;
   actionSummary?: string;
+  /** The self-approval checkbox (settings: "...of my own proposal"). */
+  confirmLabel?: string;
 }) {
   const [serverSaysSelf, setServerSaysSelf] = useState(false);
   const selfApproval = selfApprovalProp || serverSaysSelf;
@@ -196,11 +199,7 @@ export function ApproveForm({
         <RootError message={errors.root?.message} />
         <Textarea label="Remarks (optional)" autosize minRows={2} {...register('remarks')} />
         {selfApproval && (
-          <Checkbox
-            label="I confirm this approval of my own submission"
-            {...register('confirmSelf')}
-            error={errors.confirmSelf?.message}
-          />
+          <Checkbox label={confirmLabel} {...register('confirmSelf')} error={errors.confirmSelf?.message} />
         )}
         <Actions
           submitLabel={selfApproval ? 'Approve (self-approved)' : 'Approve'}
@@ -217,7 +216,11 @@ export function ApproveForm({
 // ---------------------------------------------------------------------------
 export const rejectSchema = z.object({ reason: z.string().trim().min(1, 'A rejection reason is required') });
 
-export function RejectForm({ onSubmit, onCancel }: FormProps<{ reason: string }>) {
+export function RejectForm({
+  onSubmit,
+  onCancel,
+  intro = 'The case goes back to the maker with this reason.',
+}: FormProps<{ reason: string }> & { intro?: string }) {
   const {
     register,
     handleSubmit,
@@ -237,7 +240,7 @@ export function RejectForm({ onSubmit, onCancel }: FormProps<{ reason: string }>
   return (
     <form onSubmit={submit} noValidate>
       <Stack>
-        <Text>The case goes back to the maker with this reason.</Text>
+        <Text>{intro}</Text>
         <RootError message={errors.root?.message} />
         <Textarea
           label="Reason"
