@@ -85,11 +85,18 @@ def settlement_detail(case: ExceptionCase) -> dict | None:
     link = getattr(case, "settlement_case", None)
     if link is None:
         return None
-    r = link.result
+    body = settlement_result_payload(link.result)
+    return {"result_id": body.pop("result_id"), "first_result_id": link.first_result_id, **body}
+
+
+def settlement_result_payload(r) -> dict:
+    """One settlement.SettlementResult: status, reasons, tolerance, SOP check,
+    fees and the cycle x side rows. Shared by the settlement case detail and
+    the per-date settlement screen (Phase 5 design 4.14), which also shows
+    TALLIED dates (no case)."""
     m = lambda v: None if v is None else f"{v:.2f}"  # noqa: E731
     return {
         "result_id": r.pk,
-        "first_result_id": link.first_result_id,
         "result_is_current": r.is_current,
         "status": r.status,
         "computed_at": r.computed_at,
@@ -109,17 +116,24 @@ def settlement_detail(case: ExceptionCase) -> dict | None:
     }
 
 
+def date_overlay_rows(payment_module, business_date, rrn: str) -> list[dict]:
+    """Every DRC / Timeout / Adjustment row belonging to one business date's
+    group for the RRN (reconciliation.presence.overlay_rows_for_date)."""
+    rows = []
+    for leg in DEFAULT_OVERLAY_LEGS:
+        for fact, cells, onl in overlay_rows_for_date(payment_module, business_date, leg).get(rrn, []):
+            rows.append(_row(leg, fact, cells, onl))
+    return rows
+
+
 def overlay_rows(case: ExceptionCase) -> list[dict]:
     """Every DRC / Timeout / Adjustment row belonging to the case's date for
     its RRN, then Adjustment rows for the RRN on other loaded dates. None for
     a settlement case (it has no RRN)."""
     if case.is_settlement:
         return []
-    rows, seen = [], set()
-    for leg in DEFAULT_OVERLAY_LEGS:
-        for fact, cells, onl in overlay_rows_for_date(case.payment_module, case.business_date, leg).get(case.rrn, []):
-            rows.append(_row(leg, fact, cells, onl))
-            seen.add(fact.pk)
+    rows = date_overlay_rows(case.payment_module, case.business_date, case.rrn)
+    seen = {r["fact_id"] for r in rows}
     for fact, cells in adjustment_rows_any_date(case.payment_module).get(case.rrn, []):
         if fact.pk not in seen:
             rows.append(_row("ADJUSTMENT", fact, cells, on_case_date=False))

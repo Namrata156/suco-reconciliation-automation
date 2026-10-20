@@ -4,7 +4,7 @@
 """
 from django.urls import path
 
-from api import auth, operations, views
+from api import auth, operations, results, settings_views, views
 
 urlpatterns = [
     path("auth/csrf/", auth.CsrfView.as_view(), name="v1-auth-csrf"),
@@ -32,4 +32,41 @@ urlpatterns = [
     path("<slug:module>/dates/", operations.DateListView.as_view(), name="v1-date-list"),
     path("<slug:module>/dates/<str:business_date>/", operations.DateDetailView.as_view(), name="v1-date-detail"),
     path("<slug:module>/dates/<str:business_date>/run/", operations.DateRunView.as_view(), name="v1-date-run"),
+    # results, settlement and settings (Slice 3)
+    path("<slug:module>/dates/<str:business_date>/results/", results.ResultListView.as_view(), name="v1-results"),
+    path("<slug:module>/dates/<str:business_date>/results/summary/", results.ResultSummaryView.as_view(),
+         name="v1-results-summary"),
+    path("<slug:module>/dates/<str:business_date>/groups/<int:pk>/", results.GroupDetailView.as_view(),
+         name="v1-group-detail"),
+    path("<slug:module>/dates/<str:business_date>/settlement/", results.SettlementView.as_view(),
+         name="v1-settlement"),
+    path("<slug:module>/dates/<str:business_date>/settlement/transactions/",
+         results.SettlementTransactionsView.as_view(), name="v1-settlement-transactions"),
+    path("<slug:module>/cases/<int:pk>/settlement/transactions/", results.CaseSettlementTransactionsView.as_view(),
+         name="v1-case-settlement-transactions"),
+    path("<slug:module>/settings/pending/", settings_views.PendingApprovalsView.as_view(),
+         name="v1-settings-pending"),
+    path("<slug:module>/settings/response-codes/", settings_views.ResponseCodeListView.as_view(),
+         name="v1-settings-response-codes"),
+    path("<slug:module>/settings/response-codes/requests/", settings_views.ResponseCodeRequestListView.as_view(),
+         name="v1-settings-response-code-requests"),
+    path("<slug:module>/settings/response-codes/requests/<int:pk>/<str:decision>/",
+         settings_views.ResponseCodeDecisionView.as_view(), name="v1-settings-response-code-decision"),
+    path("<slug:module>/settings/ntsl-mapping/", settings_views.NtslMappingView.as_view(),
+         name="v1-settings-ntsl-mapping"),
+    path("<slug:module>/settings/ntsl-mapping/<int:pk>/<str:decision>/",
+         settings_views.NtslMappingDecisionView.as_view(), name="v1-settings-ntsl-mapping-decision"),
+    path("<slug:module>/settings/ntsl-mapping/versions/", settings_views.NtslMappingVersionListView.as_view(),
+         name="v1-settings-ntsl-mapping-versions"),
+    path("<slug:module>/settings/ntsl-mapping/versions/<int:pk>/",
+         settings_views.NtslMappingVersionDetailView.as_view(), name="v1-settings-ntsl-mapping-version"),
+    path("<slug:module>/settings/ntsl-mapping/versions/<int:pk>/entries/",
+         settings_views.NtslMappingEntriesView.as_view(), name="v1-settings-ntsl-mapping-entries"),
+    path("<slug:module>/settings/tolerance/", settings_views.ToleranceView.as_view(), name="v1-settings-tolerance"),
+    path("<slug:module>/settings/tolerance/versions/", settings_views.ToleranceVersionListView.as_view(),
+         name="v1-settings-tolerance-versions"),
+    path("<slug:module>/settings/tolerance/versions/<int:pk>/", settings_views.ToleranceVersionDetailView.as_view(),
+         name="v1-settings-tolerance-version"),
+    path("<slug:module>/settings/tolerance/<int:pk>/<str:decision>/", settings_views.ToleranceDecisionView.as_view(),
+         name="v1-settings-tolerance-decision"),
 ]

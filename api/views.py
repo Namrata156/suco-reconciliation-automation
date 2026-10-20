@@ -46,10 +46,21 @@ from exception_management.models import (
 )
 from exception_management.roles import Role, has_role, user_roles
 from exception_management.services import BULK_PRIORITIES
-from file_processing.intake import date_checklists
+from file_processing.intake import _file_state as file_state
+from file_processing.intake import date_checklists, file_type_options
 from file_processing.models import FileTypeConfig, ProcessingStatus, UploadedFile
-from rule_engine.models import AgeingBucket, Priority, RuleSet, RuleSetStatus, StatusCategory
-from settlement.models import MapStatus, NtslCategoryMapVersion, SettlementResult, SettlementTolerance
+from reconciliation.models import ProcessingStatus as GroupStatus
+from rule_engine.models import AgeingBucket, CodeFlag, Priority, RuleSet, RuleSetStatus, StatusCategory
+from settlement.categories import NtslCategory
+from settlement.models import (
+    CheckStatus,
+    MapStatus,
+    NtslCategoryMapVersion,
+    ResultStatus,
+    SettlementResult,
+    SettlementTolerance,
+    Side,
+)
 
 SELF_APPROVAL_MESSAGE = "You submitted this action; approving it will be recorded as self-approved."
 
@@ -118,6 +129,10 @@ class MetaView(ModuleView):
     (design 3.1), so no module name or choice list is hard-coded in the SPA."""
 
     def get(self, request, module):
+        # Here, not at the top: api.settings_views imports from this module.
+        from api.results import PRESENCE_PATTERNS, RESULT_ORDERING, TRANSACTION_KINDS
+        from api.settings_views import SETTINGS_KINDS
+
         m = self.module
         rule_set = (RuleSet.objects.filter(payment_module=m, status=RuleSetStatus.ACTIVE)
                     .order_by("-activated_at", "-pk").first())
@@ -159,6 +174,25 @@ class MetaView(ModuleView):
             "ageing_buckets": [{"label": b.label, "min_days": b.min_days, "max_days": b.max_days}
                                for b in AgeingBucket.objects.filter(payment_module=m).order_by("order")],
             "file_types": file_types,
+            # Slice 2 gaps (moved to Slice 3): every active FileTypeConfig, so the
+            # files list can filter on one side (?file_type_config=<id>: Raw Data
+            # ACQ vs ISS); and the file pipeline statuses with their screen state.
+            "file_type_configs": file_type_options(m),
+            "processing_statuses": [{"value": v, "label": label, "state": file_state(v)}
+                                    for v, label in ProcessingStatus.choices],
+            # Slice 3: results, settlement and settings screens.
+            "match_group_statuses": _choices(GroupStatus),
+            "presence_patterns": [{"value": k, "label": v} for k, v in PRESENCE_PATTERNS.items()],
+            "result_orderings": sorted(RESULT_ORDERING),
+            "settlement_statuses": _choices(ResultStatus),
+            "self_check_statuses": _choices(CheckStatus),
+            "settlement_sides": _choices(Side),
+            "settlement_transaction_kinds": [{"value": k, "label": v[0]} for k, v in TRANSACTION_KINDS.items()],
+            "ntsl_categories": _choices(NtslCategory),
+            "code_flags": _choices(CodeFlag),
+            "settings_statuses": _choices(MapStatus),
+            "change_request_statuses": _choices(ChangeRequestStatus),
+            "settings_kinds": [{"value": k, "label": v} for k, v in SETTINGS_KINDS.items()],
             "settlement_cycles": [{"code": c.cycle_code, "type": c.cycle_type, "start_time": c.start_time,
                                    "end_time": c.end_time}
                                   for c in SettlementCycle.objects.filter(payment_module=m, is_active=True)
