@@ -34,6 +34,14 @@ export function formatCount(value: number | null | undefined): string {
   return value === null || value === undefined ? '-' : COUNT.format(value);
 }
 
+/** File sizes: 512 -> "512 B", 65536 -> "64.0 KB", 100427776 -> "95.8 MB". */
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '-';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** "2026-07-14" (or an ISO datetime's date part) -> "14-Jul-2026". */
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return '-';

@@ -113,7 +113,7 @@ export const MENU: readonly MenuItem[] = [
 ];
 
 /** The slice the running build implements. */
-export const BUILT_SLICE = 1;
+export const BUILT_SLICE = 2;
 
 /** Menu items for a user, limited to screens already built. */
 export function menuFor(

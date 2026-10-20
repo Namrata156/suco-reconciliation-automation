@@ -4,7 +4,8 @@
  *
  * The server decides which blocks a user gets (api/views.py SummaryView:
  * Maker / Checker / Operations; Administrator and Auditor get all) and sends
- * with each count the queue filter that reproduces it.
+ * with each count the queue filter that reproduces it. The Operations counts
+ * (Slice 2) link to the files list and the business-date overview instead.
  */
 import { Alert, Anchor, Card, SimpleGrid, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { Link } from 'react-router';
@@ -19,6 +20,8 @@ export interface CountTile {
   value: number | null | undefined;
   /** Queue query string the tile links to; null = no queue view. */
   query: string | null;
+  /** Another screen under /<module>/ the tile links to (files, dates), when not the queue. */
+  href?: string;
   note?: string;
 }
 
@@ -76,26 +79,50 @@ export function checkerTiles(s: ModuleSummary): CountTile[] {
   ];
 }
 
+/** Operations counts link to the files list / business-date overview (Slice 2). */
 export function operationsTiles(s: ModuleSummary): CountTile[] {
   const o = s.operations;
   if (!o) return [];
-  const on = o.latest_business_date ? ` (${formatDate(o.latest_business_date)})` : '';
+  const d = o.latest_business_date;
+  const on = d ? ` (${formatDate(d)})` : '';
+  const files = (q: Record<string, string>) => `files?${new URLSearchParams(d ? { business_date: d, ...q } : q)}`;
   return [
-    { key: 'files_received', label: `Files received${on}`, value: o.files_received, query: null },
-    { key: 'files_loaded', label: `Files loaded${on}`, value: o.files_loaded, query: null },
-    { key: 'files_failed', label: `Files failed${on}`, value: o.files_failed, query: null },
+    {
+      key: 'files_received',
+      label: `Files received${on}`,
+      value: o.files_received,
+      query: null,
+      href: d ? files({}) : undefined,
+    },
+    {
+      key: 'files_loaded',
+      label: `Files loaded${on}`,
+      value: o.files_loaded,
+      query: null,
+      href: d ? files({ status: 'LOADED' }) : undefined,
+    },
+    {
+      key: 'files_failed',
+      label: `Files failed${on}`,
+      value: o.files_failed,
+      query: null,
+      href: d ? files({ status: 'VALIDATION_FAILED,FAILED' }) : undefined,
+    },
     {
       key: 'files_missing',
-      label: `Files missing${on}`,
+      label: `Expected files missing${on}`,
       value: o.files_missing,
       query: null,
-      note: o.files_missing === null ? 'Needs the file checklist (Slice 2)' : undefined,
+      href: d ? `dates/${d}` : undefined,
+      note: o.files_missing === null ? 'No business date yet' : undefined,
     },
     {
       key: 'awaiting_date_selection',
       label: 'CBS files awaiting date selection',
       value: o.awaiting_date_selection,
       query: null,
+      // Every date: a waiting CBS file has no business date yet.
+      href: 'files?status=AWAITING_DATE_SELECTION',
     },
   ];
 }
@@ -124,10 +151,10 @@ function Tiles({
             <Text size="sm" c="dimmed">
               {t.label}
             </Text>
-            {t.query !== null ? (
+            {t.query !== null || t.href ? (
               <Anchor
                 component={Link}
-                to={`/${module}/cases?${t.query}`}
+                to={t.query !== null ? `/${module}/cases?${t.query}` : `/${module}/${t.href}`}
                 fz={28}
                 fw={700}
                 aria-label={`${t.label}: ${formatCount(t.value)}. Open the list`}

@@ -8,16 +8,16 @@ const keys = (roles: RoleName[], builtSlice?: number) =>
   menuFor(makeMe(roles), builtSlice ? { builtSlice } : undefined).map((i) => i.key);
 
 describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
-  it('Maker: home, cases, my cases', () => {
-    expect(keys(['Maker'])).toEqual(['home', 'cases', 'my-cases']);
+  it('Maker: home, cases, my cases, files, business dates', () => {
+    expect(keys(['Maker'])).toEqual(['home', 'cases', 'my-cases', 'files', 'dates']);
   });
 
-  it('Checker: home, cases, awaiting my approval', () => {
-    expect(keys(['Checker'])).toEqual(['home', 'cases', 'awaiting-approval']);
+  it('Checker: home, cases, awaiting my approval, files, business dates', () => {
+    expect(keys(['Checker'])).toEqual(['home', 'cases', 'awaiting-approval', 'files', 'dates']);
   });
 
-  it('Administrator: the Django admin link, no maker/checker items', () => {
-    expect(keys(['Administrator'])).toEqual(['home', 'cases', 'django-admin']);
+  it('Administrator: the Django admin link, no maker/checker items, no upload (P10b)', () => {
+    expect(keys(['Administrator'])).toEqual(['home', 'cases', 'files', 'dates', 'django-admin']);
   });
 
   it('Administrator without staff status (admin_url null): no admin link', () => {
@@ -25,13 +25,20 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(items).not.toContain('django-admin');
   });
 
-  it('Operations User and Auditor: read-only items only in Slice 1', () => {
-    expect(keys(['Operations User'])).toEqual(['home', 'cases']);
-    expect(keys(['Auditor'])).toEqual(['home', 'cases']);
+  it('Operations User: upload, files and business dates (Slice 2)', () => {
+    expect(keys(['Operations User'])).toEqual(['home', 'cases', 'upload', 'files', 'dates']);
+  });
+
+  it('Auditor: read-only files and business dates, no upload', () => {
+    expect(keys(['Auditor'])).toEqual(['home', 'cases', 'files', 'dates']);
+  });
+
+  it('Slice 1 build: no file screens', () => {
+    expect(keys(['Operations User'], 1)).toEqual(['home', 'cases']);
   });
 
   it('a user holding Maker and Checker sees both work lists', () => {
-    expect(keys(['Maker', 'Checker'])).toEqual(['home', 'cases', 'my-cases', 'awaiting-approval']);
+    expect(keys(['Maker', 'Checker'])).toEqual(['home', 'cases', 'my-cases', 'awaiting-approval', 'files', 'dates']);
   });
 
   it('no permissions: no menu', () => {

@@ -6,6 +6,42 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-20
+
+- **Added: Phase 5 Slice 2 — Files and running a day (API + frontend).**
+  - **API** (commit c9cbc6b): per module `/api/v1/<module>/files/` (list,
+    upload), `files/detect/`, `files/<pk>/`, `files/<pk>/exceptions/`,
+    `files/<pk>/select-date/`, `dates/`, `dates/<d>/`, `dates/<d>/run/`.
+    New `file_processing/intake.py` (detection, upload, date-selection
+    service; the Django-admin action now calls it),
+    `reconciliation/runs.py` + `ReconciliationRun` (presence → rules +
+    cases → settlement chain), `reconciliation/overview.py`, append-only
+    `core.OperationLog` auditing date pick and run (Amendment 1). Settings
+    `UPLOAD_MAX_FILE_BYTES` (150 MB default), `FILE_UPLOAD_TEMP_DIR`.
+    Home summary adds `files_missing`.
+  - **Frontend**: upload (check files → review table → per-file results),
+    files list/detail, CBS date pick, business-date list and overview
+    (checklist, Run button), menu entries for all roles (writes:
+    Operations User only), auto-refresh every 5 s that pauses after 2 min
+    idle, Refresh always available. Playwright `e2e/slice2.spec.ts` (needs
+    `E2E_OPS_USER`/`E2E_OPS_PASSWORD`, a fresh DB, Celery; re-signs in
+    after an expired session; waits configurable).
+  - Tests updated for the new service and model: admin date-selection
+    tests now patch `file_processing.intake.chain` and check the audit
+    row; presence extensibility test expects `ReconciliationRun`.
+- **Added: Phase 5 Slice 3 backend (uncommitted).** `api/results.py`
+  (date results summary, paged/filtered list, match group detail;
+  settlement per date with self-check and contributing transactions;
+  settlement-case transactions) and `api/settings_views.py` (response
+  codes, NTSL mapping, tolerance reads; propose/approve/reject for all
+  three with self-approval confirmation; pending approvals; tolerance
+  approve lists dates still on an older tolerance, no automatic re-run).
+  `/meta/` adds `processing_statuses`, `file_type_configs` (ACQ/ISS) and
+  Slice 3 lists. `exception_management/detail.py`: settlement payload and
+  date overlay rows split out for reuse (case detail output unchanged).
+- Verified: 622/622 Django tests, Vitest 92/92, lint/type-check/build
+  clean, Slice 2 click-through passed on a fresh DB (306 cases, TALLIED).
+
 ## 2026-10-15
 
 - **Added: Phase 5 Slice 1 — Foundation + cases (API + React frontend).**

@@ -3,8 +3,9 @@
  *
  * Reconciled 2026-10-15 against the built backend: api/auth.py, api/base.py,
  * api/views.py (v1) and exception_management/api.py (the serializers v1
- * extends). Every API call lives in ./client.ts, so a changed shape is fixed
- * in these two files.
+ * extends). Slice 2 shapes reconciled 2026-10-19 against api/operations.py
+ * and api/tests/test_slice2.py. Every API call lives in ./client.ts, so a
+ * changed shape is fixed in these two files.
  */
 
 /** Role names exactly as the Django groups (exception_management/roles.py). */
@@ -178,7 +179,7 @@ export interface ModuleSummary {
     files_received: number;
     files_loaded: number;
     files_failed: number;
-    /** Null until Slice 2 builds the expected-files checklist. */
+    /** Expected type x cycle slots with no file (the date checklist, Slice 2); null with no date. */
     files_missing: number | null;
     awaiting_date_selection: number;
     settlement_status: string | null;
@@ -430,6 +431,298 @@ export interface BulkPayloads {
 export interface BulkResult {
   applied: number;
   case_ids: number[];
+}
+
+// ---------------------------------------------------------------------------
+// files, CBS date, business dates and the run  (api/operations.py, Slice 2;
+// services file_processing/intake.py, reconciliation/overview.py, runs.py)
+// ---------------------------------------------------------------------------
+/** UploadedFile.processing_status (file_processing/models.py ProcessingStatus). */
+export type ProcessingStatus =
+  | 'RECEIVED'
+  | 'PARSED'
+  | 'VALIDATED'
+  | 'VALIDATION_FAILED'
+  | 'STAGED'
+  | 'AWAITING_DATE_SELECTION'
+  | 'NORMALIZED'
+  | 'LOADED'
+  | 'FAILED';
+
+/** The status folded into four (intake._file_state); a checklist slot adds MISSING. */
+export type FileState = 'LOADED' | 'PROCESSING' | 'AWAITING_DATE_SELECTION' | 'FAILED';
+export type SlotState = FileState | 'MISSING';
+
+/** EXACT_MATCH: one date, in the name and every row. RANGE_CONTAINS: CBS, date picked later. */
+export type DateMode = 'EXACT_MATCH' | 'RANGE_CONTAINS';
+
+/** One active FileTypeConfig (intake.config_payload); id = upload's file_type_config_id. */
+export interface FileTypeOption {
+  id: number;
+  file_type_code: string;
+  version: number;
+  register_type: string;
+  /** "Raw Data ACQ", "CBS GL Extract" ... */
+  label: string;
+  payload_format: string;
+  is_cycle_wise: boolean;
+  /** Cycle codes when cycle-wise, else []. */
+  cycles: string[];
+  date_mode: DateMode;
+}
+
+export interface DetectProposal {
+  file_type_config_id: number;
+  file_type_code: string;
+  label: string;
+  cycle: string | null;
+  /** ISO date read from the file name (EXACT_MATCH types only), or null. */
+  business_date: string | null;
+  date_mode: DateMode;
+  matched_by: 'filename' | 'content';
+}
+
+export interface DetectFile {
+  /** Position in the list sent (same order as the files). */
+  index: number;
+  filename: string;
+  /** Sniffed content format ("CSV", "SPREADSHEETML_XML", "ZIP" for a partial zip head ...). */
+  detected_format: string;
+  /** Null: the type could not be recognised; the user chooses it. */
+  proposal: DetectProposal | null;
+  /** Set when the SHA-256 sent matches a file uploaded before. */
+  duplicate: {
+    uploaded_file_id: number;
+    filename: string;
+    uploaded_at: string;
+    uploaded_by: string | null;
+    message: string;
+  } | null;
+  warnings: string[];
+}
+
+/** POST /files/detect/ (dry run, nothing saved). */
+export interface DetectResult {
+  /** The date most file names carry: the proposed business date of the upload. */
+  business_date: string | null;
+  business_dates_found: string[];
+  /** Batch-level warnings (mixed dates, archived date). */
+  warnings: string[];
+  files: DetectFile[];
+  file_types: FileTypeOption[];
+  max_file_bytes: number;
+  detect_head_bytes: number;
+}
+
+/** What the CBS date picker shows (intake.date_selection); null unless AWAITING_DATE_SELECTION. */
+export interface DateSelectionInfo {
+  detected_dates: string[];
+  batch_business_date: string | null;
+  /** The batch date when it is one of the detected dates, else null. */
+  preselected: string | null;
+}
+
+/** One row of GET /files/ (operations.file_row). */
+export interface UploadedFileRow {
+  id: number;
+  filename: string;
+  file_type: { id: number; file_type_code: string; version: number; register_type: string; label: string };
+  cycle: string | null;
+  /** Null for CBS until its date is picked. */
+  business_date: string | null;
+  /** The date the file was uploaded with. */
+  batch_business_date: string | null;
+  processing_status: ProcessingStatus;
+  processing_status_label: string;
+  state: FileState;
+  parser_status: string;
+  detected_format: string;
+  size_bytes: number | null;
+  sha256: string;
+  source_system: string;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  valid_record_count: number | null;
+  rejected_record_count: number | null;
+  is_current: boolean;
+  is_reprocess: boolean;
+  exception_counts: { INFO: number; WARNING: number; ERROR: number } | null;
+  date_selection: DateSelectionInfo | null;
+}
+
+/** One core.OperationLog row (who uploaded / picked the date / started the run). */
+export interface OperationLogEntry {
+  id: number;
+  operation: 'FILE_UPLOADED' | 'FILE_REFUSED' | 'BUSINESS_DATE_SELECTED' | 'RUN_STARTED' | string;
+  operation_label: string;
+  username: string;
+  created_at: string;
+  source: string;
+  business_date: string | null;
+  uploaded_file_id: number | null;
+  run_id: number | null;
+  details: Record<string, unknown>;
+}
+
+export interface UploadedFileDetail extends UploadedFileRow {
+  /** Oldest first. */
+  history: OperationLogEntry[];
+}
+
+/** GET /files/: paginated, plus how many files of the module are still being processed. */
+export interface FileListPage extends Paginated<UploadedFileRow> {
+  processing_count: number;
+}
+
+export interface FileFilters {
+  business_date?: string;
+  /** Comma list of file_type_code. */
+  file_type?: string;
+  /** Comma list of cycle codes. */
+  cycle?: string;
+  /** Comma list of ProcessingStatus. */
+  status?: string;
+  current?: '' | 'true' | 'false';
+  /** uploaded_at, business_date, filename, processing_status, file_type; "-" reverses. */
+  ordering?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface FileValidationExceptionInfo {
+  id: number;
+  rule_code: string;
+  severity: 'INFO' | 'WARNING' | 'ERROR';
+  message: string;
+  row_reference: string;
+  detected_at: string;
+  resolved: boolean;
+}
+
+/** POST /files/ (201, or 400 when no file was accepted: same body plus detail). */
+export interface UploadResult {
+  business_date: string;
+  accepted: UploadedFileRow[];
+  /** index = position in the files sent with that request. */
+  refused: { index: number; filename: string; errors: string[] }[];
+  detail?: string;
+}
+
+export interface UploadItem {
+  file_type_config_id: number;
+  cycle: string | null;
+}
+
+export type RunStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+export type RunStepName = 'PRESENCE' | 'RULES' | 'SETTLEMENT';
+
+/** reconciliation.runs.run_payload. */
+export interface ReconciliationRunInfo {
+  id: number;
+  business_date: string;
+  status: RunStatus;
+  /** "" when not running. */
+  current_step: RunStepName | '';
+  steps: Partial<
+    Record<
+      RunStepName,
+      {
+        status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
+        started_at?: string;
+        finished_at?: string;
+        summary?: Record<string, unknown>;
+      }
+    >
+  >;
+  error: string;
+  requested_by: string;
+  source: string;
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** Slot counts (expected type x cycle), then file counts (intake.date_checklists summary). */
+export interface ChecklistSummary {
+  expected: number;
+  loaded: number;
+  processing: number;
+  awaiting_date_selection: number;
+  failed: number;
+  missing: number;
+  files_received: number;
+  files_loaded: number;
+  files_processing: number;
+  files_awaiting_date_selection: number;
+  files_failed: number;
+}
+
+/** Why a run would be refused ([] = it may start; reconciliation.runs.blockers_from). */
+export interface RunBlocker {
+  code: 'RUN_IN_PROGRESS' | 'FILES_PROCESSING' | 'NOTHING_LOADED' | string;
+  message: string;
+}
+
+/** One row of GET /dates/ (reconciliation.overview.date_overviews). */
+export interface BusinessDateOverview {
+  business_date: string;
+  files: ChecklistSummary;
+  missing: { file_type_config_id: number; label: string; cycle: string | null }[];
+  matrix: { built: boolean; match_groups: number; built_at: string | null };
+  rule_evaluation: {
+    id: number;
+    rule_set: string;
+    started_at: string;
+    finished_at: string | null;
+    group_count: number;
+    triggered_by: string;
+  } | null;
+  cases: { total: number; active: number };
+  settlement: {
+    id: number;
+    status: string;
+    reasons: string[] | Record<string, unknown>;
+    computed_at: string;
+    unexplained_amount: string;
+  } | null;
+  last_run: ReconciliationRunInfo | null;
+  run_blockers: RunBlocker[];
+}
+
+export interface ChecklistSlot {
+  file_type_config_id: number;
+  file_type_code: string;
+  label: string;
+  cycle: string | null;
+  state: SlotState;
+  files: { id: number; filename: string; processing_status: ProcessingStatus }[];
+}
+
+/** GET /dates/<date>/. */
+export interface BusinessDateDetail extends BusinessDateOverview {
+  checklist: ChecklistSlot[];
+  /** Current files of the date in no expected slot. */
+  unexpected_files: {
+    id: number;
+    filename: string;
+    processing_status: ProcessingStatus;
+    file_type_config_id: number;
+    cycle: string | null;
+  }[];
+  archived: boolean;
+  /** Newest first, at most 20. */
+  runs: ReconciliationRunInfo[];
+  /** Newest first, at most 100. */
+  history: OperationLogEntry[];
+}
+
+export interface DateFilters {
+  date_from?: string;
+  date_to?: string;
+  /** "-business_date" (default, newest first) or "business_date". */
+  ordering?: string;
+  page?: number;
+  page_size?: number;
 }
 
 /** EXISTS: {"detail": "...", "errors": {field: [messages]}} (design 3.4). */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatAmount, formatDate, formatDateTime, formatRupees } from './format';
+import { formatAmount, formatBytes, formatDate, formatDateTime, formatRupees } from './format';
 
 describe('formats (design P8)', () => {
   it('uses Indian grouping without float rounding', () => {
@@ -19,5 +19,12 @@ describe('formats (design P8)', () => {
 
   it('shows times in IST', () => {
     expect(formatDateTime('2026-07-14T04:30:00Z')).toBe('14-Jul-2026 10:00 IST');
+  });
+
+  it('shows file sizes', () => {
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(65536)).toBe('64.0 KB');
+    expect(formatBytes(100427776)).toBe('95.8 MB');
+    expect(formatBytes(null)).toBe('-');
   });
 });

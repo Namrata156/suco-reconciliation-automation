@@ -4,7 +4,7 @@
  */
 import { Badge, Group } from '@mantine/core';
 
-import type { CaseFlags, Choice } from '../api/types';
+import type { CaseFlags, Choice, SlotState } from '../api/types';
 import { labelOf } from '../hooks/module';
 
 const PRIORITY_COLOR: Record<string, string> = { HIGH: 'red', MEDIUM: 'orange', LOW: 'blue', NONE: 'gray' };
@@ -75,6 +75,63 @@ export function SelfApprovedBadge() {
   return (
     <Badge color="yellow" variant="filled" title="Approved by the same user who submitted it">
       Self-approved
+    </Badge>
+  );
+}
+
+// --- files, checklist slots and runs (Slice 2) -------------------------------
+type Variant = 'light' | 'filled' | 'outline';
+const FILE_STATE: Record<SlotState, { label: string; color: string; variant: Variant }> = {
+  LOADED: { label: 'Loaded', color: 'green', variant: 'light' },
+  PROCESSING: { label: 'Processing', color: 'blue', variant: 'light' },
+  AWAITING_DATE_SELECTION: { label: 'Awaiting date', color: 'violet', variant: 'filled' },
+  FAILED: { label: 'Failed', color: 'red', variant: 'filled' },
+  MISSING: { label: 'Missing', color: 'gray', variant: 'outline' },
+};
+
+export const fileStateLabel = (state: SlotState) => FILE_STATE[state]?.label ?? state;
+
+/** A file's state, or a checklist slot's (MISSING); prefix e.g. the cycle ("1C Loaded"). */
+export function FileStateBadge({ state, prefix, title }: { state: SlotState; prefix?: string; title?: string }) {
+  const s = FILE_STATE[state] ?? { label: state, color: 'gray', variant: 'light' as Variant };
+  return (
+    <Badge color={s.color} variant={s.variant} title={title}>
+      {prefix ? `${prefix} ${s.label}` : s.label}
+    </Badge>
+  );
+}
+
+const RUN_STATUS: Record<string, { label: string; color: string }> = {
+  QUEUED: { label: 'Queued', color: 'gray' },
+  RUNNING: { label: 'Running', color: 'blue' },
+  SUCCEEDED: { label: 'Succeeded', color: 'green' },
+  FAILED: { label: 'Failed', color: 'red' },
+  PENDING: { label: 'Pending', color: 'gray' },
+  DONE: { label: 'Done', color: 'green' },
+};
+
+/** A run's status, or one step's (PENDING / RUNNING / DONE / FAILED). */
+export function RunStatusBadge({ value }: { value: string }) {
+  const s = RUN_STATUS[value] ?? { label: value, color: 'gray' };
+  return (
+    <Badge color={s.color} variant={value === 'FAILED' ? 'filled' : 'light'}>
+      {s.label}
+    </Badge>
+  );
+}
+
+const SETTLEMENT_STATUS: Record<string, { label: string; color: string }> = {
+  TALLIED: { label: 'Tallied', color: 'green' },
+  UNEXPLAINED: { label: 'Unexplained', color: 'red' },
+  NOT_READY: { label: 'Not ready', color: 'gray' },
+};
+
+export function SettlementStatusBadge({ value }: { value: string | null | undefined }) {
+  if (!value) return <>not computed</>;
+  const s = SETTLEMENT_STATUS[value] ?? { label: value, color: 'gray' };
+  return (
+    <Badge color={s.color} variant={value === 'UNEXPLAINED' ? 'filled' : 'light'}>
+      {s.label}
     </Badge>
   );
 }

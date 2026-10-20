@@ -3,7 +3,18 @@ import { render } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router';
 
-import type { ActionTypeMeta, CaseListItem, Me, ModuleMeta, Permissions, RoleName } from '../api/types';
+import type {
+  ActionTypeMeta,
+  BusinessDateOverview,
+  CaseListItem,
+  FileTypeOption,
+  Me,
+  ModuleMeta,
+  Permissions,
+  ReconciliationRunInfo,
+  RoleName,
+  UploadedFileDetail,
+} from '../api/types';
 import { makeQueryClient, Providers } from '../App';
 
 /** api/base.py CAPABILITIES, so menu tests use the server's own matrix. */
@@ -173,6 +184,108 @@ export function makeCase(over: Partial<CaseListItem> = {}): CaseListItem {
     rrc_already_sent_on: null,
     ...over,
     ...(over.flags ? { flags: { ...NO_FLAGS, ...over.flags } } : {}),
+  };
+}
+
+// --- Slice 2: files, dates, runs (api/operations.py shapes) -----------------
+const ft = (id: number, code: string, label: string, o: Partial<FileTypeOption> = {}): FileTypeOption => ({
+  id,
+  file_type_code: code,
+  version: 1,
+  register_type: code,
+  label,
+  payload_format: 'CSV',
+  is_cycle_wise: false,
+  cycles: [],
+  date_mode: 'EXACT_MATCH',
+  ...o,
+});
+const NUMBERED = ['1C', '2C', '3C', '4C', '5C', '6C', '7C', '8C', '9C', '10C'];
+
+export const FILE_TYPES: FileTypeOption[] = [
+  ft(1, 'CBS_GL_EXTRACT', 'CBS GL Extract', { payload_format: 'SPREADSHEETML_XML', date_mode: 'RANGE_CONTAINS' }),
+  ft(2, 'DRC', 'Debit Reversal Confirmation Report'),
+  ft(3, 'RAW_DATA', 'Raw Data ACQ', { is_cycle_wise: true, cycles: NUMBERED }),
+  ft(4, 'RAW_DATA', 'Raw Data ISS', { is_cycle_wise: true, cycles: NUMBERED }),
+  ft(5, 'NTSL', 'NTSL', {
+    payload_format: 'OOXML_ZIP',
+    is_cycle_wise: true,
+    cycles: [...NUMBERED, 'DC1', 'DC2'],
+  }),
+];
+
+let nextFileId = 500;
+export function makeFileRow(over: Partial<UploadedFileDetail> = {}): UploadedFileDetail {
+  nextFileId += 1;
+  return {
+    id: nextFileId,
+    filename: `UPIRAWDATAACQSSK140726_1C.csv`,
+    file_type: { id: 3, file_type_code: 'RAW_DATA', version: 1, register_type: 'RAW_DATA', label: 'Raw Data ACQ' },
+    cycle: '1C',
+    business_date: '2026-07-14',
+    batch_business_date: '2026-07-14',
+    processing_status: 'LOADED',
+    processing_status_label: 'Loaded',
+    state: 'LOADED',
+    parser_status: '',
+    detected_format: 'CSV',
+    size_bytes: 2048,
+    sha256: 'ab'.repeat(32),
+    source_system: 'manual web upload',
+    uploaded_by: 'ops1',
+    uploaded_at: '2026-07-15T04:30:00Z',
+    valid_record_count: 10,
+    rejected_record_count: 0,
+    is_current: true,
+    is_reprocess: false,
+    exception_counts: { INFO: 0, WARNING: 0, ERROR: 0 },
+    date_selection: null,
+    history: [],
+    ...over,
+  };
+}
+
+export function makeRun(over: Partial<ReconciliationRunInfo> = {}): ReconciliationRunInfo {
+  return {
+    id: 9,
+    business_date: '2026-07-14',
+    status: 'SUCCEEDED',
+    current_step: '',
+    steps: { PRESENCE: { status: 'DONE' }, RULES: { status: 'DONE' }, SETTLEMENT: { status: 'DONE' } },
+    error: '',
+    requested_by: 'ops1',
+    source: 'api',
+    requested_at: '2026-07-15T05:00:00Z',
+    started_at: '2026-07-15T05:00:01Z',
+    finished_at: '2026-07-15T05:03:00Z',
+    ...over,
+  };
+}
+
+export function makeDateOverview(over: Partial<BusinessDateOverview> = {}): BusinessDateOverview {
+  return {
+    business_date: '2026-07-14',
+    files: {
+      expected: 66,
+      loaded: 58,
+      processing: 0,
+      awaiting_date_selection: 0,
+      failed: 0,
+      missing: 8,
+      files_received: 59,
+      files_loaded: 59,
+      files_processing: 0,
+      files_awaiting_date_selection: 0,
+      files_failed: 0,
+    },
+    missing: [{ file_type_config_id: 6, label: 'Merchant Raw Data (BBP) ACQ', cycle: '1C' }],
+    matrix: { built: false, match_groups: 0, built_at: null },
+    rule_evaluation: null,
+    cases: { total: 0, active: 0 },
+    settlement: null,
+    last_run: null,
+    run_blockers: [],
+    ...over,
   };
 }
 

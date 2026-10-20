@@ -15,17 +15,28 @@ import type {
   BulkName,
   BulkPayloads,
   BulkResult,
+  BusinessDateDetail,
+  BusinessDateOverview,
   CaseDetail,
   CaseEventInfo,
   CaseFilters,
   CaseListItem,
+  DateFilters,
+  DetectResult,
+  FileFilters,
+  FileListPage,
+  FileValidationExceptionInfo,
   Me,
   ModuleMeta,
   ModuleSummary,
   Paginated,
   PaymentModuleRef,
+  ReconciliationRunInfo,
   TransitionName,
   TransitionPayloads,
+  UploadedFileDetail,
+  UploadItem,
+  UploadResult,
   UserRef,
 } from './types';
 
@@ -40,6 +51,8 @@ export class ApiError extends Error {
   readonly fieldErrors: Record<string, string[]>;
   /** Cases whose approval needs confirm_self_approval (400 on approve / bulk approve). */
   readonly selfApprovalCaseIds: number[];
+  /** The whole parsed body (an upload's 400 carries the per-file refusals). */
+  readonly body: unknown;
 
   constructor(status: number, body: ApiErrorBody | null, fallback: string) {
     const detail = body?.detail || fallback;
@@ -49,6 +62,7 @@ export class ApiError extends Error {
     this.detail = detail;
     this.fieldErrors = body?.errors ?? {};
     this.selfApprovalCaseIds = body?.self_approval_case_ids ?? [];
+    this.body = body;
   }
 
   /** The server refused an approval because it must be confirmed as self-approved. */
@@ -145,16 +159,20 @@ interface RequestOptions {
 async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   const unsafe = method !== 'GET' && method !== 'HEAD';
+  // Multipart (file upload): the browser sets Content-Type with the boundary.
+  const multipart = opts.body instanceof FormData;
   if (unsafe) {
-    headers['Content-Type'] = 'application/json';
+    if (!multipart) headers['Content-Type'] = 'application/json';
     const token = readCookie('csrftoken');
     if (token) headers['X-CSRFToken'] = token;
   }
+  let body: BodyInit | undefined;
+  if (unsafe && opts.body !== undefined) body = multipart ? (opts.body as FormData) : JSON.stringify(opts.body);
   const res = await fetch(`${path}${toQueryString(opts.query)}`, {
     method,
     headers,
     credentials: 'same-origin',
-    body: unsafe && opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    body,
   });
 
   if (res.status === 401) {
@@ -290,4 +308,89 @@ export function bulkAction<N extends BulkName>(
   payload: BulkPayloads[N],
 ): Promise<BulkResult> {
   return request<BulkResult>('POST', `${mod(module)}/cases/bulk/${name}/`, { body: payload });
+}
+
+// ---------------------------------------------------------------------------
+// files, CBS date, business dates and the run (design 4.8-4.11, Slice 2)
+// Writes are for the Operations User only; the server refuses others (403).
+// ---------------------------------------------------------------------------
+/** How much of each file detection needs (intake.DETECT_HEAD_BYTES; detect echoes it). */
+export const DETECT_HEAD_BYTES = 64 * 1024;
+
+/**
+ * Dry run: only the first DETECT_HEAD_BYTES of each file are sent, plus its
+ * SHA-256 ("" when not computed) so the server can name an earlier upload of
+ * the same file. Nothing is saved.
+ */
+export function detectFiles(module: string, files: { file: File; sha256: string }[]): Promise<DetectResult> {
+  const form = new FormData();
+  for (const { file, sha256 } of files) {
+    form.append('files', file.slice(0, DETECT_HEAD_BYTES), file.name);
+    form.append('sha256', sha256);
+  }
+  return request<DetectResult>('POST', `${mod(module)}/files/detect/`, { body: form });
+}
+
+function isUploadResult(body: unknown): body is UploadResult {
+  return !!body && typeof body === 'object' && 'refused' in body && 'accepted' in body;
+}
+
+/**
+ * Upload for one business date; each file is accepted or refused on its own.
+ * "No file was accepted" (400 with the refusals) is returned, not thrown, as
+ * it is a normal outcome; any other error is thrown.
+ */
+export async function uploadFiles(
+  module: string,
+  businessDate: string,
+  entries: { file: File; item: UploadItem }[],
+): Promise<UploadResult> {
+  const form = new FormData();
+  form.append('business_date', businessDate);
+  for (const { file } of entries) form.append('files', file, file.name);
+  form.append('items', JSON.stringify(entries.map((e) => e.item)));
+  try {
+    return await request<UploadResult>('POST', `${mod(module)}/files/`, { body: form });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 400 && isUploadResult(e.body)) return e.body;
+    throw e;
+  }
+}
+
+export function listFiles(module: string, filters: FileFilters): Promise<FileListPage> {
+  return request<FileListPage>('GET', `${mod(module)}/files/`, { query: { ...filters } });
+}
+
+export function getFile(module: string, id: number): Promise<UploadedFileDetail> {
+  return request<UploadedFileDetail>('GET', `${mod(module)}/files/${id}/`);
+}
+
+export function getFileExceptions(
+  module: string,
+  id: number,
+  opts: { severity?: string; page?: number; page_size?: number } = {},
+): Promise<Paginated<FileValidationExceptionInfo>> {
+  return request<Paginated<FileValidationExceptionInfo>>('GET', `${mod(module)}/files/${id}/exceptions/`, {
+    query: { ...opts },
+  });
+}
+
+/** CBS: the chosen date must be one of date_selection.detected_dates. Answers the file detail. */
+export function selectFileDate(module: string, id: number, businessDate: string): Promise<UploadedFileDetail> {
+  return request<UploadedFileDetail>('POST', `${mod(module)}/files/${id}/select-date/`, {
+    body: { business_date: businessDate },
+  });
+}
+
+export function listDates(module: string, filters: DateFilters): Promise<Paginated<BusinessDateOverview>> {
+  return request<Paginated<BusinessDateOverview>>('GET', `${mod(module)}/dates/`, { query: { ...filters } });
+}
+
+export function getDate(module: string, businessDate: string): Promise<BusinessDateDetail> {
+  return request<BusinessDateDetail>('GET', `${mod(module)}/dates/${encodeURIComponent(businessDate)}/`);
+}
+
+/** Queues presence -> rules + case sync -> settlement (202). Poll getDate for its progress. */
+export function startRun(module: string, businessDate: string): Promise<ReconciliationRunInfo> {
+  return request<ReconciliationRunInfo>('POST', `${mod(module)}/dates/${encodeURIComponent(businessDate)}/run/`);
 }

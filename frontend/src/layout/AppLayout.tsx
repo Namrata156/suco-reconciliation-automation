@@ -34,9 +34,9 @@ export function AppLayout() {
 
   const switchModule = (code: string | null) => {
     if (!code) return;
-    // Same screen in the other module; the case id would not carry over.
+    // Same screen in the other module; a case / file id or date would not carry over.
     const rest = location.pathname.split('/').slice(2);
-    const section = rest[0] === 'cases' ? '/cases' : '';
+    const section = ['cases', 'files', 'dates'].includes(rest[0] ?? '') ? `/${rest[0]}` : '';
     navigate(`/${me.modules.find((m) => m.code === code)?.slug ?? code.toLowerCase()}${section}`);
   };
 
