@@ -18,6 +18,7 @@ import type {
 } from '../api/types';
 import { ListPager } from '../components/ListPager';
 import { DecisionModal, type DecisionTarget } from '../features/settings/DecisionModal';
+import { SettingsEvents } from '../features/settings/SettingsEvents';
 import { StaleDatesList } from '../features/settings/StaleDatesList';
 import { useMeta, useModuleCode } from '../hooks/module';
 import { formatCount, formatDateTime } from '../lib/format';
@@ -134,6 +135,10 @@ export function PendingApprovalsPage() {
                   >
                     {i.title}
                   </Anchor>
+                  {/* A code request's "detail" carries its events (contract D4). */}
+                  {i.kind === 'response_code' && 'events' in i.detail && (
+                    <SettingsEvents events={i.detail.events} label={`History of ${i.title}`} />
+                  )}
                 </Table.Td>
                 <Table.Td className="wrap-anywhere">{i.reason || '-'}</Table.Td>
                 <Table.Td>

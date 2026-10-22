@@ -88,8 +88,17 @@ export const MENU: readonly MenuItem[] = [
     capability: 'settings.view',
     slice: 3,
   },
+  // Not module-scoped (design 3.1); the audit lists filter by module instead.
   { key: 'alerts', label: 'Alerts', to: '/alerts', scoped: false, capability: 'alerts.view', slice: 4 },
-  { key: 'audit', label: 'Audit trail', to: '/audit', scoped: false, capability: 'audit.view', slice: 4 },
+  {
+    key: 'audit',
+    label: 'Audit trail',
+    to: '/audit',
+    scoped: false,
+    capability: 'audit.view',
+    slice: 4,
+    matchPrefix: true,
+  },
   {
     key: 'npci-uploads',
     label: 'NPCI uploads',
@@ -98,9 +107,11 @@ export const MENU: readonly MenuItem[] = [
     capability: 'cases.approve',
     slice: 'deferred',
   },
+  // Read-only "who holds which role" (design 4.17, contract C1: Administrator only).
+  { key: 'users', label: 'Users and roles', to: '/users', scoped: false, capability: 'users.admin', slice: 4 },
   {
     key: 'django-admin',
-    label: 'Users and roles (Django admin)',
+    label: 'Edit users (Django admin)',
     to: '/admin/',
     scoped: false,
     external: true,
@@ -110,7 +121,7 @@ export const MENU: readonly MenuItem[] = [
 ];
 
 /** The slice the running build implements. */
-export const BUILT_SLICE = 3;
+export const BUILT_SLICE = 4;
 
 /** Menu items for a user, limited to screens already built. */
 export function menuFor(

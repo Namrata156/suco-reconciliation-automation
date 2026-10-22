@@ -40,7 +40,7 @@ import {
 import type { Choice, MapEntry, MapEntryFields, MappingProposal, MapVersion } from '../../api/types';
 import { SelfApprovedBadge, VersionStatusBadge } from '../../components/Badges';
 import { ListPager } from '../../components/ListPager';
-import { labelOf, useModuleCode } from '../../hooks/module';
+import { labelOf, useMeta, useModuleCode } from '../../hooks/module';
 import { formatCount, formatDateTime } from '../../lib/format';
 import { pageBounds } from '../../lib/urlFilters';
 import { Actions, applyApiError, RootError } from '../cases/actionForms';
@@ -48,18 +48,11 @@ import { DecisionModal, invalidateSettings, type DecisionTarget } from './Decisi
 import { SettingsEvents } from './SettingsEvents';
 
 /**
- * settlement/models.py MatchType and TxnType. Not in /meta/ (API gap noted
- * in the Slice 3 report); hard-coded until the backend lists them.
+ * The match and txn type choices come from /meta/ (ntsl_match_types,
+ * ntsl_txn_types; Slice 4 contract D1), so no list is kept here. REGEX is
+ * the one value with its own behaviour (patterns sent verbatim).
  */
-export const MATCH_TYPES: Choice[] = [
-  { value: 'EXACT', label: 'Exact description' },
-  { value: 'REGEX', label: 'Regular expression (full match)' },
-];
-export const TXN_TYPES: Choice[] = [
-  { value: '', label: '-' },
-  { value: 'U2', label: 'U2' },
-  { value: 'U3', label: 'U3' },
-];
+const REGEX = 'REGEX';
 const DEFAULT_PRIORITY = 100; // settlement.mapping_changes _clean_entry
 
 const ENTRY_PAGE_SIZE = 50;
@@ -82,8 +75,9 @@ export const mappingSchema = z.object({
 });
 type MappingForm = z.infer<typeof mappingSchema>;
 
-const blankEntry = (): MappingForm['add'][number] => ({
-  match_type: 'EXACT',
+/** A new entry starts on the first match type the server lists (EXACT). */
+const blankEntry = (matchTypes: Choice[]): MappingForm['add'][number] => ({
+  match_type: matchTypes[0]?.value ?? '',
   pattern: '',
   category: '',
   txn_type: '',
@@ -96,7 +90,7 @@ export function mappingPayload(v: MappingForm, removeIds: number[]): MappingProp
   return {
     add: v.add.map((e) => ({
       match_type: e.match_type,
-      pattern: e.match_type === 'REGEX' ? e.pattern : e.pattern.trim(),
+      pattern: e.match_type === REGEX ? e.pattern : e.pattern.trim(),
       category: e.category,
       txn_type: e.txn_type,
       priority: e.priority,
@@ -109,11 +103,17 @@ export function mappingPayload(v: MappingForm, removeIds: number[]): MappingProp
 
 export function MappingProposalForm({
   categories,
+  matchTypes,
+  txnTypes,
   removing,
   onSubmit,
   onCancel,
 }: {
   categories: Choice[];
+  /** meta.ntsl_match_types */
+  matchTypes: Choice[];
+  /** meta.ntsl_txn_types ("" = none) */
+  txnTypes: Choice[];
   /** Active entries ticked for removal. */
   removing: MapEntry[];
   onSubmit: (p: MappingProposal) => Promise<void>;
@@ -127,7 +127,7 @@ export function MappingProposalForm({
     formState: { errors, isSubmitting },
   } = useForm<MappingForm>({
     resolver: zodResolver(mappingSchema),
-    defaultValues: { add: removing.length ? [] : [blankEntry()], reason: '' },
+    defaultValues: { add: removing.length ? [] : [blankEntry(matchTypes)], reason: '' },
   });
   const { fields, append, remove } = useFieldArray({ control, name: 'add' });
   const submit = handleSubmit(async (v) => {
@@ -188,9 +188,9 @@ export function MappingProposalForm({
                   render={({ field }) => (
                     <Select
                       label={`Match type ${n}`}
-                      data={MATCH_TYPES}
-                      value={field.value}
-                      onChange={(v) => field.onChange(v ?? 'EXACT')}
+                      data={matchTypes}
+                      value={field.value || null}
+                      onChange={(v) => field.onChange(v ?? '')}
                       allowDeselect={false}
                       w={220}
                       error={err?.match_type?.message}
@@ -226,7 +226,7 @@ export function MappingProposalForm({
                   render={({ field }) => (
                     <Select
                       label={`Txn type ${n}`}
-                      data={TXN_TYPES}
+                      data={txnTypes}
                       value={field.value}
                       onChange={(v) => field.onChange(v ?? '')}
                       allowDeselect={false}
@@ -257,7 +257,7 @@ export function MappingProposalForm({
           );
         })}
         <Group>
-          <Button variant="default" onClick={() => append(blankEntry())}>
+          <Button variant="default" onClick={() => append(blankEntry(matchTypes))}>
             Add another entry
           </Button>
         </Group>
@@ -389,6 +389,9 @@ function PendingVersion({
 // ---------------------------------------------------------------------------
 export function NtslMappingTab() {
   const module = useModuleCode();
+  const { data: meta } = useMeta(module);
+  const matchTypes = meta?.ntsl_match_types ?? [];
+  const txnTypes = meta?.ntsl_txn_types ?? [];
   const qc = useQueryClient();
   const [selected, setSelected] = useState<number | null>(null);
   const [category, setCategory] = useState('');
@@ -528,7 +531,7 @@ export function NtslMappingTab() {
           />
           <Select
             label="Match type"
-            data={[{ value: '', label: 'Any' }, ...MATCH_TYPES]}
+            data={[{ value: '', label: 'Any' }, ...matchTypes]}
             value={matchType}
             onChange={(v) => {
               setMatchType(v ?? '');
@@ -688,6 +691,8 @@ export function NtslMappingTab() {
       >
         <MappingProposalForm
           categories={categories}
+          matchTypes={matchTypes}
+          txnTypes={txnTypes}
           removing={[...removing.values()]}
           onSubmit={propose}
           onCancel={() => setProposing(false)}

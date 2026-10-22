@@ -10,15 +10,16 @@ import {
   UnstyledButton,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { Suspense } from 'react';
+import { Suspense, useEffect } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 
 import { logout } from '../api/client';
 import { useMe, useResetSession } from '../auth/auth';
+import { AlertsBell } from '../components/AlertsBell';
 import { SessionWatcher } from '../auth/SessionWatcher';
 import { BRAND } from '../config';
 import { useModuleCode } from '../hooks/module';
-import { menuFor, menuHref } from '../lib/roles';
+import { can, menuFor, menuHref } from '../lib/roles';
 import { NotFoundPage } from '../pages/NotFoundPage';
 
 /**
@@ -34,16 +35,38 @@ export function isActive(href: string, pathname: string, search: string, matchPr
   return want === have;
 }
 
-export function AppLayout() {
+/**
+ * The module the module-less screens (alerts, audit, users) link back to:
+ * the last one visited in this tab, kept in memory only (design 7.1).
+ */
+let lastModuleSlug = '';
+
+/**
+ * The app shell (design 4.2). `global` is for the screens that are not about
+ * one payment module (alerts, audit, users; design 3.1): the header and the
+ * menu use the last module visited, or the first one.
+ */
+export function AppLayout({ global = false }: { global?: boolean }) {
   const me = useMe();
-  const module = useModuleCode();
+  const urlModule = useModuleCode();
+  // After a sign-in as someone else the remembered module may not be theirs.
+  const module = global
+    ? (me.modules.find((m) => m.slug === lastModuleSlug) ?? me.modules[0])?.slug ?? ''
+    : urlModule;
   const location = useLocation();
   const navigate = useNavigate();
   const reset = useResetSession();
   const [opened, { toggle, close }] = useDisclosure();
 
   const current = me.modules.find((m) => m.slug === module);
-  if (!current) return <NotFoundPage message={`Unknown payment module "${module}".`} />;
+  const currentSlug = current?.slug;
+  useEffect(() => {
+    if (!global && currentSlug) lastModuleSlug = currentSlug;
+  }, [global, currentSlug]);
+  if (!current) {
+    if (global) return <NotFoundPage message="No payment module is available to your account." />;
+    return <NotFoundPage message={`Unknown payment module "${module}".`} />;
+  }
 
   const items = menuFor(me);
 
@@ -109,6 +132,7 @@ export function AppLayout() {
                 {current.code}
               </Text>
             )}
+            {can(me.permissions, 'alerts.view') && <AlertsBell />}
             <Menu position="bottom-end" withinPortal>
               <Menu.Target>
                 <UnstyledButton aria-label={`User menu for ${me.full_name || me.username}`} px="xs">

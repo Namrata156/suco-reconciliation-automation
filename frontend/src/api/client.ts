@@ -11,7 +11,15 @@
  * timeout warning follows (see sessionClock below).
  */
 import type {
+  AlertFilters,
+  AlertListPage,
   ApiErrorBody,
+  AuditCaseEvent,
+  AuditFilters,
+  AuditMeta,
+  AuditOperation,
+  AuditSettingsEvent,
+  AuditUserActivity,
   BulkName,
   BulkPayloads,
   BulkResult,
@@ -24,6 +32,7 @@ import type {
   CodeChangeProposal,
   CodeChangeRequest,
   CodeRequestFilters,
+  CodeRequestListPage,
   DateFilters,
   DetectResult,
   FileFilters,
@@ -35,6 +44,7 @@ import type {
   MappingProposal,
   MapVersion,
   MapVersionDetail,
+  MarkAllReadResult,
   Me,
   ModuleMeta,
   ModuleSummary,
@@ -61,10 +71,14 @@ import type {
   ToleranceVersion,
   TransitionName,
   TransitionPayloads,
+  UnreadAlertCount,
   UploadedFileDetail,
   UploadItem,
   UploadResult,
+  UserAlert,
   UserRef,
+  UserRoleFilters,
+  UserRoleListPage,
 } from './types';
 
 export const API_ROOT = '/api/v1';
@@ -473,10 +487,15 @@ export function listResponseCodes(module: string, filters: ResponseCodeFilters):
   return request<ResponseCodeListPage>('GET', `${settings(module)}/response-codes/`, { query: { ...filters } });
 }
 
-export function listCodeRequests(module: string, filters: CodeRequestFilters): Promise<Paginated<CodeChangeRequest>> {
-  return request<Paginated<CodeChangeRequest>>('GET', `${settings(module)}/response-codes/requests/`, {
+export function listCodeRequests(module: string, filters: CodeRequestFilters): Promise<CodeRequestListPage> {
+  return request<CodeRequestListPage>('GET', `${settings(module)}/response-codes/requests/`, {
     query: { ...filters },
   });
+}
+
+/** One request with its events (contract D4). */
+export function getCodeRequest(module: string, id: number): Promise<CodeChangeRequest> {
+  return request<CodeChangeRequest>('GET', `${settings(module)}/response-codes/requests/${id}/`);
 }
 
 /** Maker: 201 with the new PENDING request. */
@@ -572,4 +591,60 @@ export function decideSetting<K extends SettingsKind>(
   return request<SettingsDecisionResults[K]>('POST', `${settings(module)}/${DECISION_PATH[kind]}/${id}/${decision}/`, {
     body: payload,
   });
+}
+
+// ---------------------------------------------------------------------------
+// alerts (design 4.18, Slice 4 contract A): the signed-in user's own alerts.
+// ---------------------------------------------------------------------------
+export function listAlerts(filters: AlertFilters): Promise<AlertListPage> {
+  return request<AlertListPage>('GET', `${API_ROOT}/notifications/`, { query: { ...filters } });
+}
+
+/** The header bell's count: read-only on the server (A2). */
+export async function getUnreadAlertCount(): Promise<number> {
+  return (await request<UnreadAlertCount>('GET', `${API_ROOT}/notifications/unread-count/`)).unread;
+}
+
+/** Idempotent: an already-read alert keeps its first read_at. */
+export function markAlertRead(id: number): Promise<UserAlert> {
+  return request<UserAlert>('POST', `${API_ROOT}/notifications/${id}/read/`);
+}
+
+/**
+ * Marks read the alerts up to upToId (the newest one shown), so one that
+ * arrived after the list was loaded stays unread (A4).
+ */
+export function markAllAlertsRead(upToId?: number): Promise<MarkAllReadResult> {
+  return request<MarkAllReadResult>('POST', `${API_ROOT}/notifications/read-all/`, {
+    body: upToId === undefined ? {} : { up_to_id: upToId },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// audit (design 4.19 / 3.6, Slice 4 contract B): read-only, Administrator
+// and Auditor ("audit.view"); others 403. Module is a filter, not a path.
+// ---------------------------------------------------------------------------
+export type AuditList = 'case-events' | 'settings-events' | 'user-activity' | 'operations';
+
+export interface AuditRows {
+  'case-events': AuditCaseEvent;
+  'settings-events': AuditSettingsEvent;
+  'user-activity': AuditUserActivity;
+  operations: AuditOperation;
+}
+
+export function getAuditMeta(): Promise<AuditMeta> {
+  return request<AuditMeta>('GET', `${API_ROOT}/audit/meta/`);
+}
+
+export function listAudit<L extends AuditList>(list: L, filters: AuditFilters): Promise<Paginated<AuditRows[L]>> {
+  return request<Paginated<AuditRows[L]>>('GET', `${API_ROOT}/audit/${list}/`, { query: { ...filters } });
+}
+
+// ---------------------------------------------------------------------------
+// users and roles (design 4.17, Slice 4 contract C): read-only list for the
+// Administrator; editing stays in the Django admin (P3).
+// ---------------------------------------------------------------------------
+export function listUsersAndRoles(filters: UserRoleFilters): Promise<UserRoleListPage> {
+  return request<UserRoleListPage>('GET', `${API_ROOT}/users-and-roles/`, { query: { ...filters } });
 }

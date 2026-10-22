@@ -230,13 +230,12 @@ export function CreateCodeForm({
 // ---------------------------------------------------------------------------
 // request history
 // ---------------------------------------------------------------------------
-/** What a request is about: the code's label from meta, or the new code. */
-export function requestTarget(r: CodeChangeRequest, meta: ModuleMeta | undefined): string {
-  if (r.kind === 'CREATE' && r.response_code_id === null) return `New ${r.flag} code`;
-  return (
-    meta?.response_codes.find((c) => c.id === r.response_code_id)?.label ??
-    `Code #${r.response_code_id ?? '-'}`
-  );
+/**
+ * What a request is about: the server's label of the code (contract D2), or
+ * "New RET code" for a CREATE not yet approved (label null).
+ */
+export function requestTarget(r: CodeChangeRequest): string {
+  return r.response_code_label ?? `New ${r.flag} code`;
 }
 
 export function changeText(changes: CodeChangeRequest['changes']): string {
@@ -264,6 +263,8 @@ function RequestHistory({
     placeholderData: keepPreviousData,
   });
   const { pages } = pageBounds(query.data?.count ?? 0, page, PAGE_SIZE);
+  // The requests list says who may decide (contract D3); the codes list's answer until it arrives.
+  const mayDecide = query.data?.can_decide ?? canDecide;
   const decide = (r: CodeChangeRequest, decision: 'approve' | 'reject') =>
     onDecide({
       kind: 'response_code',
@@ -322,7 +323,7 @@ function RequestHistory({
                     )}
                   </Text>
                 </Table.Td>
-                <Table.Td>{requestTarget(r, meta)}</Table.Td>
+                <Table.Td>{requestTarget(r)}</Table.Td>
                 <Table.Td className="wrap-anywhere">
                   {changeText(r.changes) || '-'}
                   {r.new_source && (
@@ -351,7 +352,7 @@ function RequestHistory({
                   <SettingsEvents events={r.events} label={`History of code request #${r.id}`} />
                 </Table.Td>
                 <Table.Td>
-                  {r.status === 'PENDING' && canDecide ? (
+                  {r.status === 'PENDING' && mayDecide ? (
                     <Group gap={4}>
                       <Button size="xs" onClick={() => decide(r, 'approve')}>
                         Approve code request #{r.id}

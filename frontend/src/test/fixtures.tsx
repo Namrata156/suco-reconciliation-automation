@@ -212,6 +212,16 @@ export const META: ModuleMeta = {
     { value: 'ntsl_mapping', label: 'NTSL category mapping change' },
     { value: 'tolerance', label: 'Settlement tolerance change' },
   ],
+  // Slice 4 contract D1.
+  ntsl_match_types: [
+    { value: 'EXACT', label: 'Exact description' },
+    { value: 'REGEX', label: 'Regular expression (full match)' },
+  ],
+  ntsl_txn_types: [
+    { value: '', label: '-' },
+    { value: 'U2', label: 'U2' },
+    { value: 'U3', label: 'U3' },
+  ],
 };
 
 const NO_FLAGS = {

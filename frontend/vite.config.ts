@@ -27,6 +27,26 @@ export default defineConfig({
     sourcemap: false,
     // 1366x768 desktops on an intranet; keep the default browser targets of
     // Vite (current Edge / Chrome, design 7.5).
+    rollupOptions: {
+      output: {
+        // Vendor code in a few stable chunks (Slice 4): they change only on a
+        // dependency upgrade, so the browser keeps them cached across releases,
+        // and no single chunk passes the 500 kB advisory. Screens are split
+        // by lazy routes (AppRoutes.tsx).
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          // CSS stays with its importer (main.tsx), so importing a library's
+          // styles does not make the entry preload that library's JS.
+          if (id.endsWith('.css')) return undefined;
+          if (/[\\/]node_modules[\\/](@mantine[\\/]dates|dayjs)[\\/]/.test(id)) return 'vendor-dates';
+          if (/[\\/]node_modules[\\/]@mantine[\\/]/.test(id)) return 'vendor-mantine';
+          if (/[\\/]node_modules[\\/](zod|react-hook-form|@hookform)[\\/]/.test(id)) return 'vendor-forms';
+          if (/[\\/]node_modules[\\/]@tanstack[\\/]/.test(id)) return 'vendor-tanstack';
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|scheduler)[\\/]/.test(id)) return 'vendor-react';
+          return 'vendor';
+        },
+      },
+    },
   },
   test: {
     environment: 'jsdom',

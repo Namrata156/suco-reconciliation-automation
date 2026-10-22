@@ -404,6 +404,7 @@ const request = (o: Partial<CodeChangeRequest> = {}): CodeChangeRequest => ({
   decision_remarks: '',
   self_approved: false,
   self_approval: false,
+  response_code_label: 'RET 115 - Beneficiary account closed',
   events: [],
   ...o,
 });

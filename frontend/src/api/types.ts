@@ -164,6 +164,11 @@ export interface ModuleMeta {
   change_request_statuses: Choice[];
   /** Pending-approvals ?kind= values. */
   settings_kinds: { value: SettingsKind; label: string }[];
+  // --- Slice 4 fit items (contract D1) -------------------------------------
+  /** settlement MatchType: EXACT / REGEX. */
+  ntsl_match_types: Choice[];
+  /** settlement TxnType: "" (none, label "-") / U2 / U3. */
+  ntsl_txn_types: Choice[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,8 +1121,19 @@ export interface CodeChangeRequest {
   self_approved: boolean;
   /** Pending and proposed by the signed-in user. */
   self_approval: boolean;
-  /** Not on the pending-approvals list's "detail". */
+  /**
+   * The code as shown elsewhere (meta response_codes[].label); null for a
+   * CREATE not yet approved (contract D2).
+   */
+  response_code_label: string | null;
+  /** On the request detail (D4) and the pending-approvals "detail"; not on the list. */
   events?: SettingsEvent[];
+}
+
+/** GET /settings/response-codes/requests/ (contract D3). */
+export interface CodeRequestListPage extends Paginated<CodeChangeRequest> {
+  can_propose: boolean;
+  can_decide: boolean;
 }
 
 export interface CodeRequestFilters {
@@ -1301,4 +1317,181 @@ export interface SettingsDecisionResults {
   response_code: CodeChangeRequest;
   ntsl_mapping: MapVersionDetail;
   tolerance: ToleranceDecisionResult;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 4: alerts, audit, users and roles
+// (docs/phase5_slice4_api_contract.txt, 2026-10-20; design 4.17-4.19)
+// ---------------------------------------------------------------------------
+/** Contract A: one alert of the signed-in user (core.Notification + read status). */
+export interface UserAlert {
+  id: number;
+  /** R07X_CASE, NEEDS_REVIEW, SUBMITTED, BULK_SUBMITTED, REJECTED, DIGEST_MAKER, ... */
+  alert_type: string;
+  alert_type_label: string;
+  subject: string;
+  /** Plain text as mailed. Older alerts carry Django-admin URLs: never link from the body. */
+  body: string;
+  created_at: string;
+  read: boolean;
+  read_at: string | null;
+  module: string | null;
+  /** SPA route ("/upi/cases/123", "/upi/cases?mine=approval"), null if nothing to link to. */
+  link: string | null;
+  related: { type: 'case'; id: number } | null;
+}
+
+export interface AlertFilters {
+  /** "true" / "false"; omit for all. */
+  unread?: string;
+  /** csv */
+  alert_type?: string;
+  page?: number;
+  page_size?: number;
+}
+
+/** A1 GET /notifications/. */
+export interface AlertListPage extends Paginated<UserAlert> {
+  unread: number;
+}
+
+/** A2 GET /notifications/unread-count/. */
+export interface UnreadAlertCount {
+  unread: number;
+  /** The newest UNREAD alert's id. */
+  latest_id: number | null;
+}
+
+/** A4 POST /notifications/read-all/. */
+export interface MarkAllReadResult {
+  marked: number;
+  unread: number;
+}
+
+/** Filters shared by the four audit lists (contract B). */
+export interface AuditFilters {
+  date_from?: string;
+  date_to?: string;
+  /** Username, exact, case-insensitive. */
+  user?: string;
+  /** csv */
+  event_type?: string;
+  ordering?: string;
+  page?: number;
+  page_size?: number;
+  // per list
+  module?: string;
+  business_date?: string;
+  case?: string;
+  rrn?: string;
+  /** settings-events only, csv */
+  kind?: string;
+}
+
+/** B1 GET /audit/case-events/. */
+export interface AuditCaseEvent {
+  id: number;
+  created_at: string;
+  module: string;
+  case_id: number;
+  business_date: string;
+  rrn: string;
+  event_type: string;
+  event_type_label: string;
+  /** null = the system (case sync). */
+  actor_username: string | null;
+  source: string;
+  old_status: string;
+  new_status: string;
+  remarks: string;
+  changes: Record<string, unknown>;
+  action_snapshot: Record<string, unknown> | null;
+  self_approved: boolean;
+  link: string;
+}
+
+/** B2 GET /audit/settings-events/. */
+export interface AuditSettingsEvent {
+  /** "<kind>:<event id>". */
+  id: string;
+  kind: SettingsKind;
+  kind_label: string;
+  event_id: number;
+  created_at: string;
+  module: string;
+  event_type: string;
+  event_type_label: string;
+  actor_username: string | null;
+  remarks: string;
+  changes: Record<string, unknown>;
+  self_approved: boolean;
+  item_id: number;
+  item_label: string;
+  link: string;
+}
+
+/** B3 GET /audit/user-activity/. */
+export interface AuditUserActivity {
+  id: number;
+  created_at: string;
+  /** LOGIN / LOGOUT / LOGIN_FAILED. */
+  event_type: string;
+  event_type_label: string;
+  username: string;
+  user_id: number | null;
+  ip_address: string | null;
+  user_agent: string;
+  path: string;
+}
+
+/** B4 GET /audit/operations/. */
+export interface AuditOperation {
+  id: number;
+  created_at: string;
+  module: string;
+  event_type: string;
+  event_type_label: string;
+  username: string | null;
+  source: string;
+  business_date: string | null;
+  uploaded_file_id: number | null;
+  run_id: number | null;
+  details: Record<string, unknown>;
+  link: string | null;
+}
+
+/** B5 GET /audit/meta/. */
+export interface AuditMeta {
+  modules: PaymentModuleRef[];
+  case_event_types: Choice[];
+  settings_kinds: Choice[];
+  settings_event_types: Choice[];
+  user_activity_types: Choice[];
+  operation_types: Choice[];
+  orderings: string[];
+}
+
+/** C1 GET /users-and-roles/ row. */
+export interface UserRoleRow {
+  id: number;
+  username: string;
+  full_name: string;
+  /** In Role order; a superuser holds all five. */
+  roles: RoleName[];
+  is_superuser: boolean;
+  is_active: boolean;
+  last_login: string | null;
+}
+
+export interface UserRoleFilters {
+  role?: string;
+  active?: string;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface UserRoleListPage extends Paginated<UserRoleRow> {
+  /** "/admin/auth/user/", or null without Django staff status. */
+  admin_users_url: string | null;
 }

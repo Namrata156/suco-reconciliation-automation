@@ -38,8 +38,23 @@ export function useUrlFilters<K extends string>(keys: readonly K[], pageSize = 5
     },
     [setParams],
   );
+  /** Several filters at once (two setFilter calls in one event would not both apply). */
+  const setFilters = useCallback(
+    (values: Partial<Record<K, string | null | undefined>>) => {
+      setParams((prev) => {
+        const next = new URLSearchParams(prev);
+        for (const [k, v] of Object.entries(values) as [string, string | null | undefined][]) {
+          if (v) next.set(k, v);
+          else next.delete(k);
+        }
+        next.delete('page');
+        return next;
+      });
+    },
+    [setParams],
+  );
   const reset = useCallback(() => setParams(new URLSearchParams()), [setParams]);
-  return { filters, setFilter, reset };
+  return { filters, setFilter, setFilters, reset };
 }
 
 /** "Showing 51-100 of 70,969"-style bounds for a page. */

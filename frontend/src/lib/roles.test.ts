@@ -8,8 +8,17 @@ const keys = (roles: RoleName[], builtSlice?: number) =>
   menuFor(makeMe(roles), builtSlice ? { builtSlice } : undefined).map((i) => i.key);
 
 describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
-  it('Maker: home, cases, my cases, files, business dates, settings, pending approvals', () => {
-    expect(keys(['Maker'])).toEqual(['home', 'cases', 'my-cases', 'files', 'dates', 'settings', 'pending-approvals']);
+  it('Maker: home, cases, my cases, files, business dates, settings, pending approvals, alerts', () => {
+    expect(keys(['Maker'])).toEqual([
+      'home',
+      'cases',
+      'my-cases',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+      'alerts',
+    ]);
   });
 
   it('Checker: home, cases, awaiting my approval, files, business dates, settings, pending approvals', () => {
@@ -21,6 +30,7 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'dates',
       'settings',
       'pending-approvals',
+      'alerts',
     ]);
   });
 
@@ -32,6 +42,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'dates',
       'settings',
       'pending-approvals',
+      'alerts',
+      'audit',
+      'users',
       'django-admin',
     ]);
   });
@@ -42,11 +55,50 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
   });
 
   it('Operations User: upload, files and business dates (Slice 2), settings read-only (Slice 3)', () => {
-    expect(keys(['Operations User'])).toEqual(['home', 'cases', 'upload', 'files', 'dates', 'settings', 'pending-approvals']);
+    expect(keys(['Operations User'])).toEqual([
+      'home',
+      'cases',
+      'upload',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+      'alerts',
+    ]);
   });
 
-  it('Auditor: read-only files and business dates, no upload', () => {
-    expect(keys(['Auditor'])).toEqual(['home', 'cases', 'files', 'dates', 'settings', 'pending-approvals']);
+  it('Auditor: read-only screens plus alerts and the audit trail; no upload, no users list', () => {
+    expect(keys(['Auditor'])).toEqual([
+      'home',
+      'cases',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+      'alerts',
+      'audit',
+    ]);
+  });
+
+  it('Slice 3 build: no alerts, audit or users screens', () => {
+    expect(keys(['Administrator'], 3)).toEqual([
+      'home',
+      'cases',
+      'files',
+      'dates',
+      'settings',
+      'pending-approvals',
+      'django-admin',
+    ]);
+  });
+
+  it('module-less items (alerts, audit, users) keep their own address in every module', () => {
+    for (const key of ['alerts', 'audit', 'users']) {
+      const item = MENU.find((i) => i.key === key)!;
+      expect(item.scoped).toBe(false);
+      expect(menuHref(item, 'upi')).toBe(`/${key}`);
+    }
+    expect(MENU.find((i) => i.key === 'audit')?.matchPrefix).toBe(true);
   });
 
   it('Slice 1 build: no file screens', () => {
@@ -63,6 +115,7 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'dates',
       'settings',
       'pending-approvals',
+      'alerts',
     ]);
   });
 

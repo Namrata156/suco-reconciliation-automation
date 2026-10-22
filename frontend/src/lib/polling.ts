@@ -26,7 +26,16 @@ export const POLL = {
   stopAfterIdleMs: 2 * 60_000,
 };
 
-const INPUT_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+/**
+ * The header alerts bell (design 4.2 / 4.18, Slice 4): a modest interval,
+ * under the same idle rule. Unlike the screens above, the bell is on every
+ * page, so it must never be what keeps an unattended session open: with
+ * nobody at the desk it stops 2 minutes after the last input, and the
+ * 15-minute idle timeout runs out as designed.
+ */
+export const ALERTS_POLL = { ...POLL, everyMs: 60_000 };
+
+const INPUT_EVENTS =['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
 
 /** The refetch interval: POLL.everyMs while wanted and the user is active, else false. */
 export function pollInterval(wanted: boolean, active: boolean, cfg = POLL): number | false {

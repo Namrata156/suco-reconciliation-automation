@@ -6,6 +6,32 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-21
+
+- **Added: Phase 5 Slice 4 — Alerts, audit, users (API + frontend).**
+  Contract: `docs/phase5_slice4_api_contract.txt`.
+  - **API**: `/api/v1/notifications/` (my alerts, unread filter),
+    `notifications/unread-count/` (writes nothing), `<id>/read/`,
+    `read-all/` (`up_to_id`); per-user read status on `core.Notification`
+    (migration `core/0011_notification_read_status`); alert links now point
+    at SPA routes (`exception_management/alerts.py`, `settlement/cases.py`,
+    `core/notifications.py`). Read-only audit for Administrator and
+    Auditor: `/api/v1/audit/{case-events,settings-events,user-activity,
+    operations,meta}/` (`api/audit.py`). `/api/v1/users-and-roles/`
+    (Administrator). Slice 3 fit items: NTSL match/txn types in `/meta/`,
+    `response_code_label` on code requests, `can_propose`/`can_decide` on
+    the requests list, new `settings/response-codes/requests/<id>/` with
+    events. Tests: `api/tests/test_slice4.py`.
+  - **Frontend**: alerts bell in the header (60 s, only while the user is
+    active), `/alerts`, `/audit/*` (four read-only tabs, filters in the
+    address), `/users` (read-only, link to Django admin); Settings tabs use
+    the new meta lists and code labels. All routes lazy-loaded and vendor
+    code split (`vite.config.ts`): main chunk 908 → 25 kB. Fixed: audit
+    text filters raised an error on the first keystroke. Playwright
+    `e2e/slice4.spec.ts` (`E2E_AUDITOR_*`).
+  - Verified: 648/648 Django tests, Vitest 140/140, lint/type-check/build
+    clean, slice4 e2e 1/1, slice3 e2e re-run 2/2.
+
 ## 2026-10-20
 
 - **Added: Phase 5 Slice 2 — Files and running a day (API + frontend).**
