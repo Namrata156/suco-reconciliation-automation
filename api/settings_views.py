@@ -9,6 +9,7 @@ the self-approval flag and write the append-only event log:
 
   GET  /settings/response-codes/                     the module's code table
   GET  /settings/response-codes/requests/            change requests (history, pending)
+  GET  /settings/response-codes/requests/<id>/       one request + its events (Slice 4)
   POST /settings/response-codes/requests/            propose an EDIT or a CREATE (Maker)
   POST /settings/response-codes/requests/<id>/approve/  Checker; own proposal needs confirm_self_approval
   POST /settings/response-codes/requests/<id>/reject/   Checker; reason required
@@ -167,6 +168,9 @@ class DecisionView(SettingsView):
 def code_request_row(req: ResponseCodeChangeRequest, user=None) -> dict:
     return {
         "id": req.pk, "kind": req.kind, "flag": req.flag, "response_code_id": req.response_code_id,
+        # Slice 4: the code as shown elsewhere (meta response_codes[].label); None for a CREATE
+        # not yet approved.
+        "response_code_label": str(req.response_code) if req.response_code_id else None,
         "changes": req.changes(), "new_source": req.new_source, "reason": req.reason, "status": req.status,
         "requested_by": _user(req.requested_by), "requested_at": req.requested_at,
         "decided_by": _user(req.decided_by), "decided_at": req.decided_at, "decision_remarks": req.decision_remarks,
@@ -215,8 +219,7 @@ class ResponseCodeRequestListView(SettingsView):
 
     def get(self, request, module):
         p, errors = request.query_params, {}
-        qs = (ResponseCodeChangeRequest.objects.filter(payment_module=self.module)
-              .select_related("requested_by", "decided_by").order_by("-requested_at", "-pk"))
+        qs = _code_requests(self.module).order_by("-requested_at", "-pk")
         statuses = _enum_filter(p, "status", ChangeRequestStatus.values, errors)
         if statuses:
             qs = qs.filter(status__in=statuses)
@@ -232,8 +235,11 @@ class ResponseCodeRequestListView(SettingsView):
             return _bad_request("Invalid input", errors)
         paginator, page = _paginate(self, request, qs)
         events = _code_events(page)
-        return paginator.get_paginated_response(
+        response = paginator.get_paginated_response(
             [{**code_request_row(r, request.user), "events": events.get(r.pk, [])} for r in page])
+        response.data["can_propose"] = has_role(request.user, Role.MAKER)
+        response.data["can_decide"] = has_role(request.user, Role.CHECKER)
+        return response
 
     def post(self, request, module):
         """Maker. {"kind": "EDIT", "response_code": <id>, "new_code", "new_description",
@@ -278,7 +284,7 @@ class ResponseCodeRequestListView(SettingsView):
 
 def _code_requests(module):
     return (ResponseCodeChangeRequest.objects.filter(payment_module=module)
-            .select_related("requested_by", "decided_by"))
+            .select_related("requested_by", "decided_by", "response_code"))
 
 
 def _code_events(requests) -> dict[int, list]:
@@ -292,6 +298,14 @@ def _code_events(requests) -> dict[int, list]:
 
 def _code_request_detail(req: ResponseCodeChangeRequest, user) -> dict:
     return {**code_request_row(req, user), "events": _code_events([req]).get(req.pk, [])}
+
+
+class ResponseCodeRequestDetailView(SettingsView):
+    """GET .../response-codes/requests/<id>/ -- one request and its events
+    (Slice 4 fit item: the pending request's history)."""
+
+    def get(self, request, module, pk):
+        return Response(_code_request_detail(get_object_or_404(_code_requests(self.module), pk=pk), request.user))
 
 
 class ResponseCodeDecisionView(DecisionView):
@@ -625,14 +639,15 @@ class PendingApprovalsView(SettingsView):
             return _bad_request("Invalid input", errors)
         me, items = request.user, []
         if "response_code" in kinds:
-            for r in (ResponseCodeChangeRequest.objects.filter(payment_module=self.module,
-                                                               status=ChangeRequestStatus.PENDING)
-                      .select_related("requested_by", "response_code")):
+            requests = list(_code_requests(self.module).filter(status=ChangeRequestStatus.PENDING))
+            events = _code_events(requests)
+            for r in requests:
                 target = str(r.response_code) if r.response_code else f"new {r.flag} code '{r.new_description}'"
                 items.append({"kind": "response_code", "id": r.pk,
                               "title": f"{r.get_kind_display()}: {target}", "reason": r.reason,
                               "proposed_by": _user(r.requested_by), "proposed_at": r.requested_at,
-                              "self_approval": r.requested_by_id == me.pk, "detail": code_request_row(r, me)})
+                              "self_approval": r.requested_by_id == me.pk,
+                              "detail": {**code_request_row(r, me), "events": events.get(r.pk, [])}})
         if "ntsl_mapping" in kinds:
             for v in _map_versions(self.module).filter(status=MapStatus.PENDING):
                 row = map_version_row(v, me)

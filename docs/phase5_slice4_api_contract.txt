@@ -1,0 +1,221 @@
+================================================================================
+ PHASE 5 SLICE 4 - API CONTRACT (alerts, audit, users) + Slice 3 fit items
+ backend-engineer, 2026-10-20. Design: docs/phase5_design_draft_v1.txt
+ (4.17, 4.18, 4.19, 3.4, 3.5, Slice 4).
+================================================================================
+
+Common rules (unchanged from Slices 1-3, design 3.4):
+  - Session login + CSRF (X-CSRFToken on every POST). Not logged in -> 401.
+    Logged in but no role -> 403. Wrong role for the endpoint -> 403.
+  - Lists: {count, next, previous, results}; page_size default 50, max 500;
+    ?page=N&page_size=N.
+  - Errors: {"detail": str, "errors": {field: [str]}}; 400 / 401 / 403 / 404.
+  - Dates are ISO "YYYY-MM-DD"; timestamps ISO 8601 with offset (IST).
+  - Comma lists are accepted where a filter says "csv" (e.g. event_type=A,B).
+  - "module" values are the lower-case slug (upi), as in /me modules[].slug.
+  - Date-range filters (date_from, date_to) are INCLUSIVE local (IST) dates
+    applied to the event's timestamp (created_at), not to a business date.
+
+--------------------------------------------------------------------------------
+A. ALERTS (design 4.18). Roles: all five. A user only ever sees their OWN
+   alerts; another user's alert id answers 404.
+--------------------------------------------------------------------------------
+Alert object (used by all A endpoints):
+  {
+    "id": int,
+    "alert_type": str,            // R07X_CASE, NEEDS_REVIEW, SUBMITTED, BULK_SUBMITTED,
+                                  // REJECTED, DIGEST_MAKER, DIGEST_CHECKER,
+                                  // SETTLEMENT_CASE, SETTLEMENT_REVIEW
+    "alert_type_label": str,
+    "subject": str,
+    "body": str,                  // plain text as mailed. NOTE: alerts written before
+                                  // Slice 4 contain Django-admin URLs in the body; use
+                                  // "link" below, never a URL parsed from the body.
+    "created_at": timestamp,
+    "read": bool,
+    "read_at": timestamp | null,
+    "module": str | null,         // slug, e.g. "upi"
+    "link": str | null,           // SPA route, e.g. "/upi/cases/123",
+                                  // "/upi/cases?mine=approval",
+                                  // "/upi/cases?flag=r07x&status=all&business_date=2026-07-14"
+                                  // null only if nothing to link to
+    "related": {"type": "case", "id": int} | null
+  }
+  (TEST alerts - the "send a test email" check - are never listed or counted.)
+
+A1 GET /api/v1/notifications/
+   Query: unread=true|false (omit = all), alert_type (csv), page, page_size.
+   Order: newest first (created_at desc, id desc).
+   200: {count, next, previous, results: [Alert], "unread": int}
+   400: bad unread / alert_type value.
+
+A2 GET /api/v1/notifications/unread-count/
+   For the header bell. Read-only, one query, writes nothing (no session
+   field, no log row). The session cookie is renewed only as on every
+   request (SESSION_SAVE_EVERY_REQUEST) - nothing extra.
+   200: {"unread": int, "latest_id": int | null}
+        latest_id = id of the newest UNREAD alert (lets the SPA spot a new one).
+
+A3 POST /api/v1/notifications/<id>/read/
+   Body: none. Idempotent: an already-read alert keeps its first read_at.
+   200: Alert.  404: not yours / no such id.
+
+A4 POST /api/v1/notifications/read-all/
+   Body (optional): {"up_to_id": int}  - mark only alerts with id <= up_to_id
+   (so an alert that arrived after the list was shown stays unread).
+   200: {"marked": int, "unread": int}
+   400: up_to_id not an integer.
+
+--------------------------------------------------------------------------------
+B. AUDIT, READ-ONLY (design 4.19 + operations log 3.6).
+   Roles: Administrator, Auditor (design 3.5 / 4.19; /me permissions
+   "audit.view"). Others -> 403. No POST/PUT/DELETE exists (405).
+   Not module-scoped in the URL; filter with ?module=<slug>.
+   Common filters on B1-B4:
+     date_from, date_to   ISO dates, inclusive, on created_at (IST)
+     user                 username, exact, case-insensitive
+     event_type           csv; allowed values per list (see B5 meta)
+     ordering             "-created_at" (default, newest first) | "created_at"
+     page, page_size
+   400 on any bad value: errors.{field}.
+--------------------------------------------------------------------------------
+B1 GET /api/v1/audit/case-events/
+   Extra filters: module, business_date (ISO), case (case id), rrn (exact).
+   Row:
+   {
+     "id": int, "created_at": timestamp,
+     "module": str,                       // slug
+     "case_id": int, "business_date": date, "rrn": str,
+     "event_type": str, "event_type_label": str,   // exception_management EventType
+     "actor_username": str | null,        // null = the system (case sync)
+     "source": str,
+     "old_status": str, "new_status": str,         // "" when not a status change
+     "remarks": str,
+     "changes": object,                   // {field: [old, new]}
+     "action_snapshot": object | null,
+     "self_approved": bool,               // APPROVED event whose action was self-approved
+     "link": str                          // "/upi/cases/123"
+   }
+
+B2 GET /api/v1/audit/settings-events/
+   Response codes, NTSL mapping and tolerance events in one list.
+   Extra filters: module, kind (csv: response_code, ntsl_mapping, tolerance).
+   event_type values: PROPOSED, APPROVED, REJECTED, SEEDED, RETIRED.
+   Row:
+   {
+     "id": str,                           // "<kind>:<event id>" (unique across the 3 tables)
+     "kind": "response_code" | "ntsl_mapping" | "tolerance",
+     "kind_label": str,
+     "event_id": int, "created_at": timestamp, "module": str,
+     "event_type": str, "event_type_label": str,
+     "actor_username": str | null,        // as recorded; "seed" for SEEDED (approved
+                                          // release) events; null if none recorded
+     "remarks": str, "changes": object, "self_approved": bool,
+     "item_id": int,                      // change request id / mapping version id / tolerance version id
+     "item_label": str,                   // e.g. "EDIT: RET 501 ...", "NTSL mapping v3", "Tolerance v2"
+     "link": str                          // "/upi/settings/response-codes" | ".../ntsl-mapping" | ".../tolerance"
+   }
+
+B3 GET /api/v1/audit/user-activity/
+   Login, logout, failed login. No module filter (not module data).
+   event_type values: LOGIN, LOGOUT, LOGIN_FAILED.
+   user matches the username recorded (also typed names of failed logins).
+   Row:
+   {
+     "id": int, "created_at": timestamp,
+     "event_type": str, "event_type_label": str,
+     "username": str, "user_id": int | null,   // null: unknown username / expired session
+     "ip_address": str | null, "user_agent": str, "path": str
+   }
+
+B4 GET /api/v1/audit/operations/
+   core.OperationLog: upload, refused upload, CBS date selection, run.
+   Extra filters: module, business_date (ISO).
+   event_type values: FILE_UPLOADED, FILE_REFUSED, BUSINESS_DATE_SELECTED,
+   RUN_STARTED.
+   Row:
+   {
+     "id": int, "created_at": timestamp, "module": str,
+     "event_type": str, "event_type_label": str,
+     "username": str | null, "source": str,
+     "business_date": date | null,
+     "uploaded_file_id": int | null, "run_id": int | null,
+     "details": object,                   // as logged: file name, hash, reasons, dates...
+     "link": str | null                   // "/upi/files/<id>" if a file, else
+                                          // "/upi/dates/<date>" if a date, else null
+   }
+
+B5 GET /api/v1/audit/meta/
+   Filter choices for the four lists.
+   200: {
+     "modules": [{"code", "slug", "name"}],
+     "case_event_types":     [{"value", "label"}],
+     "settings_kinds":       [{"value", "label"}],
+     "settings_event_types": [{"value", "label"}],
+     "user_activity_types":  [{"value", "label"}],
+     "operation_types":      [{"value", "label"}],
+     "orderings": ["-created_at", "created_at"]
+   }
+
+--------------------------------------------------------------------------------
+C. USERS AND ROLES, READ-ONLY (design 4.17, optional list; P3: editing stays
+   in the Django admin).
+--------------------------------------------------------------------------------
+C1 GET /api/v1/users-and-roles/
+   Roles: Administrator only (design 4.17 "A"; the Auditor is NOT given it
+   by the design - open question to the owner). Others -> 403.
+   Lists every account, including inactive ones and accounts with no role.
+   Query: role (one of the five role names), active=true|false,
+          search (in username / first / last name), page, page_size.
+   Order: username.
+   Row:
+   {
+     "id": int, "username": str, "full_name": str,
+     "roles": [str],                     // in Role order; a superuser holds all five
+     "is_superuser": bool,
+     "is_active": bool,
+     "last_login": timestamp | null
+   }
+   Extra top-level key: "admin_users_url": "/admin/auth/user/" | null
+   (null when the caller has no Django staff status).
+
+   /api/v1/me/ already returns "admin_url": "/admin/" for an Administrator
+   with staff status (Slice 1) - unchanged; use it for the menu link.
+   The existing /api/v1/users/?role=Maker (reassign list, all roles) is
+   unchanged.
+
+--------------------------------------------------------------------------------
+D. SLICE 3 FIT ITEMS (additive; nothing removed or renamed)
+--------------------------------------------------------------------------------
+D1 GET /api/v1/<module>/meta/  - two new keys:
+     "ntsl_match_types": [{"value": "EXACT"|"REGEX", "label"}],
+     "ntsl_txn_types":   [{"value": ""|"U2"|"U3", "label"}]   // "" = none ("-")
+
+D2 Response-code change request object (every place it appears: the
+   requests list, POST result, approve/reject result, pending approvals
+   "detail") gains:
+     "response_code_label": str | null   // the code as shown elsewhere
+                                         // (same text as meta response_codes[].label);
+                                         // null for a CREATE not yet approved
+
+D3 GET /api/v1/<module>/settings/response-codes/requests/ gains top-level
+     "can_propose": bool (Maker), "can_decide": bool (Checker)
+
+D4 NEW GET /api/v1/<module>/settings/response-codes/requests/<id>/
+     Roles: all five. 200: change request object + "events": [
+       {"event_type", "actor_username", "created_at", "remarks", "self_approved"}].
+     404: not in this module.
+   And GET /api/v1/<module>/settings/pending/: response_code items'
+   "detail" now also carries "events" (same shape).
+
+D5 Settlement self-check shapes (GET /api/v1/<module>/dates/<date>/settlement/
+   -> self_check.results[]) - documented, no change:
+     "failures":       [str]   plain-language reasons; [] on PASS;
+                               ["No NTSL lines loaded for this cycle"] on MISSING
+     "unmapped_lines": [{"description": str, "row_reference": str,
+                         "txn_count": int | null,
+                         "debit": str, "credit": str}]   // amounts "0.00" strings
+     "category_totals": {<NtslCategory value>: {"lines": int, "txn_count": int,
+                         "debit": str, "credit": str}}
+
+Not built (waits on the owner): a cross-date results / settlement endpoint.

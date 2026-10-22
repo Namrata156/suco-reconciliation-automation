@@ -1,7 +1,7 @@
 """
 Email-ready alert outbox (owner-approved plan, 2026-10-11).
 
-  notify(alert_type, recipients, context, related=None)
+  notify(alert_type, recipients, context, related=None, link_path="")
       Renders core/templates/notifications/<alert_type lower>.txt (first line
       = subject, the rest = body) and writes one core.Notification per
       recipient WHEN THE CURRENT TRANSACTION COMMITS (transaction.on_commit):
@@ -79,7 +79,7 @@ def link(path: str) -> str:
     return f"{settings.ALERT_LINK_BASE_URL}{path}"
 
 
-def _rows(alert_type, recipients, subject, body, related, dedupe_key) -> list[Notification]:
+def _rows(alert_type, recipients, subject, body, related, dedupe_key, link_path="") -> list[Notification]:
     held_or_queued = NotificationStatus.QUEUED if mail_enabled() else NotificationStatus.HELD_NO_MAIL_SERVER
     ct = ContentType.objects.get_for_model(related) if related is not None else None
     rows, seen = [], set()
@@ -91,21 +91,24 @@ def _rows(alert_type, recipients, subject, body, related, dedupe_key) -> list[No
         rows.append(Notification(
             alert_type=alert_type, recipient=user, recipient_username=user.get_username(), recipient_email=email,
             subject=subject, body=body, content_type=ct, object_id=related.pk if related is not None else None,
-            dedupe_key=dedupe_key, status=held_or_queued if email else NotificationStatus.SKIPPED_NO_EMAIL,
+            dedupe_key=dedupe_key, link_path=link_path,
+            status=held_or_queued if email else NotificationStatus.SKIPPED_NO_EMAIL,
         ))
     return rows
 
 
-def notify(alert_type: str, recipients, context: dict, related=None, *, dedupe_key: str = "") -> None:
+def notify(alert_type: str, recipients, context: dict, related=None, *, dedupe_key: str = "",
+           link_path: str = "") -> None:
     """Records the alert for every recipient once the current transaction
     commits (immediately when not in a transaction). Rendered now, written
     later; a dedupe_key makes a second identical alert to the same user a
-    no-op (e.g. the daily digest run twice)."""
+    no-op (e.g. the daily digest run twice). link_path is the SPA route the
+    alert is about (/upi/cases/123), kept for the in-app alert list."""
     subject, body = render(alert_type, context)
     recipients = list(recipients)
 
     def write():
-        rows = _rows(alert_type, recipients, subject, body, related, dedupe_key)
+        rows = _rows(alert_type, recipients, subject, body, related, dedupe_key, link_path)
         if rows:
             Notification.objects.bulk_create(rows, ignore_conflicts=bool(dedupe_key))
 

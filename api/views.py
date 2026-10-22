@@ -55,11 +55,13 @@ from settlement.categories import NtslCategory
 from settlement.models import (
     CheckStatus,
     MapStatus,
+    MatchType,
     NtslCategoryMapVersion,
     ResultStatus,
     SettlementResult,
     SettlementTolerance,
     Side,
+    TxnType,
 )
 
 SELF_APPROVAL_MESSAGE = "You submitted this action; approving it will be recorded as self-approved."
@@ -189,6 +191,9 @@ class MetaView(ModuleView):
             "settlement_sides": _choices(Side),
             "settlement_transaction_kinds": [{"value": k, "label": v[0]} for k, v in TRANSACTION_KINDS.items()],
             "ntsl_categories": _choices(NtslCategory),
+            # Slice 4 fit items: the NTSL mapping entry form ("" = no txn type).
+            "ntsl_match_types": _choices(MatchType),
+            "ntsl_txn_types": _choices(TxnType),
             "code_flags": _choices(CodeFlag),
             "settings_statuses": _choices(MapStatus),
             "change_request_statuses": _choices(ChangeRequestStatus),

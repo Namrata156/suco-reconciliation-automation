@@ -376,6 +376,21 @@ class GroupDetailView(ResultsView):
 # 4.14 settlement per date and cycle, S2 self-check
 # ---------------------------------------------------------------------------
 def _check_row(c: NtslCycleCheck) -> dict:
+    """One cycle of the S2 NTSL self-check (settlement.selfcheck), as stored
+    on NtslCycleCheck:
+
+      failures        [str]  plain-language reasons; [] on PASS;
+                             ["No NTSL lines loaded for this cycle"] on MISSING
+      unmapped_lines  [{"description": str, "row_reference": str,
+                        "txn_count": int | None, "debit": "0.00", "credit": "0.00"}]
+                             NTSL lines no mapping entry matched (amounts are
+                             2-decimal strings)
+      category_totals {<NtslCategory value>: {"lines": int, "txn_count": int,
+                        "debit": "0.00", "credit": "0.00"}}
+                             only categories that had lines
+
+    The four net blocks carry {"ntsl", "computed", "difference"} as 2-decimal
+    strings or None."""
     return {"id": c.pk, "cycle": c.settlement_cycle.cycle_code, "status": c.status, "failures": c.failures,
             "map_version": c.map_version.version, "line_count": c.line_count, "unmapped_count": c.unmapped_count,
             "unmapped_lines": c.unmapped_lines, "category_totals": c.category_totals,

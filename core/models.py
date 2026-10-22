@@ -349,6 +349,10 @@ class Notification(models.Model):
     dedupe_key = models.CharField(
         max_length=100, blank=True, help_text="Set for alerts that must go once per recipient (e.g. one digest a day)"
     )
+    link_path = models.CharField(
+        max_length=500, blank=True,
+        help_text="The SPA route the alert is about, e.g. /upi/cases/123 (Phase 5 Slice 4); blank on older alerts",
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     status = models.CharField(max_length=30, choices=NotificationStatus.choices)
@@ -361,7 +365,10 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ["-created_at", "-id"]
-        indexes = [models.Index(fields=["status", "next_attempt_at"], name="notification_pending_idx")]
+        indexes = [
+            models.Index(fields=["status", "next_attempt_at"], name="notification_pending_idx"),
+            models.Index(fields=["recipient", "-created_at", "-id"], name="notification_inbox_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["recipient", "dedupe_key"], condition=~Q(dedupe_key=""), name="one_notification_per_dedupe_key"
@@ -372,7 +379,7 @@ class Notification(models.Model):
         return f"{self.created_at:%Y-%m-%d %H:%M} {self.alert_type} -> {self.recipient_username or self.recipient_email} [{self.status}]"
 
     _CONTENT_FIELDS = ("alert_type", "recipient_id", "recipient_username", "recipient_email", "subject", "body",
-                       "content_type_id", "object_id", "dedupe_key", "created_at")
+                       "content_type_id", "object_id", "dedupe_key", "link_path", "created_at")
 
     def save(self, *args, **kwargs):
         if not self._state.adding:
@@ -388,3 +395,25 @@ class Notification(models.Model):
 
     def delete(self, *args, **kwargs):
         raise NotificationImmutableError("Notifications are never deleted")
+
+
+class NotificationRead(models.Model):
+    """
+    The in-app "read" mark of one alert (design 4.18, Phase 5 Slice 4). Kept
+    apart from Notification, whose content is append-only and whose only
+    changing fields are the mail-delivery ones. One alert has one recipient,
+    so one row per alert is the per-user read status; `user` repeats the
+    recipient so "my unread" needs no join through the outbox. Written only
+    by api.alerts (mark read / mark all read); never changed afterwards (the
+    first read_at stays).
+    """
+
+    notification = models.OneToOneField(Notification, on_delete=models.PROTECT, related_name="read_mark")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    read_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "notification"], name="notificationread_user_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.notification_id} read by {self.user_id} at {self.read_at:%Y-%m-%d %H:%M}"

@@ -4,7 +4,7 @@
 """
 from django.urls import path
 
-from api import auth, operations, results, settings_views, views
+from api import alerts, audit, auth, operations, results, settings_views, views
 
 urlpatterns = [
     path("auth/csrf/", auth.CsrfView.as_view(), name="v1-auth-csrf"),
@@ -13,6 +13,17 @@ urlpatterns = [
     path("me/", auth.MeView.as_view(), name="v1-me"),
     path("modules/", views.ModuleListView.as_view(), name="v1-modules"),
     path("users/", views.UserListView.as_view(), name="v1-users"),
+    # alerts, audit, users and roles (Slice 4)
+    path("notifications/", alerts.NotificationListView.as_view(), name="v1-notifications"),
+    path("notifications/unread-count/", alerts.UnreadCountView.as_view(), name="v1-notifications-unread-count"),
+    path("notifications/read-all/", alerts.NotificationReadAllView.as_view(), name="v1-notifications-read-all"),
+    path("notifications/<int:pk>/read/", alerts.NotificationReadView.as_view(), name="v1-notification-read"),
+    path("audit/meta/", audit.AuditMetaView.as_view(), name="v1-audit-meta"),
+    path("audit/case-events/", audit.CaseEventAuditView.as_view(), name="v1-audit-case-events"),
+    path("audit/settings-events/", audit.SettingsEventAuditView.as_view(), name="v1-audit-settings-events"),
+    path("audit/user-activity/", audit.UserActivityAuditView.as_view(), name="v1-audit-user-activity"),
+    path("audit/operations/", audit.OperationAuditView.as_view(), name="v1-audit-operations"),
+    path("users-and-roles/", audit.UsersAndRolesView.as_view(), name="v1-users-and-roles"),
     # per module
     path("<slug:module>/meta/", views.MetaView.as_view(), name="v1-meta"),
     path("<slug:module>/summary/", views.SummaryView.as_view(), name="v1-summary"),
@@ -50,6 +61,8 @@ urlpatterns = [
          name="v1-settings-response-codes"),
     path("<slug:module>/settings/response-codes/requests/", settings_views.ResponseCodeRequestListView.as_view(),
          name="v1-settings-response-code-requests"),
+    path("<slug:module>/settings/response-codes/requests/<int:pk>/",
+         settings_views.ResponseCodeRequestDetailView.as_view(), name="v1-settings-response-code-request"),
     path("<slug:module>/settings/response-codes/requests/<int:pk>/<str:decision>/",
          settings_views.ResponseCodeDecisionView.as_view(), name="v1-settings-response-code-decision"),
     path("<slug:module>/settings/ntsl-mapping/", settings_views.NtslMappingView.as_view(),

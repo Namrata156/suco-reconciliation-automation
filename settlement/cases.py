@@ -28,13 +28,12 @@ Called by settlement.reconcile after every run, in the same transaction:
 """
 from __future__ import annotations
 
-from django.urls import reverse
 from django.utils import timezone
 
 from core.models import AlertType
 from core.notifications import link, notify
 from exception_management.actions import ActionType
-from exception_management.alerts import role_members
+from exception_management.alerts import case_path, role_members
 from exception_management.models import (
     DECIDED_STATUSES,
     CaseStatus,
@@ -74,7 +73,8 @@ def figures(result: SettlementResult) -> dict:
 
 
 def _case_link(case) -> str:
-    return link(reverse("admin:exception_management_exceptioncase_change", args=[case.pk]))
+    """The SPA case screen (Phase 5 Slice 4); the case shows the settlement block."""
+    return link(case_path(case))
 
 
 def _alert_created(case, result: SettlementResult) -> None:
@@ -87,14 +87,14 @@ def _alert_created(case, result: SettlementResult) -> None:
         "sop_unexplained": f["sop_unexplained"] if result.sop_unexplained else "",
         "reasons": [r for r in result.reasons if "unexplained" not in r][:_LIST_LIMIT],
         "link": _case_link(case),
-    }, related=case)
+    }, related=case, link_path=case_path(case))
 
 
 def _alert_flagged(case) -> None:
     notify(AlertType.SETTLEMENT_REVIEW, role_members(Role.CHECKER), {
         "module": case.payment_module.code, "business_date": case.business_date.isoformat(), "status": case.status,
         "reason": case.needs_review_reason.splitlines()[-1], "link": _case_link(case),
-    }, related=case)
+    }, related=case, link_path=case_path(case))
 
 
 def _flag(case: ExceptionCase, reason: str) -> None:
