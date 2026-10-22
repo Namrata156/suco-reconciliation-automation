@@ -67,7 +67,7 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     ]);
   });
 
-  it('Auditor: read-only screens plus alerts and the audit trail; no upload, no users list', () => {
+  it('Auditor: read-only screens, alerts, the audit trail and the users list; no upload, no admin link', () => {
     expect(keys(['Auditor'])).toEqual([
       'home',
       'cases',
@@ -77,7 +77,20 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'pending-approvals',
       'alerts',
       'audit',
+      'users',
     ]);
+  });
+
+  it('users list on users.view (Administrator, Auditor); the admin link stays on users.admin', () => {
+    expect(MENU.find((i) => i.key === 'users')?.capability).toBe('users.view');
+    expect(MENU.find((i) => i.key === 'django-admin')?.capability).toBe('users.admin');
+    // Even if the server sent an admin address, the Auditor has no users.admin.
+    expect(menuFor(makeMe(['Auditor'], { admin_url: '/admin/' })).map((i) => i.key)).not.toContain(
+      'django-admin',
+    );
+    for (const role of ['Operations User', 'Maker', 'Checker'] as RoleName[]) {
+      expect(keys([role])).not.toContain('users');
+    }
   });
 
   it('Slice 3 build: no alerts, audit or users screens', () => {

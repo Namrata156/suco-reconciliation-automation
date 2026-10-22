@@ -496,6 +496,62 @@ describe('Response codes (design 4.16 a)', () => {
       expect(fetch.mock.calls.some((c) => String(c[0]).endsWith('/requests/5/approve/'))).toBe(true),
     );
   });
+
+  it("a code's pending request opens in a drawer with its detail and events", async () => {
+    const fetch = routeFetch({
+      '/settings/response-codes/': page([code({ pending_request_id: 5 })], {
+        rule_set: 'v3.2',
+        can_propose: true,
+        can_decide: false,
+      }),
+      '/settings/response-codes/requests/': page([]),
+      '/settings/response-codes/requests/5/': request({
+        events: [
+          {
+            event_type: 'PROPOSED',
+            actor_username: 'maker1',
+            created_at: '2026-10-20T05:00:00Z',
+            remarks: 'per NPCI circular',
+            self_approved: false,
+          },
+        ],
+      }),
+      '/meta/': META,
+    });
+    vi.stubGlobal('fetch', fetch);
+    renderAs(['Maker'], '/:module/settings/response-codes', '/upi/settings/response-codes', <ResponseCodesTab />);
+
+    const codes = await screen.findByRole('table', { name: 'Response codes' });
+    await userEvent.click(await within(codes).findByRole('button', { name: /^Request #5/ }));
+    const drawer = await screen.findByRole('dialog', { name: 'Code request #5' });
+    expect(await within(drawer).findByText('RET 115 - Beneficiary account closed')).toBeTruthy();
+    expect(within(drawer).getByText('Changes: code: - -> 116')).toBeTruthy();
+    const events = within(drawer).getByRole('list', { name: 'Events of code request #5' });
+    expect(within(events).getByText(/PROPOSED by maker1: per NPCI circular/)).toBeTruthy();
+    expect(fetch.mock.calls.some((c) => String(c[0]).endsWith('/settings/response-codes/requests/5/'))).toBe(
+      true,
+    );
+  });
+
+  it('the request history filters by code (response_code=<id>), searchable', async () => {
+    const fetch = routeFetch({
+      '/settings/response-codes/': page([code()], { rule_set: 'v3.2', can_propose: false, can_decide: false }),
+      '/settings/response-codes/requests/': page([request()]),
+      '/meta/': META,
+    });
+    vi.stubGlobal('fetch', fetch);
+    renderAs(['Auditor'], '/:module/settings/response-codes', '/upi/settings/response-codes', <ResponseCodesTab />);
+    await screen.findByRole('table', { name: 'Response code change requests' });
+    const requests = () => fetch.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/requests/'));
+    expect(requests()[0]).not.toContain('response_code=');
+
+    const box = screen.getByRole('textbox', { name: 'Code' });
+    // The box shows "Any"; clear it before searching.
+    await userEvent.clear(box);
+    await userEvent.type(box, 'DRC');
+    await userEvent.click(await screen.findByRole('option', { name: 'DRC 102 - Reversed online', hidden: true }));
+    await waitFor(() => expect(requests().some((u) => u.includes('response_code=12'))).toBe(true));
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -596,13 +596,20 @@ export function decideSetting<K extends SettingsKind>(
 // ---------------------------------------------------------------------------
 // alerts (design 4.18, Slice 4 contract A): the signed-in user's own alerts.
 // ---------------------------------------------------------------------------
+/** alert_type goes as one csv value (?alert_type=SUBMITTED,REJECTED), as kept in the address. */
 export function listAlerts(filters: AlertFilters): Promise<AlertListPage> {
-  return request<AlertListPage>('GET', `${API_ROOT}/notifications/`, { query: { ...filters } });
+  const { alert_type, ...rest } = filters;
+  const types = Array.isArray(alert_type) ? alert_type.join(',') : alert_type;
+  return request<AlertListPage>('GET', `${API_ROOT}/notifications/`, { query: { ...rest, alert_type: types } });
 }
 
-/** The header bell's count: read-only on the server (A2). */
-export async function getUnreadAlertCount(): Promise<number> {
-  return (await request<UnreadAlertCount>('GET', `${API_ROOT}/notifications/unread-count/`)).unread;
+/**
+ * The header bell's count and the newest unread alert's id (null when none),
+ * which the bell uses to notice a new alert: read-only on the server (A2).
+ */
+export async function getUnreadAlertCount(): Promise<UnreadAlertCount> {
+  const r = await request<UnreadAlertCount>('GET', `${API_ROOT}/notifications/unread-count/`);
+  return { unread: r.unread, latest_id: r.latest_id ?? null };
 }
 
 /** Idempotent: an already-read alert keeps its first read_at. */
@@ -643,7 +650,8 @@ export function listAudit<L extends AuditList>(list: L, filters: AuditFilters): 
 
 // ---------------------------------------------------------------------------
 // users and roles (design 4.17, Slice 4 contract C): read-only list for the
-// Administrator; editing stays in the Django admin (P3).
+// Administrator and the Auditor ("users.view"); editing stays in the Django
+// admin (P3).
 // ---------------------------------------------------------------------------
 export function listUsersAndRoles(filters: UserRoleFilters): Promise<UserRoleListPage> {
   return request<UserRoleListPage>('GET', `${API_ROOT}/users-and-roles/`, { query: { ...filters } });

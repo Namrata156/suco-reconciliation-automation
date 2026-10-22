@@ -3,12 +3,15 @@
  * a Maker proposes an edit or a new code with a reason, a Checker approves
  * or rejects it in the request history. A code the active rule set uses is
  * locked: only its unknown numeric code may be filled in (the server checks).
+ * A code's pending request opens in a drawer with its events; the request
+ * history can be narrowed to one code.
  */
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
   Alert,
   Badge,
   Button,
+  Drawer,
   Group,
   Modal,
   Select,
@@ -25,7 +28,7 @@ import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 
-import { listCodeRequests, listResponseCodes, proposeCodeChange } from '../../api/client';
+import { getCodeRequest, listCodeRequests, listResponseCodes, proposeCodeChange } from '../../api/client';
 import type { CodeChangeProposal, CodeChangeRequest, ModuleMeta, ResponseCodeRow } from '../../api/types';
 import { useMe } from '../../auth/auth';
 import { SelfApprovedBadge, VersionStatusBadge } from '../../components/Badges';
@@ -39,6 +42,10 @@ import { DecisionModal, invalidateSettings, type DecisionTarget } from './Decisi
 import { SettingsEvents } from './SettingsEvents';
 
 const PAGE_SIZE = 50;
+const KINDS = [
+  { value: 'EDIT', label: 'Edit' },
+  { value: 'CREATE', label: 'New code' },
+];
 const optional = (s: string) => (s.trim() ? s.trim() : undefined);
 
 // ---------------------------------------------------------------------------
@@ -256,10 +263,17 @@ function RequestHistory({
   onDecide: (t: DecisionTarget) => void;
 }) {
   const [status, setStatus] = useState('');
+  const [code, setCode] = useState('');
   const [page, setPage] = useState(1);
   const query = useQuery({
-    queryKey: ['settings', module, 'code-requests', status, page],
-    queryFn: () => listCodeRequests(module, { status, page, page_size: PAGE_SIZE }),
+    queryKey: ['settings', module, 'code-requests', status, code, page],
+    queryFn: () =>
+      listCodeRequests(module, {
+        status,
+        response_code: code ? Number(code) : undefined,
+        page,
+        page_size: PAGE_SIZE,
+      }),
     placeholderData: keepPreviousData,
   });
   const { pages } = pageBounds(query.data?.count ?? 0, page, PAGE_SIZE);
@@ -279,17 +293,35 @@ function RequestHistory({
       <Title order={2} size="h4" id="code-requests-title">
         Change requests
       </Title>
-      <Select
-        label="Request status"
-        data={[{ value: '', label: 'Any' }, ...(meta?.change_request_statuses ?? [])]}
-        value={status}
-        onChange={(v) => {
-          setStatus(v ?? '');
-          setPage(1);
-        }}
-        allowDeselect={false}
-        w={220}
-      />
+      <Group gap="xs" align="flex-end" wrap="wrap" component="section" aria-label="Request filters">
+        <Select
+          label="Request status"
+          data={[{ value: '', label: 'Any' }, ...(meta?.change_request_statuses ?? [])]}
+          value={status}
+          onChange={(v) => {
+            setStatus(v ?? '');
+            setPage(1);
+          }}
+          allowDeselect={false}
+          w={220}
+        />
+        {/* The module's codes (meta); a CREATE not yet approved has no code, so "Any" lists it. */}
+        <Select
+          label="Code"
+          data={[
+            { value: '', label: 'Any' },
+            ...(meta?.response_codes ?? []).map((c) => ({ value: String(c.id), label: c.label })),
+          ]}
+          value={code}
+          onChange={(v) => {
+            setCode(v ?? '');
+            setPage(1);
+          }}
+          allowDeselect={false}
+          searchable
+          w={340}
+        />
+      </Group>
       {query.error && (
         <Alert color="red" role="alert">
           {query.error.message}
@@ -314,13 +346,7 @@ function RequestHistory({
                 <Table.Td>
                   #{r.id}
                   <Text size="xs" c="dimmed">
-                    {labelOf(
-                      [
-                        { value: 'EDIT', label: 'Edit' },
-                        { value: 'CREATE', label: 'New code' },
-                      ],
-                      r.kind,
-                    )}
+                    {labelOf(KINDS, r.kind)}
                   </Text>
                 </Table.Td>
                 <Table.Td>{requestTarget(r)}</Table.Td>
@@ -384,6 +410,67 @@ function RequestHistory({
   );
 }
 
+/** One request with its events (contract D4), opened from a code's "Request #N". */
+function CodeRequestDrawer({ module, id, onClose }: { module: string; id: number | null; onClose: () => void }) {
+  const query = useQuery({
+    queryKey: ['settings', module, 'code-request', id],
+    queryFn: () => getCodeRequest(module, id as number),
+    enabled: id !== null,
+  });
+  const r = query.data;
+  return (
+    <Drawer
+      opened={id !== null}
+      onClose={onClose}
+      position="right"
+      size="lg"
+      title={id !== null ? `Code request #${id}` : ''}
+    >
+      {query.isPending && id !== null && <Text size="sm">Loading...</Text>}
+      {query.error && (
+        <Alert color="red" role="alert" title="The request could not be loaded">
+          {query.error.message}
+        </Alert>
+      )}
+      {r && (
+        <Stack gap="sm">
+          <Group gap="xs">
+            <Text fw={600}>{requestTarget(r)}</Text>
+            <Text size="sm" c="dimmed">
+              {labelOf(KINDS, r.kind)}
+            </Text>
+            <VersionStatusBadge value={r.status} /> {r.self_approved && <SelfApprovedBadge />}
+          </Group>
+          <Text size="sm" className="wrap-anywhere">
+            Changes: {changeText(r.changes) || '-'}
+          </Text>
+          {r.new_source && <Text size="sm">Source: {r.new_source}</Text>}
+          <Text size="sm" className="wrap-anywhere">
+            Reason: {r.reason || '-'}
+          </Text>
+          <Text size="sm">
+            Proposed by {r.requested_by ?? '-'}, {formatDateTime(r.requested_at)}
+          </Text>
+          <Text size="sm" className="wrap-anywhere">
+            Decision: {r.decided_by ? `${r.decided_by}, ${formatDateTime(r.decided_at)}` : '-'}
+            {r.decision_remarks ? ` (${r.decision_remarks})` : ''}
+          </Text>
+          <Title order={3} size="h5">
+            Events
+          </Title>
+          {r.events?.length ? (
+            <SettingsEvents events={r.events} label={`Events of code request #${r.id}`} />
+          ) : (
+            <Text size="sm" c="dimmed">
+              No events recorded.
+            </Text>
+          )}
+        </Stack>
+      )}
+    </Drawer>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // tab
 // ---------------------------------------------------------------------------
@@ -398,6 +485,7 @@ export function ResponseCodesTab() {
   const [editing, setEditing] = useState<ResponseCodeRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [decision, setDecision] = useState<DecisionTarget | null>(null);
+  const [viewing, setViewing] = useState<number | null>(null);
 
   const query = useQuery({
     queryKey: ['settings', module, 'response-codes', flag, known, page],
@@ -503,7 +591,20 @@ export function ResponseCodesTab() {
                     </Badge>
                   )}
                 </Table.Td>
-                <Table.Td>{c.pending_request_id ? `Request #${c.pending_request_id}` : '-'}</Table.Td>
+                <Table.Td>
+                  {c.pending_request_id ? (
+                    <Button
+                      size="compact-sm"
+                      variant="subtle"
+                      onClick={() => setViewing(c.pending_request_id)}
+                      aria-label={`Request #${c.pending_request_id} for ${c.label}`}
+                    >
+                      Request #{c.pending_request_id}
+                    </Button>
+                  ) : (
+                    '-'
+                  )}
+                </Table.Td>
                 <Table.Td>
                   {canPropose && !c.pending_request_id && (
                     <Button
@@ -550,6 +651,7 @@ export function ResponseCodesTab() {
           onCancel={() => setCreating(false)}
         />
       </Modal>
+      <CodeRequestDrawer module={module} id={viewing} onClose={() => setViewing(null)} />
       <DecisionModal module={module} target={decision} onClose={() => setDecision(null)} />
     </Stack>
   );

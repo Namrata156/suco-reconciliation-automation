@@ -1,6 +1,7 @@
 /**
  * My alerts (design 4.18, Slice 4 contract A): the signed-in user's own
- * alerts, newest first, paged on the server. "Unread only" is kept in the
+ * alerts, newest first, paged on the server. "Unread only" and the alert
+ * types (options from the list response's alert_types) are kept in the
  * address. Opening an alert's link marks it read; "Mark all read" marks only
  * the alerts up to the newest one shown, so one that arrived since stays
  * unread. The body is shown as plain text and never parsed for links
@@ -12,6 +13,7 @@ import {
   Badge,
   Button,
   Group,
+  MultiSelect,
   Select,
   Spoiler,
   Stack,
@@ -32,7 +34,7 @@ import { spaLink } from '../lib/links';
 import { pageBounds, useUrlFilters } from '../lib/urlFilters';
 
 export const ALERTS_PAGE_SIZE = 50;
-const FILTER_KEYS = ['unread'] as const;
+const FILTER_KEYS = ['unread', 'alert_type'] as const;
 
 const SHOW = [
   { value: '', label: 'All alerts' },
@@ -46,6 +48,14 @@ export function AlertsPage() {
   const data = query.data;
   const rows = data?.results ?? [];
   const { pages, first, last } = pageBounds(data?.count ?? 0, filters.page, ALERTS_PAGE_SIZE);
+  // csv in the address and to the server (?alert_type=SUBMITTED,REJECTED).
+  const types = filters.alert_type ? filters.alert_type.split(',') : [];
+  const typeOptions = data?.alert_types ?? [];
+  // A type from a bookmark the server no longer lists still shows (and can be removed).
+  const typeData = [
+    ...typeOptions,
+    ...types.filter((t) => !typeOptions.some((o) => o.value === t)).map((t) => ({ value: t, label: t })),
+  ];
 
   // The newest alert this screen has shown (any page), for "mark all read".
   const newestShown = useRef(0);
@@ -82,6 +92,16 @@ export function AlertsPage() {
           onChange={(v) => setFilter('unread', v)}
           allowDeselect={false}
           w={180}
+        />
+        <MultiSelect
+          label="Alert type"
+          placeholder={types.length ? undefined : 'Any'}
+          data={typeData}
+          value={types}
+          onChange={(v) => setFilter('alert_type', v.join(','))}
+          searchable
+          clearable
+          w={320}
         />
         <Button
           variant="default"
@@ -186,7 +206,13 @@ export function AlertsPage() {
             })}
             {!query.isPending && rows.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={4}>{filters.unread ? 'No unread alerts.' : 'No alerts yet.'}</Table.Td>
+                <Table.Td colSpan={4}>
+                  {filters.unread
+                    ? 'No unread alerts.'
+                    : filters.alert_type
+                      ? 'No alerts of the chosen types.'
+                      : 'No alerts yet.'}
+                </Table.Td>
               </Table.Tr>
             )}
           </Table.Tbody>

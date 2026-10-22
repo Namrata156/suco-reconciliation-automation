@@ -14,6 +14,7 @@ import { ALERTS_POLL, pollInterval, useUserActive } from '../lib/polling';
 export const ALERTS_KEY = ['alerts'] as const;
 export const UNREAD_KEY = ['alerts', 'unread-count'] as const;
 
+/** The bell's poll: {unread, latest_id} (latest_id = the newest unread alert, null when none). */
 export function useUnreadAlertCount() {
   const active = useUserActive();
   return useQuery({
@@ -24,6 +25,16 @@ export function useUnreadAlertCount() {
     staleTime: ALERTS_POLL.everyMs / 2,
     refetchInterval: () => pollInterval(true, active, ALERTS_POLL),
   });
+}
+
+/**
+ * True when a poll's latest_id says an alert arrived since the last one seen.
+ * `seen` is the highest id seen so far: null when no response had one yet.
+ * Ids only grow, so a lower or null latest_id (alerts were marked read) is
+ * not new.
+ */
+export function isNewAlert(seen: number | null, latest: number | null): boolean {
+  return latest !== null && (seen === null || latest > seen);
 }
 
 export function useAlerts(filters: AlertFilters) {

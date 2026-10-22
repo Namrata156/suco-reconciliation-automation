@@ -6,6 +6,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router';
+import { notifications } from '@mantine/notifications';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -16,6 +17,7 @@ import type {
   RoleName,
   UserAlert,
 } from '../api/types';
+import { listAlerts } from '../api/client';
 import { makeQueryClient, Providers } from '../App';
 import { MeProvider } from '../auth/auth';
 import { AlertsBell, bellLabel } from '../components/AlertsBell';
@@ -32,6 +34,8 @@ import { UsersPage } from './UsersPage';
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  // The notifications store is global: no toast leaks into the next test.
+  notifications.clean();
 });
 
 const page = <T,>(results: T[], extra: object = {}) => ({
@@ -91,10 +95,37 @@ function renderBell() {
     <Providers client={client}>
       <MemoryRouter>
         <AlertsBell />
+        <Routes>
+          <Route path="/" element={<p>Home screen</p>} />
+          <Route path="/alerts" element={<p>Alerts screen</p>} />
+        </Routes>
       </MemoryRouter>
     </Providers>,
   );
 }
+
+/** A bell endpoint answering the given {unread, latest_id} in turn (the last one repeats). */
+function bellReplies(...replies: { unread: number; latest_id: number | null }[]) {
+  let n = 0;
+  return routeFetch({
+    '/notifications/unread-count/': () => json(200, replies[Math.min(n++, replies.length - 1)]),
+  });
+}
+
+/** The user is active (polling stops after 2 idle minutes), a minute passes, the toast settles. */
+async function nextPoll() {
+  act(() => {
+    window.dispatchEvent(new Event('keydown'));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ALERTS_POLL.everyMs);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
+  });
+}
+
+const toasts = () => screen.queryAllByText('New alert');
 
 describe('alerts bell (design 4.2 / 4.18)', () => {
   it('names the unread count', () => {
@@ -141,6 +172,85 @@ describe('alerts bell (design 4.2 / 4.18)', () => {
     });
     await advance(ALERTS_POLL.everyMs + POLL.everyMs);
     expect(fetch.mock.calls.length).toBeGreaterThan(idleCalls);
+  });
+});
+
+describe('new-alert notice (owner 2026-10-22)', () => {
+  it('no notice on the first load, even with unread alerts', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', bellReplies({ unread: 4, latest_id: 30 }));
+    renderBell();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByRole('link', { name: 'Alerts, 4 unread' })).toBeTruthy();
+    expect(toasts()).toHaveLength(0);
+  });
+
+  it('one notice when latest_id rises, with a way to open the alerts list', async () => {
+    vi.useFakeTimers();
+    const fetch = bellReplies({ unread: 1, latest_id: 30 }, { unread: 2, latest_id: 31 });
+    vi.stubGlobal('fetch', fetch);
+    renderBell();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(toasts()).toHaveLength(0);
+
+    const show = vi.spyOn(notifications, 'show');
+    await nextPoll();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(toasts()).toHaveLength(1);
+    expect(screen.getByText('You have 2 unread alerts.')).toBeTruthy();
+
+    act(() => {
+      screen.getByRole('button', { name: 'Open alerts' }).click();
+    });
+    expect(screen.getByText('Alerts screen')).toBeTruthy();
+
+    // Later polls with the same latest_id add nothing (the toast itself closes after 10 s).
+    await nextPoll();
+    await nextPoll();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(show).toHaveBeenCalledTimes(1);
+    show.mockRestore();
+  });
+
+  it('no notice while latest_id stays the same, or falls after alerts were read', async () => {
+    vi.useFakeTimers();
+    const fetch = bellReplies(
+      { unread: 2, latest_id: 30 },
+      { unread: 2, latest_id: 30 },
+      { unread: 0, latest_id: null },
+      { unread: 1, latest_id: 12 },
+    );
+    vi.stubGlobal('fetch', fetch);
+    const show = vi.spyOn(notifications, 'show');
+    renderBell();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    await nextPoll();
+    await nextPoll();
+    await nextPoll();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    // A spy, not the screen: a toast closes by itself after 10 s.
+    expect(show).not.toHaveBeenCalled();
+    show.mockRestore();
+  });
+
+  it('a new alert after all were read (latest_id null in between) is noticed', async () => {
+    vi.useFakeTimers();
+    const fetch = bellReplies({ unread: 0, latest_id: null }, { unread: 1, latest_id: 40 });
+    vi.stubGlobal('fetch', fetch);
+    renderBell();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(toasts()).toHaveLength(0);
+    await nextPoll();
+    expect(toasts()).toHaveLength(1);
+    expect(screen.getByText('You have 1 unread alert.')).toBeTruthy();
   });
 });
 
@@ -195,6 +305,41 @@ describe('alerts list (design 4.18, contract A)', () => {
     const post = fetch.mock.calls.find((c) => String(c[0]).endsWith('/read-all/'));
     expect(isPost(post?.[1] as RequestInit)).toBe(true);
     expect(sentBody(post)).toEqual({ up_to_id: 9 });
+  });
+
+  it('alert-type filter: options from the response, kept in the address, sent as csv', async () => {
+    const fetch = routeFetch({
+      '/notifications/': page([alert({ id: 9 })], {
+        unread: 1,
+        alert_types: [
+          { value: 'SUBMITTED', label: 'Case submitted for approval' },
+          { value: 'REJECTED', label: 'Case rejected' },
+          { value: 'DIGEST_MAKER', label: 'Daily digest (Maker)' },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetch);
+    renderAs(['Maker'], '/alerts', '/alerts?alert_type=SUBMITTED&page=2', <AlertsPage />);
+    await screen.findByRole('table', { name: 'My alerts' });
+    const lists = () => urlsOf(fetch).filter((u) => u.includes('/notifications/'));
+    expect(lists()[0]).toContain('alert_type=SUBMITTED');
+
+    await userEvent.click(screen.getByRole('textbox', { name: 'Alert type' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Case rejected', hidden: true }));
+    await waitFor(() =>
+      expect(lists().some((u) => u.includes('alert_type=SUBMITTED%2CREJECTED'))).toBe(true),
+    );
+    // A new filter goes back to page 1.
+    expect(lists().at(-1)).not.toContain('page=2');
+  });
+
+  it('the client joins a list of alert types into one csv value', async () => {
+    const fetch = routeFetch({ '/notifications/': page([], { unread: 0, alert_types: [] }) });
+    vi.stubGlobal('fetch', fetch);
+    await listAlerts({ alert_type: ['SUBMITTED', 'REJECTED'], unread: 'true' });
+    const url = urlsOf(fetch)[0] ?? '';
+    expect(url).toContain('alert_type=SUBMITTED%2CREJECTED');
+    expect(url).toContain('unread=true');
   });
 
   it('keeps "unread only" in the address and sends it to the server', async () => {
@@ -408,11 +553,37 @@ describe('users and roles (design 4.17, contract C1)', () => {
     expect(urlsOf(fetch)[0]).toContain('role=Maker');
   });
 
-  it('Auditor: not given the list (design 4.17), nothing fetched', async () => {
-    const fetch = routeFetch({});
+  it('Auditor: the read-only list, no Django admin link and no staff-status hint (owner 2026-10-22)', async () => {
+    const fetch = routeFetch({
+      '/users-and-roles/': page(
+        [
+          {
+            id: 3,
+            username: 'auditor1',
+            full_name: 'Auditor One',
+            roles: ['Auditor'],
+            is_superuser: false,
+            is_active: true,
+            last_login: '2026-10-21T04:00:00Z',
+          },
+        ],
+        { admin_users_url: null },
+      ),
+    });
     vi.stubGlobal('fetch', fetch);
     renderAs(['Auditor'], '/users', '/users', <UsersPage />);
-    expect(await screen.findByText(/Only an Administrator sees the users and roles/)).toBeTruthy();
+    const table = await screen.findByRole('table', { name: 'Users and roles' });
+    expect(await within(table).findByText('auditor1')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Edit users in the Django admin' })).toBeNull();
+    expect(screen.queryByText(/needs Django staff status/)).toBeNull();
+    expect(urlsOf(fetch)[0]).toContain('/api/v1/users-and-roles/');
+  });
+
+  it('Maker: not given the list, nothing fetched', async () => {
+    const fetch = routeFetch({});
+    vi.stubGlobal('fetch', fetch);
+    renderAs(['Maker'], '/users', '/users', <UsersPage />);
+    expect(await screen.findByText('Only an Administrator or Auditor sees the users and roles.')).toBeTruthy();
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -562,6 +733,7 @@ describe('routes and shell (Slice 4)', () => {
     expect(within(nav).getByRole('link', { name: 'Exception cases' }).getAttribute('href')).toBe(
       '/upi/cases',
     );
-    expect(within(nav).queryByRole('link', { name: 'Users and roles' })).toBeNull();
+    expect(within(nav).getByRole('link', { name: 'Users and roles' }).getAttribute('href')).toBe('/users');
+    expect(within(nav).queryByRole('link', { name: /Django admin/ })).toBeNull();
   });
 });

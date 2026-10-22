@@ -44,6 +44,9 @@ export interface Permissions {
   'settings.approve': boolean;
   'alerts.view': boolean;
   'audit.view': boolean;
+  /** Read the users-and-roles list (Administrator, Auditor; owner 2026-10-22). */
+  'users.view': boolean;
+  /** The Django admin link (Administrator only). */
   'users.admin': boolean;
 }
 export type Capability = keyof Permissions;
@@ -1139,6 +1142,8 @@ export interface CodeRequestListPage extends Paginated<CodeChangeRequest> {
 export interface CodeRequestFilters {
   status?: string;
   kind?: string;
+  /** One code's requests (meta response_codes[].id). */
+  response_code?: number;
   page?: number;
   page_size?: number;
 }
@@ -1344,8 +1349,8 @@ export interface UserAlert {
 export interface AlertFilters {
   /** "true" / "false"; omit for all. */
   unread?: string;
-  /** csv */
-  alert_type?: string;
+  /** csv (as kept in the address), or a list the client joins; values from AlertListPage.alert_types. */
+  alert_type?: string | string[];
   page?: number;
   page_size?: number;
 }
@@ -1353,6 +1358,8 @@ export interface AlertFilters {
 /** A1 GET /notifications/. */
 export interface AlertListPage extends Paginated<UserAlert> {
   unread: number;
+  /** The values ?alert_type= accepts, with labels, for the filter (owner 2026-10-22). */
+  alert_types: Choice[];
 }
 
 /** A2 GET /notifications/unread-count/. */

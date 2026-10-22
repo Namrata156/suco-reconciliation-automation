@@ -107,8 +107,8 @@ export const MENU: readonly MenuItem[] = [
     capability: 'cases.approve',
     slice: 'deferred',
   },
-  // Read-only "who holds which role" (design 4.17, contract C1: Administrator only).
-  { key: 'users', label: 'Users and roles', to: '/users', scoped: false, capability: 'users.admin', slice: 4 },
+  // Read-only "who holds which role" (design 4.17, contract C1; Auditor too, owner 2026-10-22).
+  { key: 'users', label: 'Users and roles', to: '/users', scoped: false, capability: 'users.view', slice: 4 },
   {
     key: 'django-admin',
     label: 'Edit users (Django admin)',

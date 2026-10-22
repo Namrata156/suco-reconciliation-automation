@@ -6,6 +6,28 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-22
+
+- **Changed: Auditor can read the users-and-roles list** (owner decision,
+  a deviation from design 4.17). New `/me` capability `users.view`
+  (Administrator, Auditor); `admin_users_url` only for a staff
+  Administrator (`api/audit.py`, `api/base.py`, `frontend/src/lib/roles.ts`,
+  `pages/UsersPage.tsx`). Contract section C1 updated.
+- **Added: Slice 4 polish.** Alert-type filter on `/alerts` (list response
+  now carries `alert_types`); response-code request drawer with history
+  from the codes table, and a Code filter on request history; the bell
+  shows a "New alert" notice when `latest_id` rises (no extra requests).
+- **Decided, no code:** Results/Settlement all-dates view folded into
+  Phase 6; "open date" for the tolerance re-run list stays "not archived".
+- **Changed: NPCI File Generation un-deferred** (owner). SSKUPI format
+  samples received; reply texts decided (Online Reversal, Not Effected to
+  CBS, Account does not exist, Manually Credited, Online Credited). Design
+  draft in progress. `SSKUPI_files/` and `SSKUPI*.csv` git-ignored (real
+  account numbers).
+- Applied migration `core/0011` to the dev database `reconciliation`.
+- Verified: 651/651 Django tests, Vitest 150/150, lint/type-check/build
+  clean. Not yet run: Playwright e2e for these items.
+
 ## 2026-10-21
 
 - **Added: Phase 5 Slice 4 — Alerts, audit, users (API + frontend).**

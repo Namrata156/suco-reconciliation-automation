@@ -34,6 +34,7 @@ const CAPS: Record<keyof Permissions, RoleName[]> = {
   'settings.approve': ['Checker'],
   'alerts.view': ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'],
   'audit.view': ['Administrator', 'Auditor'],
+  'users.view': ['Administrator', 'Auditor'],
   'users.admin': ['Administrator'],
 };
 

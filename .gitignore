@@ -55,6 +55,10 @@ Thumbs.db
 sample_decrypted_files/
 14072026/
 manual_reconciliation_sheet.xlsx
+# NPCI upload files (SSKUPIddmmyyyy.csv): customer account numbers, samples
+# and generated ones alike.
+SSKUPI_files/
+SSKUPI*.csv
 
 # Real bank SOP doc -- contains live NPCI/EFRM portal credentials in
 # plaintext. Never commit. See doubts.md.

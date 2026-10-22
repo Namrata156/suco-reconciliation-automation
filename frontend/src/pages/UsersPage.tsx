@@ -1,9 +1,9 @@
 /**
  * Users and roles, read-only (design 4.17, Slice 4 contract C1): who holds
- * which role, for the Administrator. Editing stays in the Django admin
- * (P3); the screen links to it when the server gives the address (staff
- * status). The Auditor is not given this list by the design (open question
- * to the owner, see the contract).
+ * which role, for the Administrator and the Auditor ("users.view", owner
+ * 2026-10-22). Editing stays in the Django admin (P3); the screen links to it
+ * when the server gives the address (Administrator with staff status; always
+ * null for an Auditor).
  */
 import { Alert, Badge, Button, Group, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -44,7 +44,7 @@ function SearchBox({ value, onApply }: { value: string; onApply: (v: string) => 
 
 export function UsersPage() {
   const me = useMe();
-  const allowed = can(me.permissions, 'users.admin');
+  const allowed = can(me.permissions, 'users.view');
   const { filters, setFilter, reset } = useUrlFilters(FILTER_KEYS, PAGE_SIZE);
   const query = useQuery({
     queryKey: ['users-and-roles', filters],
@@ -59,7 +59,7 @@ export function UsersPage() {
   if (!allowed) {
     return (
       <Alert color="yellow" title="Users and roles" role="alert">
-        Only an Administrator sees the users and roles.
+        Only an Administrator or Auditor sees the users and roles.
       </Alert>
     );
   }
@@ -179,7 +179,8 @@ export function UsersPage() {
         onChange={(p) => setFilter('page', String(p))}
         label="Users"
       />
-      {!adminUrl && data && (
+      {/* The staff-status hint only for an Administrator; an Auditor never edits users. */}
+      {!adminUrl && data && can(me.permissions, 'users.admin') && (
         <Text size="xs" c="dimmed">
           The link to edit users in the Django admin needs Django staff status on your account.
         </Text>
