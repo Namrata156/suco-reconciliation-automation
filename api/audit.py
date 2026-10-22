@@ -8,12 +8,13 @@ sections B and C. Read-only: GET only (anything else 405).
   GET /audit/user-activity/    core.UserActivity (login, logout, failed login)
   GET /audit/operations/       core.OperationLog (upload, refused upload, CBS date, run)
   GET /audit/meta/             the filter choices
-  GET /users-and-roles/        every account and its roles (Administrator)
+  GET /users-and-roles/        every account and its roles (Administrator, Auditor)
 
 Roles: the audit lists are for the Administrator and the Auditor (design 3.5
 table and 4.19 "U, A"; /me permissions "audit.view"). The users list is for
-the Administrator only (design 4.17 "A"); users and roles are still edited in
-the Django admin (P3).
+the Administrator and the Auditor too (owner decision 2026-10-22, a deviation
+from design 4.17 "A"; /me "users.view"); users and roles are still edited in
+the Django admin (P3), whose link only a staff Administrator gets.
 
 Common filters: date_from / date_to (inclusive local dates on created_at),
 user (username, case-insensitive), event_type (csv), module (slug; not on
@@ -38,7 +39,7 @@ from api.settings_views import SETTINGS_KINDS
 from core.models import OperationLog, OperationType, PaymentModule, UserActivity, UserActivityType
 from exception_management import api as legacy
 from exception_management.models import CaseEvent, CodeChangeEventType, EventType, ResponseCodeChangeEvent
-from exception_management.roles import Role, user_roles
+from exception_management.roles import Role, has_role, user_roles
 from settlement.models import MappingEventType, NtslMappingEvent, SettlementToleranceEvent
 
 AUDIT_ROLES = frozenset({Role.ADMINISTRATOR, Role.AUDITOR})
@@ -53,13 +54,6 @@ class HasAuditRole(BasePermission):
 
     def has_permission(self, request, view):
         return bool(user_roles(request.user) & AUDIT_ROLES)
-
-
-class IsAdministrator(BasePermission):
-    message = "Only the Administrator may read the list of users and roles."
-
-    def has_permission(self, request, view):
-        return Role.ADMINISTRATOR in user_roles(request.user)
 
 
 class AuditView(V1APIView):
@@ -304,7 +298,8 @@ class AuditMetaView(AuditView):
 # C1 users and roles (read-only; editing stays in the Django admin, P3)
 # ---------------------------------------------------------------------------
 class UsersAndRolesView(V1APIView):
-    permission_classes = [IsAuthenticated, IsAdministrator]
+    # Administrator and Auditor (owner decision 2026-10-22, a deviation from design 4.17 "A").
+    permission_classes = [IsAuthenticated, HasAuditRole]
 
     def get(self, request):
         p, errors = request.query_params, {}
@@ -333,6 +328,8 @@ class UsersAndRolesView(V1APIView):
                          "roles": [r for r in Role.ALL if r in names], "is_superuser": u.is_superuser,
                          "is_active": u.is_active, "last_login": u.last_login})
         response = paginator.get_paginated_response(rows)
-        response.data["admin_users_url"] = "/admin/auth/user/" if request.user.is_staff else None
+        # The Django admin link is for the Administrator only (an Auditor gets null even if staff).
+        can_admin = request.user.is_staff and has_role(request.user, Role.ADMINISTRATOR)
+        response.data["admin_users_url"] = "/admin/auth/user/" if can_admin else None
         return response
 

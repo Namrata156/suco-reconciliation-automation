@@ -80,6 +80,7 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
     "settings.approve": (Role.CHECKER,),
     "alerts.view": _ALL,
     "audit.view": (Role.ADMINISTRATOR, Role.AUDITOR),
+    "users.view": (Role.ADMINISTRATOR, Role.AUDITOR),  # users-and-roles list (owner decision 2026-10-22)
     "users.admin": (Role.ADMINISTRATOR,),  # link to the Django admin (P3)
 }
 

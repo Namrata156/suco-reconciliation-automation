@@ -46,7 +46,12 @@ Alert object (used by all A endpoints):
 A1 GET /api/v1/notifications/
    Query: unread=true|false (omit = all), alert_type (csv), page, page_size.
    Order: newest first (created_at desc, id desc).
-   200: {count, next, previous, results: [Alert], "unread": int}
+   200: {count, next, previous, results: [Alert], "unread": int,
+         "alert_types": [{"value": str, "label": str}]}
+        alert_types (added 2026-10-22) = the choices for an alert-type filter:
+        exactly the values ?alert_type= accepts (every alert type except
+        TEST), in AlertType order, with the same labels as alert_type_label.
+        Same on every page and whatever the filters.
    400: bad unread / alert_type value.
 
 A2 GET /api/v1/notifications/unread-count/
@@ -162,8 +167,12 @@ C. USERS AND ROLES, READ-ONLY (design 4.17, optional list; P3: editing stays
    in the Django admin).
 --------------------------------------------------------------------------------
 C1 GET /api/v1/users-and-roles/
-   Roles: Administrator only (design 4.17 "A"; the Auditor is NOT given it
-   by the design - open question to the owner). Others -> 403.
+   Roles: Administrator and Auditor (owner decision 2026-10-22, a deviation
+   from design 4.17 "A", which gave it to the Administrator only).
+   Maker, Checker, Operations User -> 403.
+   /me permissions: new capability "users.view" (Administrator, Auditor) -
+   use it for the menu entry of this list. "users.admin" (Administrator)
+   is unchanged and still gates the Django admin link.
    Lists every account, including inactive ones and accounts with no role.
    Query: role (one of the five role names), active=true|false,
           search (in username / first / last name), page, page_size.
@@ -177,7 +186,9 @@ C1 GET /api/v1/users-and-roles/
      "last_login": timestamp | null
    }
    Extra top-level key: "admin_users_url": "/admin/auth/user/" | null
-   (null when the caller has no Django staff status).
+   (set only when the caller holds the Administrator role AND has Django
+   staff status; null otherwise - an Auditor always gets null, even a
+   staff Auditor).
 
    /api/v1/me/ already returns "admin_url": "/admin/" for an Administrator
    with staff status (Slice 1) - unchanged; use it for the menu link.

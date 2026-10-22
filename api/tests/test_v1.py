@@ -153,11 +153,12 @@ class AuthTests(V1TestBase):
     def test_me_matrix_and_permissions(self):
         self.assert_read_matrix(f"{V1}/me/")
         expected_true = {
-            Role.ADMINISTRATOR: {"cases.reassign", "settings.propose_tolerance", "audit.view", "users.admin"},
+            Role.ADMINISTRATOR: {"cases.reassign", "settings.propose_tolerance", "audit.view", "users.view",
+                                 "users.admin"},
             Role.OPERATIONS_USER: {"files.upload"},
             Role.MAKER: {"cases.work", "settings.propose_codes", "settings.propose_mapping"},
             Role.CHECKER: {"cases.approve", "settings.approve"},
-            Role.AUDITOR: {"audit.view"},
+            Role.AUDITOR: {"audit.view", "users.view"},  # users.view: owner decision 2026-10-22
         }
         everyone = {"cases.view", "files.view", "results.view", "settings.view", "alerts.view"}
         for role, extra in expected_true.items():

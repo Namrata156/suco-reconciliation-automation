@@ -159,6 +159,20 @@ class AlertTests(Slice4Base):
         self.bad(M, ALERTS, {"unread": "yes"}, "unread")
         self.bad(M, ALERTS, {"alert_type": "TEST"}, "alert_type")
 
+    def test_list_carries_alert_types_without_test(self):
+        expected = [{"value": v, "label": label} for v, label in AlertType.choices if v != AlertType.TEST]
+        for params in ({}, {"alert_type": "REJECTED", "unread": "true"}):  # no alerts at all: still there
+            with self.subTest(params=params):
+                types = self.ok(M, ALERTS, params)["alert_types"]
+                self.assertEqual(types, expected)
+                self.assertNotIn("TEST", [t["value"] for t in types])
+        self.alert(self.users[M], AlertType.REJECTED)
+        body = self.ok(M, ALERTS)
+        labels = {t["value"]: t["label"] for t in body["alert_types"]}
+        self.assertEqual(labels[body["results"][0]["alert_type"]], body["results"][0]["alert_type_label"])
+        for t in body["alert_types"]:  # every listed value is accepted by the filter
+            self.assertEqual(self.as_(M).get(ALERTS, {"alert_type": t["value"]}).status_code, 200)
+
     def test_read_all_and_up_to_id(self):
         u = self.users[M]
         ns = [self.alert(u) for _ in range(3)]
@@ -380,7 +394,24 @@ class AuditTests(Slice4Base):
 # ---------------------------------------------------------------------------
 class UsersAndRolesTests(Slice4Base):
     def test_role_matrix(self):
-        self.assert_roles(USERS, {A})
+        # Administrator and Auditor (owner decision 2026-10-22, a deviation from design 4.17 "A").
+        self.assert_roles(USERS, {A, U})
+        with self.subTest(write=USERS):
+            self.assertEqual(self.post(self.as_(U), USERS).status_code, 405)
+
+    def test_me_users_capabilities(self):
+        for role in ALL_ROLES:
+            with self.subTest(role=role):
+                perms = self.ok(role, f"{V1}/me/")["permissions"]
+                self.assertEqual((perms["users.view"], perms["users.admin"]), (role in (A, U), role == A))
+
+    def test_staff_auditor_gets_no_admin_url(self):
+        auditor = self.users[U]
+        self.assertTrue(auditor.is_staff)  # the test users are staff
+        body = self.ok(auditor, USERS)
+        self.assertIsNone(body["admin_users_url"])
+        self.assertIn(auditor.username, {r["username"] for r in body["results"]})
+        self.assertEqual(self.ok(A, USERS)["admin_users_url"], "/admin/auth/user/")  # staff Administrator
 
     def test_list_filters(self):
         gone = self.user(M, active=False)

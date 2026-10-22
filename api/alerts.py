@@ -9,6 +9,7 @@ server). The outbox stays append-only apart from its delivery fields: the
 has one recipient, so that is the per-user read status).
 
   GET  /notifications/               my alerts, newest first; ?unread=true|false ?alert_type=csv
+                                     (+ "unread" and "alert_types" for the filter)
   GET  /notifications/unread-count/  for the header bell: one read-only query
   POST /notifications/<id>/read/     mark one read (idempotent)
   POST /notifications/read-all/      mark all read; {"up_to_id": n} limits it
@@ -41,6 +42,9 @@ from exception_management import api as legacy
 from exception_management.models import ExceptionCase
 
 LISTED_ALERT_TYPES = [t for t in AlertType.values if t != AlertType.TEST]
+# For the SPA's alert-type filter: the values ?alert_type= accepts, with their labels.
+_ALERT_TYPE_LABELS = dict(AlertType.choices)
+ALERT_TYPE_CHOICES = [{"value": t, "label": str(_ALERT_TYPE_LABELS[t])} for t in LISTED_ALERT_TYPES]
 
 _ADMIN_CASE = re.compile(r"/admin/exception_management/exceptioncase/(\d+)/change/")
 _ADMIN_QUEUE = re.compile(r"/admin/exception_management/exceptioncase/(\?\S*)?(?:\s|$)")
@@ -147,6 +151,7 @@ class NotificationListView(V1APIView):
         ctx = _LinkContext(page)
         response = paginator.get_paginated_response([alert_row(n, ctx) for n in page])
         response.data["unread"] = unread_count
+        response.data["alert_types"] = [dict(c) for c in ALERT_TYPE_CHOICES]  # a copy: never share the constant
         return response
 
 
