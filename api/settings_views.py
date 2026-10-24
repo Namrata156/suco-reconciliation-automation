@@ -180,10 +180,21 @@ def code_request_row(req: ResponseCodeChangeRequest, user=None) -> dict:
     }
 
 
+def _editable_fields(code: ResponseCode, locked: bool) -> list[str]:
+    """What an EDIT proposal may change (exception_management.code_changes
+    ._validate): everything on an unlocked code; on a locked one the
+    description (NPCI file design Amendment 1, option B) and an unknown
+    numeric code."""
+    if not locked:
+        return ["code", "description", "notes"]
+    return (["code"] if code.code is None else []) + ["description"]
+
+
 class ResponseCodeListView(SettingsView):
     """?flag=DRC,RET  ?known=true|false. Each code: whether the active rule
-    set uses it (locked: only an unknown numeric code may be filled in) and
-    any pending change request."""
+    set uses it (locked: only its description may change and an unknown
+    numeric code be filled in; editable_fields lists what a proposal may
+    change) and any pending change request."""
 
     def get(self, request, module):
         p, errors = request.query_params, {}
@@ -205,7 +216,8 @@ class ResponseCodeListView(SettingsView):
                     .order_by("-activated_at", "-pk").first())
         rows = [{"id": c.pk, "flag": c.flag, "code": c.code, "code_known": c.code_known,
                  "description": c.description, "source": c.source, "notes": c.notes, "label": str(c),
-                 "locked": c.pk in locked, "used_by": c.used_by(rule_set) if rule_set else [],
+                 "locked": c.pk in locked, "editable_fields": _editable_fields(c, c.pk in locked),
+                 "used_by": c.used_by(rule_set) if rule_set else [],
                  "pending_request_id": pending.get(c.pk), "created_at": c.created_at} for c in page]
         response = paginator.get_paginated_response(rows)
         response.data["rule_set"] = rule_set.version_label if rule_set else None

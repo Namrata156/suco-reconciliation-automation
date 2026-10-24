@@ -1,5 +1,5 @@
 """
-Loads a frozen rule-table version (rule_engine/seed_data/v3_1.py, v3_2.py)
+Loads a frozen rule-table version (rule_engine/seed_data/v3_1.py, v3_2.py, v3_3.py)
 into the DB through the live models, so every model check runs: condition
 validation, TAT consistency, and RuleSet.activate()'s structural checks.
 Used by `manage.py seed_rule_sets`. The data migration rule_engine/0002
@@ -7,8 +7,10 @@ does the same inserts with historical models (see its docstring);
 rule_engine/tests/test_seed.py asserts both give identical rows.
 
 Idempotent and create-only:
-  - codes and ageing buckets: get_or_create on their natural keys; existing
-    rows are left alone (differences are reported).
+  - codes: found by flag + numeric code (never by the current description
+    alone, which may be reworded through maker-checker -- NPCI file design
+    Amendment 1), see find_seeded_code; ageing buckets: get_or_create on
+    their natural key. Existing rows are left alone (differences reported).
   - the rule set: if the version already exists it is left alone (versions
     are immutable); differences from the seed data are reported. If the
     module already has a DIFFERENT active version, nothing is created (we
@@ -48,18 +50,65 @@ class SeedReport:
     warnings: list[str] = field(default_factory=list)
 
 
+def _renamed_code(module: PaymentModule, flag: str, description: str) -> ResponseCode | None:
+    """The code first stored with `description` whose wording was changed
+    since through an approved change request: follows the request trail
+    (old_description -> code). Lazy app lookup: exception_management sits
+    above rule_engine."""
+    from django.apps import apps
+
+    request_model = apps.get_model("exception_management", "ResponseCodeChangeRequest")
+    seen: set[str] = set()
+    while description not in seen:
+        seen.add(description)
+        req = (request_model.objects.filter(payment_module=module, flag=flag, kind="EDIT", status="APPROVED",
+                                            old_description=description)
+               .exclude(new_description=description).order_by("decided_at", "pk").first())
+        if req is None:
+            return None
+        current = ResponseCode.objects.filter(pk=req.response_code_id, payment_module=module, flag=flag).first()
+        if current is not None and current.description == req.new_description:
+            return current
+        description = req.new_description
+    return None
+
+
+def find_seeded_code(module: PaymentModule, flag: str, code: str | None, description: str) -> ResponseCode | None:
+    """The existing row of one seed-data code, never matched on its CURRENT
+    description alone, because a description (wording) may be changed
+    through maker-checker (NPCI file design Amendment 1, option B):
+      1. a seed code with a known number: flag + numeric code;
+      2. flag + description (codes whose number is unknown in the seed, or
+         a number changed through maker-checker on an unlocked code);
+      3. the code that was renamed away from the seed description (approved
+         change-request trail)."""
+    same_flag = ResponseCode.objects.filter(payment_module=module, flag=flag)
+    if code is not None:
+        found = same_flag.filter(code=code).first()
+        if found is not None:
+            return found
+    found = same_flag.filter(description=description).first()
+    if found is not None:
+        return found
+    return _renamed_code(module, flag, description)
+
+
 def _seed_codes(module: PaymentModule, data: ModuleType, report: SeedReport) -> dict:
+    """{(flag, seed description): ResponseCode}. The key is the SEED data's
+    own description (the frozen rule modules reference codes that way); the
+    row is found by find_seeded_code, so a wording changed in the database
+    neither breaks the lookup nor creates a duplicate."""
     by_key = {}
     for flag, code, description, source, notes in data.RESPONSE_CODES:
-        # Seeding an approved rule-table release is the one path allowed to
-        # create codes outside a change request (Phase 3 Amendment 2 B2).
-        with seeding_response_codes():
-            obj, created = ResponseCode.objects.get_or_create(
-                payment_module=module,
-                flag=flag,
-                description=description,
-                defaults=dict(code=code, source=source, notes=notes),
-            )
+        obj = find_seeded_code(module, flag, code, description)
+        created = obj is None
+        if created:
+            # Seeding an approved rule-table release is the one path allowed to
+            # create codes outside a change request (Phase 3 Amendment 2 B2).
+            with seeding_response_codes():
+                obj = ResponseCode.objects.create(
+                    payment_module=module, flag=flag, code=code, description=description, source=source, notes=notes
+                )
         if created:
             report.codes_created += 1
         else:

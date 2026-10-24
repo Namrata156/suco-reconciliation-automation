@@ -37,9 +37,11 @@ Condition format: see rule_engine.conditions (module docstring).
 
 TAT storage: Rule.tat_type says what kind of deadline the rule has:
   NONE                     -- no deadline (the doc's "TAT: -" or no TAT line)
-  DAYS                     -- tat_days + tat_day_basis. "T+1" in the doc means
-                              "next working day" -> tat_days=1, WORKING.
-                              "35 days" / "7 days" -> CALENDAR.
+  DAYS                     -- tat_days + tat_day_basis. Up to v3.2 "T+1" in
+                              the doc meant "next working day" -> tat_days=1,
+                              WORKING; "35 days" / "7 days" -> CALENDAR.
+                              Since v3.3 (owner 2026-10-23) every deadline is
+                              CALENDAR (T+1 = the next calendar day).
   BY_ADJTYPE               -- R07b: the deadline depends on the Adjtype; one
                               RuleTat row per type, checked in order, first
                               match wins (same condition format).
@@ -49,7 +51,8 @@ TAT storage: Rule.tat_type says what kind of deadline the rule has:
                               data references it. The evaluator gives it no
                               due date.
 Due date = T + TAT (doc, AGEING). WORKING days use core.working_days
-(Karnataka bank holidays + Sundays + 2nd/4th Saturdays, owner 2026-10-10).
+(Karnataka bank holidays + Sundays + 2nd/4th Saturdays, owner 2026-10-10);
+no rule of v3.3 uses WORKING (calendar days, owner 2026-10-23).
 """
 from __future__ import annotations
 
@@ -409,6 +412,11 @@ class ResponseCode(models.Model):
         finally:
             self._approved_change = False
 
+    # Fields an approved change may alter on a LOCKED code (NPCI file design
+    # Amendment 1, owner 2026-10-22/23, option B): the wording. The numeric
+    # code only when it was unknown (see _save_checked).
+    LOCKED_EDITABLE_FIELDS = ("description",)
+
     def _save_checked(self, *args, **kwargs):
         if not self._state.adding and self.is_locked():
             old = ResponseCode.objects.get(pk=self.pk)
@@ -417,11 +425,12 @@ class ResponseCode(models.Model):
                 for f in self._meta.concrete_fields
                 if getattr(old, f.attname) != getattr(self, f.attname)
                 and not (f.attname == "code" and old.code is None)
+                and f.attname not in self.LOCKED_EDITABLE_FIELDS
             ]
             if changed:
                 raise RuleSetImmutableError(
-                    f"{old} is used by an ACTIVE/RETIRED rule set; only an unknown code may be filled in "
-                    f"(tried to change {changed})"
+                    f"{old} is used by an ACTIVE/RETIRED rule set; only its description may change or an unknown "
+                    f"code be filled in (tried to change {changed})"
                 )
         super().save(*args, **kwargs)
 

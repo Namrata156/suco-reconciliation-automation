@@ -233,13 +233,16 @@ class OperationType(models.TextChoices):
     FILE_REFUSED = "FILE_REFUSED", "File upload refused"
     BUSINESS_DATE_SELECTED = "BUSINESS_DATE_SELECTED", "Business date selected (CBS)"
     RUN_STARTED = "RUN_STARTED", "Reconciliation run started"
+    # NPCI file generation (docs/npci_file_design_draft_v1.txt section 4 + Amendment 1)
+    NPCI_FILE_GENERATED = "NPCI_FILE_GENERATED", "NPCI file generated"
+    NPCI_FILE_DOWNLOADED = "NPCI_FILE_DOWNLOADED", "NPCI file downloaded"
 
 
 class OperationLog(AppendOnlyModel):
     """
     Who did which operations step, when (design 3.6): uploading a file,
     refusing one, choosing a CBS business date, starting a reconciliation
-    run. Append-only (core.append_only), like CaseEvent and UserActivity.
+    run, generating or downloading an NPCI file. Append-only (core.append_only), like CaseEvent and UserActivity.
 
     `uploaded_file_id` and `run_id` are plain ids, not foreign keys: core is
     below file_processing and reconciliation, and an audit row must outlive

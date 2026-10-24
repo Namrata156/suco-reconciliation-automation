@@ -1,0 +1,695 @@
+================================================================================
+ NPCI FILE GENERATION (THE "SSKUPI" UPLOAD FILE)
+ DESIGN DRAFT v1 - 2026-10-22 - FOR OWNER REVIEW (not approved)
+================================================================================
+
+Goal (project owner, 2026-10-22): for a reconciled date, the app builds the
+file ops upload to the NPCI portal (SSKUPIddmmyyyy.csv). The user downloads
+it from the app.
+
+This is a design only. No code, no database change, nothing committed. No
+code is written until the owner approves this draft.
+
+Privacy: the real samples (SSKUPI_files/, git-ignored) hold real account
+numbers and RRNs. Every example in this document is masked or made up.
+
+--------------------------------------------------------------------------------
+1. WHAT THE FILE LOOKS LIKE (from the 3 real samples)
+--------------------------------------------------------------------------------
+  - One file per date: SSKUPIddmmyyyy.csv (14 Jul: 301 rows, 25 Sep: 60,
+    26 Sep: 21).
+  - Header, exactly:
+      bankadjref,flag,Shtdat,adjamt,shser,shcrd,filename,reason,specifyother
+  - Example row (made up):
+      XXXXXXXX1234,DRC,14-07-2026,140.56,XXXXXXXX1234,XXXXXXXXXXXXXXX5678,SSKUPI14072026.csv,102,Online Reversal
+  - Plain text with no quotes and no BOM. Every line, including the last,
+    ends with CRLF (Windows line ending).
+    NOTE: the brief said LF, but all 3 files on disk are CRLF (302 CR for
+    302 lines on 14 Jul). Recommendation: write CRLF, like the samples.
+    Ops should confirm that the portal accepts it (Q9).
+  - Columns:
+      bankadjref    RRN
+      flag          DRC / TCC / RET / RRC
+      Shtdat        dd-mm-yyyy (see section 2)
+      adjamt        amount, no trailing zeros, no separators (1, 7.5, 140.56)
+      shser         RRN again
+      shcrd         customer account / mobile number (see section 2)
+      filename      the file's own name
+      reason        numeric code (102, 103, 104, 115, 501)
+      specifyother  free text. Ops' own files use different spellings each
+                    day ("online reverse", "ONLINE REVERSE", "NOT EFECTED
+                    TO CBS"), so the portal does not check this text.
+  - Row order: DRC rows first, then RRC, then TCC, then RET. Inside each
+    flag, rows are sorted by code, then by their order in NPCI's source
+    file. This order holds on all 3 samples.
+
+--------------------------------------------------------------------------------
+2. WHERE EACH VALUE COMES FROM (checked against the real data)
+--------------------------------------------------------------------------------
+Each row is one exception case. The data comes from the NPCI dispute row
+attached to that case (the DRC, Timeout or Adjustment presence row of the
+case's match group).
+
+  flag + reason  From the action the Checker APPROVED, not from the rule
+                 (see section 3). For example, R01 gives DRC 102 and R05
+                 gives RET 115, unless the maker chose another reason.
+
+  shcrd          DRC, TCC and RET rows: column 11 of NPCI's DRC / Timeout
+                 report ("Beneficiary Mobile /Account/Aadhar Number").
+                 RRC rows: column 12 of NPCI's Adjustment report
+                 ("Ben_Mobile_No"; column 42 "Mobile Number" holds the
+                 same value on every checked row).
+                 Copied as it is, minus the leading apostrophe that NPCI
+                 adds to numbers stored as text. Some values contain
+                 letters; they are copied unchanged too.
+                 Note: on DRC rows SSK is the remitter, so the column name
+                 sounds wrong. But ops' files use column 11 on every DRC
+                 row of all 3 dates, and column 12 ("Remitter Number")
+                 never matches.
+                 CBS is not needed for shcrd.
+                 Result on 14 Jul: 300 of 301 rows match. The one
+                 difference is explained in section 7.
+
+  Shtdat         DRC / TCC / RET rows: the business date. On all 285 rows
+                 of 14 Jul it also equals the report's TXN Date and
+                 Settlement Date.
+                 RRC rows: the ORIGINAL transaction date, i.e. the
+                 Adjustment report's Txndate (column 8). This is why RRC
+                 rows carry older dates: 14 Jul's RRC rows are dated 24 Apr,
+                 9, 12, 13 and 14 Jul. 16 of 16 rows match. Adjdate matches
+                 only 8 of them.
+
+  adjamt         DRC / TCC / RET rows: the report's Amount.
+                 RRC rows: Adjamount, NOT Txnamount. On 14 Jul one row has
+                 Txnamount 601 and Adjamount 401; the file says 401.
+                 Written without trailing zeros. 301 of 301 rows match.
+
+  Which file a row goes in (important):
+    - DRC / TCC / RET: the file of the case's own business date.
+    - RRC: the file of the Adjustment row's Adjdate, i.e. the day the
+      adjustment arrived from NPCI.
+      This matters because the system attaches an adjustment to the case
+      of its ORIGINAL transaction date when that day's CBS is loaded.
+      Example: on 26 Sep, 6 adjustments arrived for 25 Sep transactions.
+      They sit on 25 Sep cases in the app, but ops put them in the 26 Sep
+      file. Using the Adjdate reproduces both files exactly (section 7).
+      Without this rule, 25 Sep would have 6 extra rows and 26 Sep would
+      be missing 6.
+
+--------------------------------------------------------------------------------
+3. WHICH CASES GO IN
+--------------------------------------------------------------------------------
+Recommendation: the file follows the Checker's decisions, not the rule
+codes.
+
+A case goes in when ALL of the following are true:
+  a) its status is APPROVED or COMPLETED;
+  b) its approved action replies to NPCI with a code. These are the DRC,
+     TCC, RET and RRC actions: DRC 102/103/104, TCC 102/103, RET (any
+     reason), manual credit + RRC 501, and RRC 501 without a new credit
+     (R06b, CBS-reversal evidence mandatory). The flag and code come from
+     that approved action;
+  c) the reason has a numeric code. Today only RET 115 has one; the other
+     RET reasons (for example "Account closed") have no number yet, see
+     Q6. Such a case is held back with a clear message until its code is
+     filled in through the existing code change request;
+  d) it is not flagged "needs review", i.e. a re-run changed it after
+     approval. It stays out until a Checker clears the review;
+  e) its dispute row belongs to this file's date (section 2).
+
+The approved Phase 4 design (S6) already said "after the checker approves
+an action", and the spec says "the checker authorises NPCI uploads".
+
+Why not by rule code alone: a rule only RECOMMENDS. The maker may choose
+another RET reason (R05), or move an R06b case to a manual credit. A file
+built from rule codes alone would tell NPCI something nobody approved.
+
+What stays out:
+  - Chargebacks, CBS adjustment entries, "close without action",
+    settlement cases (R07b, R07x, R07c, R12, R13 and the rest). This is
+    what the samples show.
+  - Open, in-progress, pending-approval and closed-superseded cases.
+
+Cases still not approved at generation time are listed on the screen as
+"not in this file", with the reason: N open, N waiting for approval, N
+under review, N without a numeric code. Generating anyway is allowed,
+because the RET deadline is 4 pm, but the user must confirm a "partial
+file". The file is marked partial.
+
+FACT TODAY: every case on the dev database is OPEN (nothing has been
+approved yet). With this rule, the 14 Jul file would be empty today. The
+check in section 7 therefore uses each rule's default action, as if every
+case had been approved as pre-filled.
+
+Money-moving actions: DRC 103 (R02) and manual credit + RRC 501 (R06)
+tell NPCI the customer was credited. Approval comes BEFORE ops makes that
+credit. See Q3 for whether these rows should wait for "marked done".
+
+--------------------------------------------------------------------------------
+4. GENERATION MODEL
+--------------------------------------------------------------------------------
+  - On demand, per date. It is not automatic after the run, because cases
+    are approved hours after the run, so an automatic file would be empty
+    or partial.
+  - Every generation is stored as a new VERSION. Nothing is overwritten or
+    deleted. Each version records:
+      - date, version number, file name, the exact file content (a few
+        hundred rows, about 30 KB, kept in the database);
+      - SHA-256 hash, row count, count and amount per flag/code;
+      - partial yes/no, who generated it and when, optional remarks;
+      - one line per row, linked to the case and the approved action, so
+        a case's page can show "sent in SSKUPI14072026.csv v2".
+    The newest version is "current"; older ones are kept as "superseded".
+    The download name is always SSKUPIddmmyyyy.csv, as NPCI expects; the
+    version only shows in the app.
+  - Audit: two new core.OperationLog entries, written the same way as
+    upload and run:
+      NPCI_FILE_GENERATED  date, version, hash, rows, partial
+      NPCI_FILE_DOWNLOADED date, version, hash
+    Downloads are logged because the file holds account numbers.
+  - Generating again when nothing has changed does not create a new
+    version; the current one is returned.
+  - Changes after generation (a later re-run, approval or rejection): the
+    stored file never changes. Instead, the screen compares the current
+    file with what would be generated now and shows "out of date: 3 newly
+    approved, 1 now under review". The user decides whether to make a new
+    version.
+    A re-run that changes an approved case already flags it "needs review"
+    (existing behaviour). The file screen lists those cases.
+  - After the upload: today each case is marked done one at a time, with
+    an external reference (the maker who holds the case does it). See Q4
+    for a one-step "mark this file's cases done" action.
+  - Who may do what (recommendation, see Q2):
+      see the list and the file details   all five roles
+      generate                            Checker (the spec: "the checker
+                                          authorises NPCI uploads")
+      download                            Maker, Checker, Operations User
+                                          (the people who upload)
+      Administrator / Auditor             see the list, hashes and history,
+                                          but no download (the file holds
+                                          account numbers)
+
+--------------------------------------------------------------------------------
+5. API (same style as api/operations.py and api/results.py)
+--------------------------------------------------------------------------------
+  GET  /api/v1/<module>/dates/<date>/npci-file/preview/
+       What would go in now. No changes are saved.
+       { file_date, file_name, partial,
+         counts:   [{flag, code, text, rows, amount}],
+         rows:     [{line, case_id, case_business_date, rrn, flag, code,
+                     shtdat, amount, account_masked, text}],
+         excluded: [{case_id, rrn, rule_code, status, reason}],
+         current_file: {id, version, sha256, generated_at} or null,
+         same_as_current: true/false }
+       account_masked shows the last 4 characters only. Full values exist
+       only in the downloaded file.
+
+  POST /api/v1/<module>/dates/<date>/npci-file/
+       Generate. Body: {"confirm_partial": bool, "remarks": "..."}.
+       201 = new version.
+       200 = unchanged, current version returned.
+       403 = wrong role.
+       409 = nothing to include, or partial without confirm_partial.
+       Error bodies use {detail, errors}, as the existing endpoints do.
+
+  GET  /api/v1/<module>/npci-files/?file_date=&current=
+       List of versions (paginated, newest first).
+
+  GET  /api/v1/<module>/npci-files/<id>/
+       One version: metadata, counts, rows (masked), whether it is
+       current, and whether it is out of date (counts of what changed).
+       download_url is null when the user may not download.
+
+  GET  /api/v1/<module>/npci-files/<id>/download/
+       The stored bytes, Content-Type text/csv, sent as a download named
+       SSKUPIddmmyyyy.csv. Writes NPCI_FILE_DOWNLOADED.
+
+  New /me capabilities in api/base.py CAPABILITIES:
+       "npci_files.view":     all roles
+       "npci_files.generate": (Checker,)
+       "npci_files.download": (Maker, Checker, Operations User)
+  As with the existing capabilities, the server re-checks the role on
+  every request. The capabilities only drive buttons and menus.
+
+  The generator itself is registered per module: SSKUPI is UPI-only, and
+  IMPS will need its own format later.
+
+  Handoff to frontend-engineer: the shapes above are the backend's
+  proposal. Frontend should confirm or change them before Slice 2.
+
+--------------------------------------------------------------------------------
+6. FRONTEND (short; frontend-engineer's to design)
+--------------------------------------------------------------------------------
+  - Business date page (dates/:businessDate): a new "NPCI file" section
+    with:
+      - counts per flag/code;
+      - "not included: N" with a link to the list of cases;
+      - the current version and whether it is out of date;
+      - buttons "Generate" (npci_files.generate) and "Download"
+        (npci_files.download);
+      - a partial-file confirmation dialog.
+  - A "Preview" table with masked account numbers.
+  - A list of all generated files (date, version, rows, partial, hash,
+    who/when, current/superseded), either on its own page or on the Files
+    page.
+  - Case page: "sent in SSKUPI14072026.csv v2" when the case is in a file.
+  - Settings > Response codes: a read-only column "Text in NPCI file"
+    (see section 8, Q1).
+
+--------------------------------------------------------------------------------
+7. ROW-BY-ROW CHECK AGAINST THE REAL FILES (dev DB, read-only, 2026-10-22)
+--------------------------------------------------------------------------------
+Method: every case of rules R01-R06b, built with each rule's default
+action (all cases are still OPEN, see section 3), placed by the rule in
+section 2, then compared with the sample on all columns except
+specifyother. Run read-only (SET TRANSACTION READ ONLY), from a scratch
+script.
+
+  Date     Rows (app / sample / both)   Fields matching    Row order
+  14 Jul   301 / 301 / 301              2,407 of 2,408     same
+  25 Sep    60 /  60 /  60                480 of   480     same
+  26 Sep    21 /  21 /  21                168 of   168     same
+
+  No row is missing on either side, on any of the 3 dates.
+
+The one difference (14 Jul, one RRC row, shcrd):
+  - NPCI's Adjustment report has a 21-character value starting "18".
+  - Ops' file has the same value without those first 2 characters (19
+    characters).
+  - The other 19 characters are identical, and the value is nowhere else
+    in the loaded data (CBS, DRC, Timeout, Raw Data searched).
+  - On 26 Sep ops kept a similar 21-character "18..." value WHOLE.
+  - So this looks like a one-off manual edit. Recommendation: copy NPCI's
+    value as it is, and ask ops (Q7).
+
+The 14 Jul mapping (R01->DRC 102 143 rows, R02->DRC 103 6, R03->DRC 104
+116, R04a->TCC 102 2, R05->RET 115 18, R06->RRC 501 16) agrees with the
+PM's cross-check. 26 Sep also confirms that R06b goes in as RRC 501.
+
+--------------------------------------------------------------------------------
+8. QUESTIONS FOR THE OWNER (each with a recommendation)
+--------------------------------------------------------------------------------
+  Q1 Where the specifyother text comes from.
+     What I found:
+       - The owner's new texts CANNOT go into the Response Code
+         repository today, even through maker-checker. A code used by the
+         active rule set is locked: only an unknown numeric code may be
+         filled in (exception_management/code_changes.py _validate, and
+         rule_engine ResponseCode.save). DRC 102/103/104, TCC 102,
+         RET 115 and RRC 501 are all used by v3.2, so the 6 edits would
+         be refused.
+       - The seed data finds codes by their description
+         (rule_engine/seeding.py get_or_create on flag + description;
+         v3_1.py rules use ("DRC", "Online reverse")). If a description is
+         changed in a database, running seed_rule_sets on it again would
+         not find "Online reverse". It would then try to create a second
+         DRC 102 and fail. A brand-new database would still start with the
+         old text.
+       - Nothing else (API, frontend, file code) looks codes up by
+         description.
+     Recommendation:
+       - Keep a fixed text table inside the NPCI file component, keyed by
+         flag + numeric code (never by description), with the owner's 6
+         texts.
+       - Show it read-only in Settings > Response codes as "Text in NPCI
+         file", so the frontend shows it too.
+       - Changing it later is a small code change with owner approval.
+         This keeps the uploaded text stable and leaves the locked
+         repository alone.
+     Alternative, if the owner wants the repository description itself
+     changed (about 1 extra day):
+       - allow description-only edits of locked codes through
+         maker-checker;
+       - make seeding look codes up by flag + code;
+       - then put the 6 edits through maker-checker.
+       Risk: any later approved wording change would silently change what
+       is sent to NPCI.
+
+  Q2 Roles. Generate = Checker; download = Maker, Checker, Operations User;
+     everyone sees the list and history; Administrator and Auditor cannot
+     download. Recommendation: as written.
+
+  Q3 Money-moving rows (DRC 103, manual credit + RRC 501). Should they
+     wait until the case is "marked done" (credit made, reference
+     recorded), or go in as soon as they are approved?
+     Recommendation: go in on approval, which matches today's same-day
+     practice, with a warning on the screen ("6 rows need a manual credit
+     before you upload"). The stricter choice is "only after marked done".
+
+  Q4 After the upload. Add one action, "mark all cases in this file done",
+     with the file name + version as the external reference? Today each
+     case is marked done by the maker who holds it. This changes the
+     maker-checker flow, so it is the owner's decision.
+     Recommendation: yes, by Maker or Operations User, logged per case.
+     Build it in Slice 4, after the basic file works.
+
+  Q5 Partial files. Allow generating while some cases are not approved,
+     with a confirmation? Recommendation: yes (the RET deadline is 4 pm).
+     Ops must also say whether the portal accepts a second upload for the
+     same date and under what name (Q8).
+
+  Q6 Texts and numbers that are still missing:
+       - specifyother text for TCC 103 and for the RET reasons other than
+         115;
+       - the numeric codes of those RET reasons (from ops / NPCI's
+         list).
+     Until then such cases are held back with a message.
+     Recommendation: for the text, use the repository description.
+
+  Q7 (for ops) The one 14 Jul row where ops' file drops the first two
+     characters of the account value: intended, or a slip?
+     Recommendation: copy NPCI's value as it is.
+
+  Q8 (for ops) A second / corrected upload for the same date: does the
+     portal accept it, and what file name? Recommendation: until ops
+     answer, the app keeps one name per date and keeps versions inside
+     the app.
+
+  Q9 (for ops) Line endings: the samples are CRLF (not LF as briefed).
+     Recommendation: CRLF.
+
+--------------------------------------------------------------------------------
+9. EFFORT (1 engineer, after approval)
+--------------------------------------------------------------------------------
+  Slice 1  backend generator, 2-3 days:
+           - row selection (section 3) and the Adjdate placement rule;
+           - the formatter and the text table;
+           - stored versions with hash and rows (one migration);
+           - the 2 OperationLog types;
+           - a command that compares a generated file with a sample file
+             (repeats section 7);
+           - tests, including the 3 real dates.
+  Slice 2  API, about 1.5 days: the 5 endpoints, capabilities, masking,
+           download audit, tests.
+  Slice 3  frontend, about 2 days (frontend-engineer): date-page section,
+           preview, generate/download, file list, case-page link,
+           Vitest + one Playwright path.
+  Slice 4  optional, 1-1.5 days: "mark file's cases done" (Q4),
+           out-of-date view polish, and the repository-text alternative if
+           the owner picks it (Q1).
+
+  Total: about 5.5-6.5 working days without Slice 4, about 7-8 with it.
+  Add the full test-suite runs (about 15 min each, run on their own).
+  Where this goes in the schedule (against Phase 6) is the owner's
+  decision.
+
+================================================================================
+ AMENDMENT 1 (owner, 2026-10-22/23) - APPROVED, BUILT (Slices 1 and 2)
+================================================================================
+The owner approved this draft on 2026-10-22/23 with the decisions below.
+Where this amendment and sections 1-9 disagree, this amendment wins.
+Slices 1 (generator) and 2 (API) are built. Slice 3 (the screens) is the
+frontend engineer's, built from the contract in A7.
+
+--------------------------------------------------------------------------------
+A1. THE OWNER'S DECISIONS
+--------------------------------------------------------------------------------
+  Q1  Reply text (specifyother): OPTION B. The text is the Response Code
+      repository's own description, so the case screens and the file show
+      the same words. The file uses the description as it stands at the
+      moment the file is generated.
+      Target wording. The PM proposes it through the app's maker-checker;
+      the engineer does NOT change it:
+        DRC 102 "Online Reversal"        DRC 103 "Manually Credited"
+        DRC 104 "Not Effected to CBS"    RET 115 "Account does not exist"
+        RRC 501 "Manually Credited"      TCC 102 "Online Credited"
+  Q2  Roles as recommended: the Checker generates; Maker, Checker and
+      Operations User download; Administrator and Auditor see the list and
+      details only.
+  Q3  Only Checker-approved replies go in (approved or completed cases).
+  Q4  No "mark all done" action. Cases are still marked done one at a time.
+  Q5  A partial file is allowed, with an explicit confirmation.
+  Q7  The dropped "18" in ops' 14 Jul file was a slip: copy NPCI's value
+      as it is.
+  Q9  Line endings CRLF, like ops' files.
+  Q8  A second file for the same date holds ONLY NEW rows (cases approved
+      since the last file). Names: SSKUPIddmmyyyy.csv, then
+      SSKUPIddmmyyyy_2.csv, _3 and so on. The app records which file each
+      case is included in, so a case is never included twice.
+  Q6  Missing NPCI codes (RET reasons with no numeric code yet; the owner
+      also named TCC 103, see A8 point 1): those rows are left out with a
+      warning that lists them. They go into a later file automatically once
+      the code is filled in. The owner will supply the codes later.
+
+--------------------------------------------------------------------------------
+A2. WHAT CHANGES AGAINST THE DRAFT
+--------------------------------------------------------------------------------
+  - There are no "versions" of one file any more (this replaces section 4).
+    Every generation is a NEW, separate file. The first of a date is
+    SSKUPIddmmyyyy.csv, later ones _2, _3 and so on. A later file holds
+    only cases that were not included in an earlier file. There is no "current /
+    superseded" and no "out of date" view: the date's preview simply shows
+    what the next file would hold. Generating when nothing new is approved
+    is refused.
+  - The "filename" column inside a file is that file's own name, so the
+    rows of SSKUPI26092026_2.csv say SSKUPI26092026_2.csv.
+  - The app never sends anything to NPCI (owner, 2026-10-23). It only
+    generates the file; the user downloads it and uploads it to the NPCI
+    portal by hand. So every screen and API text says "included in file
+    ..." / "already included in an earlier file", never "sent". (Sections
+    1-9 above still say "sent" in places; read it as "included".)
+  - No file-approval step (owner, 2026-10-23). The owner considered "the
+    Checker clicks Approve file before download" and chose instead: record
+    who downloaded each file and when, and show it on every file. The
+    downloads were already logged (NPCI_FILE_DOWNLOADED); the file list and
+    file details now show that history (A7).
+  - Withdrawing or cancelling a file (owner rule, 2026-10-23; NOT built
+    now): if a file is ever withdrawn or cancelled, its cases become
+    available again for a later file, and the next file of that date
+    takes the NEXT number. Example: after _2 is withdrawn, the next file
+    is _3, never a second _2. So every generated name stays unique and a
+    name is never reused. (The built tables already allow this: names are
+    unique, and the number is the date's highest one + 1.)
+  - A case appears in at most one file (the database refuses a second
+    row). If a re-run later changes a case that is already included in a
+    file (it is flagged for review), that file does not change and the
+    case is not included again. The preview shows a warning. Any correction is made
+    with NPCI outside the app.
+  - No fixed text table in the code. This replaces Q1's recommendation and
+    section 6's "Text in NPCI file" column: the text is the repository
+    description. To make the owner's wording possible:
+      * a code used by the active rule set may now have its DESCRIPTION
+        changed through the existing maker-checker (a Maker proposes, a
+        Checker approves). Its flag, a known numeric code, its notes and
+        the rules that use it stay locked. Filling in an unknown numeric
+        code works as before, and may be combined with a new description;
+      * seed_rule_sets no longer finds codes by their description. It
+        finds them by flag + numeric code. For codes whose number is still
+        unknown it uses the description, or the approved rename history.
+        So running it again after a wording change creates no duplicate
+        and keeps the new wording;
+      * the Response codes list now says which fields a proposal may change
+        (editable_fields), so the screen can unlock the description.
+    Accepted risk (from the draft): any later approved wording change also
+    changes what the next file sends to NPCI.
+  - Not included / partial (section 3): the preview lists every case that
+    would give a row once decided, with the reason: not submitted yet,
+    waiting for approval, flagged for review, no numeric code, no NPCI
+    dispute row, or a value the file cannot hold (a comma, quote, line
+    break or non-ASCII character, or an empty account cell). If any case
+    is listed, generating needs "confirm partial" and the file is marked
+    partial. Cases with no NPCI reply (chargebacks, CBS entries, close
+    without action, R12, R13, settlement cases) are never listed.
+  - The Q3 warning is kept: rows that tell NPCI a customer was credited by
+    hand (DRC 103, manual credit + RRC 501) and are not marked done yet
+    give a warning ("make sure the credit is made before uploading"). They
+    are not held back.
+
+--------------------------------------------------------------------------------
+A3. HOW THE FILE IS BUILT (unchanged from sections 1-3, for reference)
+--------------------------------------------------------------------------------
+  One row per approved case. Flag and code come from the approved action;
+  the RRN is written twice; Shtdat = the business date (RRC: the
+  Adjustment's Txndate); adjamt = the NPCI row's amount (RRC: Adjamount),
+  with no trailing zeros; shcrd = NPCI's DRC / Timeout column 11 or
+  Adjustment column 12, minus the leading apostrophe; specifyother = the
+  code's description. DRC / TCC / RET rows go in the file of the case's
+  date, RRC rows in the file of the Adjustment's Adjdate. Order: DRC, RRC,
+  TCC, RET; then by code; then NPCI's row order. No quotes, no BOM, CRLF
+  after every line.
+
+--------------------------------------------------------------------------------
+A4. WHAT WAS BUILT
+--------------------------------------------------------------------------------
+  New app npci_files:
+    models.py      NpciFile (one generated file: exact text, SHA-256,
+                   counts, partial, what was left out, warnings, who and
+                   when) and NpciFileRow (one line: case + approved
+                   action). Both append-only; a case may be in one row only.
+    formats.py     the SSKUPI format, registered per payment module (UPI).
+    generator.py   which cases go in, the values, the partial check,
+                   generate, download (role checks and audit).
+    compare.py and manage.py check_npci_file: compares a file (generated,
+                   or what would be generated now) with ops' file, column
+                   by column. Prints counts and masked values only.
+                   --rule-defaults builds the file as if every case had
+                   been approved with its rule's pre-filled reply
+                   (verification only: read-only, saves nothing).
+    admin.py       read-only lists (the file content is not shown).
+  Audit: core.OperationLog NPCI_FILE_GENERATED (file, sequence, hash, rows,
+  amount, partial, what was left out) and NPCI_FILE_DOWNLOADED (file,
+  hash). Both show in Audit > Operations.
+  API: see A7. /me: npci_files.view (all roles), npci_files.generate
+  (Checker), npci_files.download (Maker, Checker, Operations User).
+  Option B: exception_management/code_changes.py, rule_engine/models.py
+  (ResponseCode), rule_engine/seeding.py, api/settings_views.py.
+  Migrations: core 0012_npci_file_operation_types (choices only) and
+  npci_files 0001_initial (2 new tables). No change to existing data.
+
+--------------------------------------------------------------------------------
+A5. CHECK AGAINST OPS' FILES (2026-10-23)
+--------------------------------------------------------------------------------
+  1) Read-only, dev database, every case taken as approved with its rule's
+     pre-filled reply (check_npci_file --rule-defaults):
+       Date     Rows (app / ops / both)   Fields (except specifyother)   Order
+       14 Jul   301 / 301 / 301           2,407 of 2,408                 same
+       25 Sep    60 /  60 /  60             480 of   480                 same
+       26 Sep    21 /  21 /  21             168 of   168                 same
+     The one difference is the 14 Jul "18" row (A1, Q7): the app writes
+     NPCI's value.
+  2) Real generation on a copy of the dev database
+     (reconciliation_npci_check). The owner's wording was applied through
+     maker-checker on the copy only. Every reply case was approved through
+     the normal Maker and Checker steps; the files were generated and
+     downloaded through the generator.
+       - 14 Jul and 25 Sep: the same figures as 1). With ops' text put back
+         in the last column, 25 Sep is byte-for-byte identical to ops'
+         file; 14 Jul differs on the "18" line only.
+       - 26 Sep, approved in two steps. First the 15 cases of 26 Sep ->
+         SSKUPI26092026.csv, partial (6 left out, "not submitted yet").
+         Then the 6 adjustments that arrived on 26 Sep for 25 Sep
+         transactions -> SSKUPI26092026_2.csv holds exactly those 6 cases
+         and none of the first 15. 15 + 6 = ops' 21 rows; all fields are
+         equal except the text and the filename column of the 6 rows in
+         the _2 file. A third attempt was refused: nothing new to include.
+     Every text in the generated files was the owner's wording.
+
+--------------------------------------------------------------------------------
+A6. AFTER DEPLOYMENT (for the PM)
+--------------------------------------------------------------------------------
+  1. python manage.py migrate (core 0012, npci_files 0001).
+  2. The 6 wording changes: a Maker proposes each new description and a
+     Checker approves it. This already works in the Django admin
+     (Response code change requests). The SPA's Response codes screen
+     still greys out the description of locked codes until the frontend
+     uses editable_fields (A7).
+  3. Fill in the numeric codes the owner supplies the same way. The rows
+     left out then go into the next file of their date.
+
+--------------------------------------------------------------------------------
+A7. API CONTRACT (for Slice 3, frontend-engineer)
+--------------------------------------------------------------------------------
+  Same conventions as the other /api/v1/ endpoints: session login, CSRF
+  header on POST, 401 not logged in, 403 no role or wrong role, 404
+  unknown module or a module with no NPCI file format (body {detail}),
+  400 bad input {detail, errors: {field: [messages]}}, 409 wrong state
+  {detail, errors}. Dates are YYYY-MM-DD; amounts are strings. Account
+  numbers are never returned in full: account_masked has "*" for every
+  character except the last 4. The full values exist only in the
+  downloaded file. RRNs are returned as they are, as on the case screens.
+
+  GET /api/v1/<module>/dates/<date>/npci-file/preview/       all 5 roles
+    What the NEXT file for the date would hold now. Saves nothing.
+    {
+      file_date, file_format: "SSKUPI",
+      next_sequence: 1, next_file_name: "SSKUPI14072026.csv",
+      row_count, total_amount: "703.50", partial: bool,
+      counts: [{flag, code, text, rows, amount}],
+      rows: [{line, case_id, case_business_date, rrn, rule_code,
+              action_type, flag, code, shtdat, amount: "140.5",
+              account_masked, text}],
+          (amount as written in the file; shtdat YYYY-MM-DD)
+      not_included: [{case_id, case_business_date, rrn, rule_code, status,
+                      flag, code (null when there is no numeric code),
+                      reason, reason_label, detail}],
+          reason is one of OPEN, PENDING_APPROVAL, NEEDS_REVIEW,
+          NO_NUMERIC_CODE, NO_NPCI_ROW, BAD_SOURCE_DATA
+      not_included_counts: {reason: n},
+      already_sent_count: n,      cases of this date already in a file
+      already_sent_files: ["SSKUPI14072026.csv", ...],
+      warnings: [text, ...],      show them as they are
+      files: [{id, file_name, sequence, row_count, partial, generated_at,
+               generated_by}],    files already generated for this date
+      can_generate: bool          rows > 0 and the user is a Checker
+    }
+    An RRC case can belong to another date's file (its Adjustment's
+    Adjdate), so case_business_date may differ from file_date.
+
+  POST /api/v1/<module>/dates/<date>/npci-file/              Checker
+    Body {"confirm_partial": bool (default false), "remarks": "text"}.
+    201 -> the new file, same body as GET /npci-files/<id>/.
+    409 with errors.confirm_partial: cases are left out. Ask the user to
+        confirm a partial file, then POST again with true.
+    409 with errors.rows (and errors.not_included): nothing new to include.
+    400 confirm_partial not a boolean, or remarks not text.
+    403 not a Checker.
+
+  GET /api/v1/<module>/npci-files/?file_date=&date_from=&date_to=&page=&page_size=
+                                                             all 5 roles
+    Paginated like the other lists, newest first:
+    {count, next, previous, results: [file row], can_download: bool}
+    file row = {id, file_date, sequence, file_name, file_format,
+                row_count, total_amount, partial, not_included_count,
+                sha256, size_bytes, generated_by, generated_at, remarks,
+                download_url, download_count,
+                downloads: [{by: username, at: timestamp}]}
+    download_url is null when the user may not download (Administrator,
+    Auditor). downloads is the file's download history, newest first
+    (owner 2026-10-23, instead of a file-approval step), from the
+    NPCI_FILE_DOWNLOADED audit entries; refused download attempts are not
+    in it. Every role sees it. The same two fields are on every file row:
+    the list, the file details and the 201 answer of a generation (empty
+    there).
+
+  GET /api/v1/<module>/npci-files/<id>/                      all 5 roles
+    file row + {counts, warnings, not_included (as in the preview, as they
+    stood at generation), rows: [{line, case_id, case_business_date, rrn,
+    flag, code, shtdat, amount, account_masked, text}],
+    other_files_for_date: [like preview.files], history: [operations log
+    entries {id, operation, operation_label, username, created_at, source,
+    business_date, uploaded_file_id, run_id, details}]}
+
+  GET /api/v1/<module>/npci-files/<id>/download/   Maker, Checker, Operations User
+    The stored bytes. Content-Type text/csv; Content-Disposition
+    attachment; filename="SSKUPI14072026.csv"; X-Content-SHA256; no
+    caching. Every download is logged. 403 for Administrator and Auditor.
+    The SPA should download through a plain link, or save the response as
+    a blob, without changing the bytes (the CRLF line endings must stay).
+
+  GET /api/v1/<module>/cases/<id>/  (existing)  new field
+    npci_file: {id, file_name, file_date, line, generated_at} or null
+    ("included in file SSKUPI14072026.csv, line 12").
+
+  GET /api/v1/me/  new permissions
+    npci_files.view (all), npci_files.generate (Checker),
+    npci_files.download (Maker, Checker, Operations User). These drive
+    buttons only; the server checks every request.
+
+  GET /api/v1/<module>/settings/response-codes/  new field per code
+    editable_fields: ["code", "description", "notes"] on an unlocked code;
+    on a locked one ["description"], or ["code", "description"] while its
+    numeric code is unknown. The Description input should be enabled when
+    "description" is listed (today it is disabled for every locked code).
+
+  Screens: section 6 still applies, minus the "Text in NPCI file" column
+  and the out-of-date view. That is: an "NPCI file" section on the business
+  date page (counts, the not-included list with reasons, warnings, files
+  already generated, Generate with the partial confirmation, Download), a
+  list of all files, and the link on the case page.
+
+--------------------------------------------------------------------------------
+A8. OPEN POINTS
+--------------------------------------------------------------------------------
+  1. TCC 103: the owner listed it with the missing codes, but the
+     repository already holds TCC 103 with its number (from the SOP) and
+     the description "Credited manually post-reconciliation". The rule as
+     built leaves out only codes with NO number, so an approved TCC 103
+     reply WOULD go in, with that text. No rule pre-fills TCC 103 (R04a and
+     R04b pre-fill TCC 102); only a maker's own choice gives one. Owner to
+     confirm: keep it, or hold TCC 103 back until ops confirm it.
+  2. A case is never included twice, even if a re-run later changes it and a
+     Checker approves a different reply. The correction then happens with
+     NPCI outside the app. Owner to confirm this is acceptable.
+  3. Ops have not yet confirmed that the NPCI portal accepts a second
+     upload named ..._2.csv for the same date (the name is the owner's
+     decision).

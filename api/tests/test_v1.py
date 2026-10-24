@@ -155,12 +155,13 @@ class AuthTests(V1TestBase):
         expected_true = {
             Role.ADMINISTRATOR: {"cases.reassign", "settings.propose_tolerance", "audit.view", "users.view",
                                  "users.admin"},
-            Role.OPERATIONS_USER: {"files.upload"},
-            Role.MAKER: {"cases.work", "settings.propose_codes", "settings.propose_mapping"},
-            Role.CHECKER: {"cases.approve", "settings.approve"},
+            # npci_files.*: NPCI file design Q2 (owner 2026-10-22/23)
+            Role.OPERATIONS_USER: {"files.upload", "npci_files.download"},
+            Role.MAKER: {"cases.work", "settings.propose_codes", "settings.propose_mapping", "npci_files.download"},
+            Role.CHECKER: {"cases.approve", "settings.approve", "npci_files.generate", "npci_files.download"},
             Role.AUDITOR: {"audit.view", "users.view"},  # users.view: owner decision 2026-10-22
         }
-        everyone = {"cases.view", "files.view", "results.view", "settings.view", "alerts.view"}
+        everyone = {"cases.view", "files.view", "results.view", "settings.view", "alerts.view", "npci_files.view"}
         for role, extra in expected_true.items():
             with self.subTest(role=role):
                 perms = self.as_(role).get(f"{V1}/me/").json()["permissions"]

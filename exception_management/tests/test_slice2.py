@@ -331,10 +331,13 @@ class CodeChangeTests(CaseTestBase):  # P3
 
     def test_locked_code_only_fills_unknown_code(self):
         ret115 = ResponseCode.objects.get(payment_module=self.module, flag=CodeFlag.RET, code="115")
-        with self.assertRaisesRegex(MissingInput, "only its unknown numeric code"):
+        with self.assertRaisesRegex(MissingInput, "unknown numeric code be filled in"):
             code_changes.propose_code_change(ret115, self.m, new_code="116", reason="x")
-        with self.assertRaisesRegex(MissingInput, "only its unknown numeric code"):
-            code_changes.propose_code_change(self.closed, self.m, new_description="Closed account", reason="x")
+        with self.assertRaisesRegex(MissingInput, "only its wording"):
+            code_changes.propose_code_change(self.closed, self.m, new_notes="edited notes", reason="x")
+        with self.assertRaisesRegex(MissingInput, "only its wording"):  # wording OK, but not with the notes
+            code_changes.propose_code_change(self.closed, self.m, new_description="Closed account",
+                                             new_notes="edited notes", reason="x")
         with self.assertRaisesRegex(MissingInput, "already used"):
             code_changes.propose_code_change(self.closed, self.m, new_code="115", reason="x")
         with self.assertRaises(MissingInput):

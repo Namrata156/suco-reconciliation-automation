@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     "rule_engine",
     "exception_management",
     "settlement",
+    "npci_files",
     "api",
 ]
 

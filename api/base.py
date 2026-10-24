@@ -82,6 +82,11 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
     "audit.view": (Role.ADMINISTRATOR, Role.AUDITOR),
     "users.view": (Role.ADMINISTRATOR, Role.AUDITOR),  # users-and-roles list (owner decision 2026-10-22)
     "users.admin": (Role.ADMINISTRATOR,),  # link to the Django admin (P3)
+    # NPCI file generation (docs/npci_file_design_draft_v1.txt Q2, owner 2026-10-22/23). Same roles as
+    # npci_files.generator.GENERATE_ROLES / DOWNLOAD_ROLES, which the server checks.
+    "npci_files.view": _ALL,
+    "npci_files.generate": (Role.CHECKER,),
+    "npci_files.download": (Role.MAKER, Role.CHECKER, Role.OPERATIONS_USER),
 }
 
 

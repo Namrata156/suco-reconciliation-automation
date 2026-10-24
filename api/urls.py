@@ -4,7 +4,7 @@
 """
 from django.urls import path
 
-from api import alerts, audit, auth, operations, results, settings_views, views
+from api import alerts, audit, auth, npci_files, operations, results, settings_views, views
 
 urlpatterns = [
     path("auth/csrf/", auth.CsrfView.as_view(), name="v1-auth-csrf"),
@@ -82,4 +82,13 @@ urlpatterns = [
          name="v1-settings-tolerance-version"),
     path("<slug:module>/settings/tolerance/<int:pk>/<str:decision>/", settings_views.ToleranceDecisionView.as_view(),
          name="v1-settings-tolerance-decision"),
+    # NPCI file generation (docs/npci_file_design_draft_v1.txt Amendment 1, A7 API contract)
+    path("<slug:module>/dates/<str:business_date>/npci-file/", npci_files.NpciGenerateView.as_view(),
+         name="v1-npci-file-generate"),
+    path("<slug:module>/dates/<str:business_date>/npci-file/preview/", npci_files.NpciPreviewView.as_view(),
+         name="v1-npci-file-preview"),
+    path("<slug:module>/npci-files/", npci_files.NpciFileListView.as_view(), name="v1-npci-file-list"),
+    path("<slug:module>/npci-files/<int:pk>/", npci_files.NpciFileDetailView.as_view(), name="v1-npci-file-detail"),
+    path("<slug:module>/npci-files/<int:pk>/download/", npci_files.NpciFileDownloadView.as_view(),
+         name="v1-npci-file-download"),
 ]

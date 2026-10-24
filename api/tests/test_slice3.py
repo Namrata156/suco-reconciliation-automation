@@ -92,7 +92,7 @@ class ResultTests(Slice3Base):
         run = RuleEvaluationRun.objects.get(business_date=D)
         groups = TransactionMatchGroup.objects.filter(business_date=D, is_superseded=False).count()
         self.assertEqual(body["rule_evaluation"]["id"], run.pk)
-        self.assertEqual(body["rule_evaluation"]["rule_set"], "v3.2")
+        self.assertEqual(body["rule_evaluation"]["rule_set"], "v3.3")
         self.assertEqual(body["results_total"], groups)
         self.assertEqual({r["rule_code"]: r["count"] for r in body["rules"]}, run.rule_counts)
         self.assertEqual(sum(x["count"] for x in body["by_status_category"]), groups)
@@ -165,7 +165,7 @@ class ResultTests(Slice3Base):
         legs = {x["leg"]: x for x in body["legs"]}
         self.assertEqual(legs["CBS"]["fact"]["register_type"], "CBS_GL_EXTRACT")
         self.assertEqual((legs["NPCI"]["response_code"], legs["NPCI"]["fact"]["settlement_cycle"]), ("00", "1C"))
-        self.assertEqual(body["rule_result"]["rule_set"], "v3.2")
+        self.assertEqual(body["rule_result"]["rule_set"], "v3.3")
         self.assertEqual(body["earlier_rule_results"], [])
         self.assertIsNone(body["case"])
         # A re-run supersedes, never deletes: the earlier result is listed.
@@ -309,7 +309,7 @@ class SettingsReadTests(Slice3Base):
     def test_response_codes(self):
         body = self.ok(U, f"{SETTINGS}/response-codes/", {"page_size": 500})
         self.assertEqual(body["count"], ResponseCode.objects.filter(payment_module=self.module).count())
-        self.assertEqual(body["rule_set"], "v3.2")
+        self.assertEqual(body["rule_set"], "v3.3")
         drc102 = next(c for c in body["results"] if c["flag"] == "DRC" and c["code"] == "102")
         self.assertTrue(drc102["locked"])
         self.assertIn("R01", drc102["used_by"])
@@ -598,8 +598,8 @@ class ResponseCodeWriteTests(Slice3Base):
         self.assertEqual(self.edit(reason="").status_code, 400)  # service: reason required
         self.assertEqual(self.edit(new_code=None).status_code, 400)  # service: changes nothing
         locked = ResponseCode.objects.filter(payment_module=self.module, flag="DRC", code="102").get()
-        r = self.edit(response_code=locked.pk, new_code=None, new_description="Renamed")
-        self.assertEqual(r.status_code, 400)  # locked by the active rule set
+        r = self.edit(response_code=locked.pk, new_code=None, new_notes="Edited notes")
+        self.assertEqual(r.status_code, 400)  # locked by the active rule set (only its wording may change)
         self.assertIn("ACTIVE/RETIRED", r.json()["detail"])
         self.assertEqual(self.create(flag="XYZ").status_code, 400)
         self.assertEqual(self.create(new_source="").status_code, 400)

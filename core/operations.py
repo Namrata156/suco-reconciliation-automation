@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from django.utils import timezone
+
 from core.models import OperationLog, PaymentModule
 
 
@@ -30,6 +32,17 @@ class WrongState(OperationError):
 
 class InvalidInput(OperationError):
     pass
+
+
+FUTURE_BUSINESS_DATE_MESSAGE = "Business date must be before today: ops reconcile the previous day."
+
+
+def require_past_business_date(business_date: date, field: str = "business_date") -> None:
+    """Refuses a business date on or after today (IST, timezone.localdate()):
+    on calendar day D ops reconcile business date D-1 (owner 2026-10-23).
+    Raises InvalidInput (400) with the message as a field error."""
+    if business_date >= timezone.localdate():
+        raise InvalidInput(FUTURE_BUSINESS_DATE_MESSAGE, {field: [FUTURE_BUSINESS_DATE_MESSAGE]})
 
 
 def log_operation(operation: str, *, user, payment_module: PaymentModule, business_date: date | None = None,

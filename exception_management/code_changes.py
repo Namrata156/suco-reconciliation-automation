@@ -12,8 +12,12 @@ Creating a NEW code goes the same way (Amendment 2 B2, 2026-10-11): a
 rule_engine.ResponseCode refuses any edit or creation unless this module
 applies it (ResponseCode._approved_change) -- the one exception is seeding
 an approved rule-table release (rule_engine.seeding_response_codes). Its
-existing immutability still holds: a code used by an ACTIVE/RETIRED rule set
-may only have an unknown (NULL) numeric code filled in, once.
+existing immutability still holds, with one widening: a code used by an
+ACTIVE/RETIRED rule set may have an unknown (NULL) numeric code filled in,
+once, and -- since NPCI file design Amendment 1 (owner 2026-10-22/23, option
+B) -- its description (the wording shown on cases and sent to NPCI as
+"specifyother") changed. Flag, known numeric code, notes and rule links stay
+locked.
 
 Self-approval (same user Maker + Checker, owner D3) is allowed and flagged
 (P4), as for cases.
@@ -51,9 +55,16 @@ def _validate(rc: ResponseCode, new_code, new_description: str, new_notes: str) 
     if not new_description:
         raise MissingInput("The description is required")
     if rc.is_locked():
-        if changes != {"code"} or rc.code is not None or new_code is None:
+        # A code used by an ACTIVE/RETIRED rule set: its unknown numeric code
+        # may be filled in (once), and its wording (description) may change
+        # (NPCI file design Amendment 1, owner 2026-10-22/23, option B: the
+        # description is the reply text sent to NPCI). The flag, a known
+        # numeric code, the notes and the rule links stay locked.
+        code_change_ok = "code" not in changes or (rc.code is None and new_code is not None)
+        if not changes <= {"code", "description"} or not code_change_ok:
             raise MissingInput(
-                f"{rc} is used by an ACTIVE/RETIRED rule set: only its unknown numeric code may be filled in"
+                f"{rc} is used by an ACTIVE/RETIRED rule set: only its wording (description) may change, "
+                "or its unknown numeric code be filled in"
             )
     others = ResponseCode.objects.filter(payment_module_id=rc.payment_module_id, flag=rc.flag).exclude(pk=rc.pk)
     if new_code is not None and others.filter(code=new_code).exists():
