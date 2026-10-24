@@ -1,0 +1,473 @@
+================================================================================
+ PHASE 6 - REPORTING MODULE
+ DESIGN DRAFT v1 - 2026-10-23 - AWAITING OWNER APPROVAL
+================================================================================
+
+No report code (backend or frontend) is written until the owner approves
+this draft.
+
+What the spec says (docs/reconciliation_automation.docx, "Reports"): the
+system shall generate
+  - daily / monthly transaction volume reports
+  - daily reconciliation report
+  - exception report
+  - ageing report
+  - settlement report
+  - approval report
+  - user activity report
+That is the whole requirement: no columns, filters, formats or roles are
+given. Roles from the spec: the Operations User "views reports"; the
+Auditor "accesses reports", "views logs" and "reviews approval history".
+
+Added by the owner (2026-10-22): an all-dates Results / Settlement view
+with its own menu entry. Today results and settlement are reached only one
+date at a time from Business dates.
+
+This draft builds on what Phase 5 already built:
+  - React + Mantine frontend, module in the URL (/api/v1/<module>/...),
+    server-side paging (50 rows, at most 500), amounts as 2-decimal
+    strings, dates ISO in the API and 14-Jul-2026 on screen (P8).
+  - Roles and menus from CAPABILITIES in api/base.py.
+  - Read-only data that already exists: rule counts per run, match-group
+    status counts, cases with ageing, settlement results per cycle and
+    side, case events, proposed actions, settings events, the login log
+    (core.UserActivity) and the operations log (core.OperationLog).
+Phase 5 left two things to Phase 6 on purpose: exports (P11) and charts.
+
+--------------------------------------------------------------------------------
+1. SCOPE
+--------------------------------------------------------------------------------
+IN Phase 6:
+  - The 7 spec reports, on screen, with a date-range filter and an Excel
+    download.
+  - "Results (all dates)" and "Settlement (all dates)" menu entries
+    (owner, 2026-10-22). They are the daily reconciliation report and the
+    settlement report: one row per business date, each row opening the
+    existing per-date screen.
+  - A record of every report download (who, which report, which filters,
+    how many rows).
+  - A print-friendly layout of each report screen.
+
+OUT of Phase 6 (recommended, see the questions in section 7):
+  - Charts and dashboards (R9).
+  - PDF files (R1). The browser's "Print -> Save as PDF" on the print
+    layout covers the occasional signed paper copy.
+  - Reports that are scheduled or sent by email. There is no mail server
+    yet (tracker: IT).
+  - "As of a past date" ageing (R6).
+  - NPCI decline-rate limits TD 2% / BD 8% (parked rule table Q6, R11).
+  - IMPS etc. The reports read the module from the URL, so they work for
+    a new module without new screens.
+
+--------------------------------------------------------------------------------
+2. THE REPORTS
+--------------------------------------------------------------------------------
+Roles: A = Administrator, O = Operations User, M = Maker, C = Checker,
+U = Auditor.
+Filters on every report: business-date range (from / to) and module. The
+module is the one picked in the header switcher (hidden while only UPI
+exists), so it is not a separate filter.
+"Data" names the tables and code that already hold the figures. Nothing in
+a report computes a rule or a settlement figure again; it only adds up
+what is stored.
+Every report shows "figures as of <time it was produced>" because cases
+and settlement results keep changing after a run.
+
+ 2.1 Daily reconciliation report  =  "Results (all dates)"
+     Purpose: how each business date reconciled, at a glance, and the way
+       into a date's results.
+     Who: all five (they all see per-date results today, results.view).
+     Filters: date range; "only dates with open cases".
+     Columns, one row per business date:
+       - files received / expected, missing files (count)
+       - match groups; Matched / Unmatched / Pending rule evaluation
+       - on-us, CBS reversed
+       - results per status category (Reconciled, Exception, Pending
+         investigation, Reversal required, Adjustment required ...)
+       - cases created, cases still open
+       - settlement status (Tallied / Unexplained / Not ready)
+       - rule set version, run time and who started it
+     A second table (and Excel sheet): rule x date counts for the range
+     (R01, R02 ... per date), useful to spot a rule that suddenly grows.
+     Monthly: a totals row per month when the range covers more than one.
+     Data: reconciliation/overview.py date_overviews() (files, groups,
+       cases, settlement, run) - what the Business dates list already
+       shows; RuleEvaluationRun.rule_counts (stored, instant); one grouped
+       count of TransactionMatchGroup by processing status for the dates
+       on the page.
+     Click a row -> the existing per-date Results screen.
+
+ 2.2 Settlement report  =  "Settlement (all dates)"
+     Purpose: did each date's NPCI settlement tie to CBS, and if not, by
+       how much.
+     Who: all five.
+     Filters: date range; status (Tallied / Unexplained / Not ready).
+     Columns, one row per business date:
+       - status, reasons
+       - NTSL self-check: cycles PASS / total
+       - SOP check: CBS net, NTSL net, difference, explained, unexplained
+       - unexplained amount and count, fees net
+       - tolerance version, NTSL mapping version
+       - settlement case status (if any), computed at
+     Excel adds a sheet with one row per date x cycle x side: NTSL amount
+     and count, matched, explained, unexplained, within tolerance.
+     Data: SettlementResult (is_current) + SettlementCycleResult +
+       NtslCycleCheck + the settlement case link. Small: about 12 cycles
+       per date.
+     Click a row -> the existing per-date Settlement screen.
+
+ 2.3 Daily / monthly transaction volume report
+     Purpose: how many transactions and how much money each source file
+       carried, per day or per month.
+     Who: all five.
+     Filters: date range; group by day or month; file type.
+     Columns: business date (or month), file type (CBS GL extract, Raw
+       Data ACQ / ISS, Merchant Raw Data ACQ / ISS, BBP, DRC, Timeout,
+       Adjustment), cycle (optional breakdown), count and amount per side,
+       total count and amount. For NPCI rows also: approved (00 / RB) vs
+       declined counts.
+     Side labels: see R5. Until ops confirm the NPCI direction labels
+       (open tracker row "NPCI direction labels may be reversed"), NPCI
+       files show Acquirer / Issuer, not Debit / Credit.
+     Data: TransactionFact. It grows about 149,000 rows a day, so the
+       report must not add up raw facts for a month at a time (4.5 million
+       rows). Recommendation (R4): a small daily summary table, one row
+       per module + date + file type + cycle + side, filled at the end of
+       each run, plus a one-off command to fill it for the dates already
+       loaded. A year of summaries is a few thousand rows.
+
+ 2.4 Exception report
+     Purpose: the list of exception cases for a period, open or closed,
+       with what was done about them.
+     Who: all five (cases.view).
+     Filters: date range; status (open only / all / a status); priority;
+       rule; case type (transaction / settlement); overdue; assigned to.
+     Columns: business date, RRN, case type, rule, status category,
+       priority, amount, status, due date, age (days), ageing bucket,
+       overdue, assigned to, proposed action and response code, decision,
+       NPCI portal / CBS reference, created on, closed on, last remark.
+     Summary above the list: counts by status x priority and by rule.
+     Data: ExceptionCase with_ageing() (same as the queue), ProposedAction,
+       CaseEvent (closed on = the COMPLETED or SUPERSEDED event).
+     Backend gaps: the case queue accepts one business date only, not a
+       range; a case has no amount field (backend to supply it from the
+       rule result or the presence rows - not guessed here).
+     About 300-600 cases a day, so a month is about 10,000-18,000 rows:
+     paged on screen, fine in Excel.
+
+ 2.5 Ageing report
+     Purpose: how old the open cases are, against the deadlines they
+       carry.
+     Who: all five.
+     Filters: as of now (see R6); priority; rule; case type.
+     Columns: the 6 approved buckets (0-1 d, 2-5 d, 6-7 d, 8-35 d,
+       36-45 d, 45+ d; rule table v3, AgeingBucket) across, and
+       - by priority (HIGH / MEDIUM / LOW) down, and
+       - by rule down (second table),
+       each cell = count and amount; plus overdue count per bucket and the
+       oldest case. Each cell links to the case queue filtered to it.
+     Age counts calendar days from the TAT start date, as built and
+     approved. (Tracker row "working-day calendar": a Friday item can sit
+     in "2-5 d" on Monday without being overdue; the overdue column, which
+     uses working days, is the one to act on.)
+     Data: ExceptionCase with_ageing() on open cases only (a few thousand
+       rows at most). Backend gaps: grouped counts; an ageing_bucket filter
+       on the queue for the links.
+
+ 2.6 Approval report
+     Purpose: every maker-checker decision in a period - who proposed,
+       who approved or rejected, how fast, and which were self-approved.
+     Who: Administrator, Auditor, Checker (R2).
+     Filters: date range on the decision date (R7); decision (approved /
+       rejected / pending); checker; maker; action type; self-approved
+       only.
+     Two sections:
+       a) case actions: business date, RRN, rule, action type, response
+          code, maker, submitted at, checker, decided at, decision,
+          self-approved, rejection reason, marked done at, reference,
+          time to decision (hours);
+       b) settings changes (response codes, NTSL mapping, tolerance):
+          what, proposed by, decided by, decision, self-approved, dates.
+     Summary: per checker - approved, rejected, self-approved; pending
+       now and the oldest pending.
+     Data: ProposedAction (has every field above);
+       ResponseCodeChangeRequest and the mapping / tolerance version
+       tables; the settings events already listed in /audit/
+       settings-events/. Later: NPCI file generations, once built.
+     Volume is small (hundreds a day). ProposedAction has no index on the
+     decision date; add one now, it is cheap.
+
+ 2.7 User activity report
+     Purpose: what each user did in a period.
+     Who: Administrator, Auditor (as audit.view today: the log holds IP
+       addresses and failed logins).
+     Filters: date range; user; role.
+     Columns, one row per user: roles, active yes/no, logins, failed
+       logins, last login (and IP), cases taken / submitted / approved /
+       rejected / marked done / remarks, files uploaded / refused, CBS
+       dates picked, runs started, settings proposed / decided, report
+       downloads.
+     Click a row -> the existing Audit screens filtered to that user and
+     period (the detail already exists from Phase 5 Slice 4).
+     Data: core.UserActivity, CaseEvent (actor, created_at indexed),
+       core.OperationLog, the three settings event tables. Not module-
+       specific for logins; the work counts follow the module filter.
+
+--------------------------------------------------------------------------------
+3. EXPORT FORMAT
+--------------------------------------------------------------------------------
+Recommendation (R1): Excel (.xlsx) only, written on the server with
+openpyxl. Ops work in Excel today; one format keeps the build small.
+  - FINDING: openpyxl is NOT installed. The tech stack table names
+    "pandas / openpyxl" for file parsing, but the parsers were written
+    with the Python standard library and requirements.txt has neither.
+    Adding openpyxl (MIT, pure Python, one small dependency et_xmlfile)
+    is a new package for bank IT to review.
+  - If IT refuses it: CSV instead (no package needed; opens in Excel,
+    but one sheet per file and no formats).
+  - PDF: not recommended (needs another package; the print layout plus
+    "Save as PDF" covers it).
+
+Rules for every Excel file:
+  - A header block: bank, module, report name, filters, produced by,
+    produced at (IST), rule set / mapping / tolerance versions used.
+  - RRNs written as text (otherwise Excel shows 6.56E+11 and drops
+    leading zeros).
+  - Amounts as numbers with 2 decimals in Indian grouping; dates as real
+    dates shown dd-mmm-yyyy.
+  - Text that starts with = + - @ (e.g. a remark) is written as plain
+    text, never as a formula (spreadsheet formula injection).
+  - Streamed ("write-only" mode), so memory stays low on big files.
+  - The file name says what it is, e.g.
+    UPI_exception_report_2026-07-14_to_2026-07-31.xlsx.
+  - Every download is logged in core.OperationLog as a new type
+    REPORT_EXPORTED (report, filters, row count) and shows in the Audit
+    screen and the user activity report (R10).
+
+Size: Excel is offered on every report. The biggest list is one date's
+full results (about 70,000 match groups, ~5 MB, est. 10-20 s). Exports
+above 100,000 rows are refused with "narrow the filters" (R8).
+
+--------------------------------------------------------------------------------
+4. API (proposal - backend-engineer owns the exact shapes)
+--------------------------------------------------------------------------------
+All GET, read-only, under the existing rules (401 / 403 / 400, paging,
+amounts as strings). Each report also answers ?format=xlsx with the file
+(same filters, no paging, capped as in section 3).
+
+  GET /api/v1/<module>/reports/reconciliation/   date_from, date_to,
+        open_cases_only        -> rows per date + rule x date counts
+  GET /api/v1/<module>/reports/settlement/       date_from, date_to,
+        status                 -> rows per date (+ cycle rows in Excel)
+  GET /api/v1/<module>/reports/volume/           date_from, date_to,
+        group_by=day|month, file_type, by_cycle
+  GET /api/v1/<module>/reports/exceptions/       date_from, date_to and
+        the queue filters      -> paged rows + summary
+  GET /api/v1/<module>/reports/ageing/           priority, rule_code,
+        case_type              -> bucket x priority, bucket x rule
+  GET /api/v1/<module>/reports/approvals/        date_from, date_to,
+        decision, checker, maker, action_type, self_approved
+  GET /api/v1/reports/user-activity/             date_from, date_to,
+        user, role, module     (not under a module: logins are global)
+  GET /api/v1/<module>/dates/<date>/results/?format=xlsx
+        one date's full results list, same filters as the screen
+
+Small changes to existing endpoints:
+  - /cases/: an ageing_bucket filter (ageing report links).
+  - /me capabilities: "reports.view" (all), "reports.approvals"
+    (A, U, C), "reports.user_activity" (A, U).
+
+Date-range limit: at most 92 days per request for the per-date reports
+(volume by month: 24 months, read from the summary table). Default
+range: the current month.
+
+Contract first: as in Phase 5 Slice 4, the frontend writes the contract
+(docs/phase6_api_contract.txt) for the backend engineer to confirm or
+change. The frontend then builds against it with test data and wires up
+the real endpoints as they land.
+
+--------------------------------------------------------------------------------
+5. SCREENS
+--------------------------------------------------------------------------------
+  5.1 Menu (per module)
+        Results (all dates)        -> 2.1     all
+        Settlement (all dates)     -> 2.2     all
+        Reports                    -> 5.2     all (items by role)
+      The two all-dates entries sit next to Cases and Business dates
+      because they are daily-use screens (R3).
+
+  5.2 Reports page: one card per report the user may open, with a line
+      on what it shows.
+
+  5.3 One screen per report, all the same shape:
+        - a filter bar: date range (with "this month", "last month",
+          "last 7 days"), the report's own filters, Apply
+        - summary figures on top, then the table (paged on the server)
+        - "Download Excel" button (shows the row count; refused with a
+          plain message above the cap)
+        - "Print" (print layout: no menu, filters printed at the top)
+      Rows link to the existing screens (per-date results, settlement,
+      case, filtered queue, filtered audit), so the reports do not
+      duplicate those screens.
+
+  5.4 Nothing new for charts (R9).
+
+--------------------------------------------------------------------------------
+6. PERFORMANCE ON REAL VOLUMES
+--------------------------------------------------------------------------------
+Per business date today: ~69,000 CBS rows, ~149,000 facts, ~70,000 match
+groups, 88-594 cases, 12 settlement cycles.
+  - Never add up raw facts across days at request time: the volume
+    report reads the daily summary table (R4).
+  - Results (all dates) reads stored figures (rule_counts, settlement
+    result, case counts). The one live count (match groups per status)
+    runs only for the dates on the page, using the existing
+    (module, business date) index: about 2 million rows for a 31-date
+    page. If that takes more than ~2 s on the server, store those counts
+    with the run as well.
+  - Cases, actions, events and logs are hundreds to thousands of rows a
+    day: plain grouped queries on existing indexes, plus one new index on
+    ProposedAction decided_at.
+  - Exports stream rows from the database to the file; the 100,000-row
+    cap keeps a single request under about half a minute.
+  - Archival (Phase 3 carry-forward, not built): once a closed date's
+    match groups, results and cases move to history tables, the reports
+    must read those too. The backend should keep each report's query in
+    one place so history can be added then. The daily summary table is
+    not affected.
+  - On this laptop: do not test big exports while the Django suite or an
+    end-to-end run is going.
+
+--------------------------------------------------------------------------------
+7. OPEN QUESTIONS FOR THE OWNER (each with a recommendation)
+--------------------------------------------------------------------------------
+  R1 Export format. Excel / CSV / PDF?
+     Recommendation: Excel (.xlsx) only, via openpyxl - a new package
+     (MIT) for IT to approve, as it is not installed today. CSV only if
+     IT says no. No PDF; use the print layout.
+
+  R2 Who sees the approval and user-activity reports?
+     Recommendation: approval report - Administrator, Auditor, Checker;
+     user activity - Administrator and Auditor only (logins, IPs). The
+     other five reports - all roles, as they already see that data.
+
+  R3 Where do "Results (all dates)" and "Settlement (all dates)" go?
+     Recommendation: their own menu entries (daily use), and also listed
+     on the Reports page.
+
+  R4 Volume report data.
+     a) a small daily summary table filled at each run, plus a fill-in
+        command for loaded dates (about half a day more backend)
+     b) add up the raw facts on request, limited to 31 days (no monthly
+        trend over a year; gets slower as data grows; breaks once facts
+        are archived)
+     Recommendation: a).
+
+  R5 Debit / credit labels on NPCI files. The tracker still has "NPCI
+     direction labels may be reversed - confirm with ops before Phase 6".
+     Recommendation: show NPCI files by Acquirer / Issuer (unambiguous),
+     CBS by Debit / Credit as in the GL, until ops confirm.
+
+  R6 Ageing "as of" date.
+     Recommendation: as of now only. A past date would need a daily
+     snapshot job and table; add it later if auditors ask.
+
+  R7 Approval report date basis.
+     Recommendation: filter on the decision date (what an auditor asks:
+     "what was approved last week"), with the business date shown.
+
+  R8 Large downloads.
+     a) direct download, refused above 100,000 rows (no new machinery)
+     b) background jobs with a "my downloads" list
+     Recommendation: a) now; b) only if a real need appears.
+
+  R9 Charts in Phase 6?
+     Recommendation: no - tables and totals only. Charts need another
+     package and time the window does not have.
+
+  R10 Record every report download in the audit log?
+     Recommendation: yes (reports carry RRNs and amounts out of the
+     system); a new OperationLog type, no table change.
+
+  R11 TD 2% / BD 8% decline rates (parked rule table Q6).
+     Recommendation: leave out; show NPCI approved / declined counts in
+     the volume report. Add TD / BD once ops say which decline codes are
+     technical and which are business.
+
+  R12 Schedule - see section 8. Which comes first for the backend
+     engineer: NPCI file generation or the Phase 6 backend?
+
+--------------------------------------------------------------------------------
+8. SLICE PLAN (1 frontend + 1 backend engineer)
+--------------------------------------------------------------------------------
+Each slice ends with tests passing and a click-through on 14 Jul / 25 Sep
+/ 26 Sep. Estimates in working days.
+
+  Slice 6.0 - Contract                        FE 0.25 d   BE ~1 h review
+    API contract written by the frontend, confirmed by the backend.
+
+  Slice 6.1 - Frontend only, no backend needed  FE 1-1.5 d   BE 0
+    - Reports menu, Reports page, the shared filter bar, print layout.
+    - "Results (all dates)" and "Settlement (all dates)" first version on
+      the EXISTING /dates/ endpoint (it already filters by date range and
+      returns match groups, cases total / open, settlement status and
+      unexplained amount), rows linking to the per-date screens.
+    This alone closes the owner's all-dates request in a basic form.
+
+  Slice 6.2 - Reconciliation, settlement, volume + Excel
+                                              FE 1.5 d    BE 2 d
+    BE: openpyxl + one shared Excel writer (0.5), the reconciliation and
+    settlement report endpoints (1), the volume summary table, fill on
+    run, fill-in command (0.75), REPORT_EXPORTED.
+    FE: the full columns and rule x date table on the two all-dates
+    screens, the volume report, the download button.
+
+  Slice 6.3 - Exception, ageing, approval      FE 1.5 d    BE 1.5 d
+    BE: date range + amount + closed-on for cases, ageing grouped counts
+    and the ageing_bucket filter, approvals list and summary, the new
+    index.
+
+  Slice 6.4 - User activity + click-through     FE 1 d      BE 0.75 d
+    BE: per-user counts. FE: the report, links to Audit, Playwright
+    click-through (Auditor and Operations User).
+
+  Total: frontend about 5-5.5 days, backend about 4.5 days (plus tests
+  and fixes). The Phase 6 estimate was 2-3 weeks; this is smaller because
+  the data already exists.
+
+What the frontend does first, without the backend: 6.0 and 6.1 in full;
+then the screens of 6.2-6.4 against the contract with test data (most of
+the frontend work), wired up as each endpoint lands.
+Where the frontend needs the backend: every Excel download; the volume
+report (summary table); the case date range, amounts and closed-on
+dates; ageing counts; the approval and user-activity summaries.
+
+SCHEDULE NOTE (flag, not a re-baseline): the Phase 6 window is
+24-27 Oct. 24 Oct is the 4th Saturday (a bank holiday) and 25 Oct a
+Sunday, so the window has 2 working days (26-27 Oct), and Phase 7 starts
+on 27 Oct. The backend engineer is on NPCI file generation (5.5-6.5
+days, design still awaiting approval). Phase 6 needs about 4.5 backend
+days, so it cannot finish inside the window while NPCI runs. Options for
+the owner:
+  a) Frontend does 6.0, 6.1 and the screens of 6.2-6.4 in the window;
+     backend picks up 6.2-6.4 after NPCI, overlapping Phase 7.
+  b) Backend pauses NPCI for ~2 days for Slice 6.2 (all-dates screens
+     and Excel - the most-used reports), then returns to NPCI; 6.3-6.4
+     follow.
+  c) Cut scope, e.g. ship 6.1 + 6.2 and move the rest to after go-live.
+Re-baselining is the owner's decision.
+
+--------------------------------------------------------------------------------
+SOURCES (read for this draft; nothing was changed)
+--------------------------------------------------------------------------------
+  docs/reconciliation_automation.docx (Reports, User Roles); tracker.md;
+  docs/phase5_design_draft_v1.txt; docs/npci_file_design_draft_v1.txt;
+  docs/phase2_rule_table_v3_approved.txt (AGEING); api/base.py, urls.py,
+  results.py, audit.py, operations.py; reconciliation/overview.py,
+  models.py; exception_management/models.py, api.py, alerts.py;
+  rule_engine/models.py; settlement/models.py; transactions/models/
+  fact.py; core/models.py; requirements.txt; the .venv package list;
+  frontend/package.json.
+
+--------------------------------------------------------------------------------
+Approved by owner 2026-10-23 (R1–R11 as recommended)

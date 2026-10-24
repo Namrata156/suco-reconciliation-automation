@@ -1,0 +1,406 @@
+================================================================================
+ PHASE 6 - API CONTRACT (reports, exports) - DRAFT FOR BACKEND CONFIRMATION
+ frontend-engineer, 2026-10-23. Design: docs/phase6_design_draft_v1.txt
+ (approved by the owner 2026-10-23, R1-R11 as recommended).
+ Status: written by the frontend (Slice 6.0); the backend engineer confirms
+ or changes each item. Shapes marked (BE: ...) need a backend answer.
+================================================================================
+
+Who builds what:
+  - Slice 6.1 (built now) uses ONLY existing endpoints: GET /api/v1/me/ and
+    GET /api/v1/<module>/dates/ (date_from, date_to, ordering, page,
+    page_size). Nothing below is needed for it.
+  - Slices 6.2-6.4 use the endpoints below. The frontend builds the screens
+    against this contract with test data and wires them up as each lands.
+
+Common rules (unchanged from Phase 5, Slice 4 contract "Common rules"):
+  - Session login + CSRF. Not logged in -> 401. No role -> 403. Wrong role
+    for the endpoint -> 403. All report endpoints are GET only (others 405).
+  - Lists: {count, next, previous, results}; page_size default 50, max 500;
+    ?page=N&page_size=N.
+  - Errors: {"detail": str, "errors": {field: [str]}}; 400 / 401 / 403 / 404.
+  - Dates ISO "YYYY-MM-DD"; timestamps ISO 8601 with offset (IST); amounts
+    2-decimal strings ("1070.50", "-35.00"); counts integers.
+  - "csv" filters accept comma lists (priority=HIGH,MEDIUM).
+  - <module> is the lower-case slug (upi), as in /me modules[].slug.
+
+Report rules (new, apply to every endpoint in section B):
+  RR1 Date range. date_from / date_to are INCLUSIVE.
+      - On the BUSINESS DATE for B1-B4 and B8.
+      - On the DECISION timestamp (IST date) for B6 (R7), and on the event
+        timestamp (IST date) for B7.
+      - Both omitted -> the current month (1st of this month .. today, IST).
+        One omitted -> 400 errors.{date_from|date_to}: ["Give both dates."]
+      - date_to before date_from -> 400 errors.date_to.
+      - At most 92 days -> else 400 errors.date_to: ["At most 92 days per
+        report; narrow the dates."]. Exception: B3 with group_by=month allows
+        24 months (dates are widened to whole months).
+      - The range actually used is echoed in "report.filters" (below).
+  RR2 Every JSON answer carries a "report" block:
+        "report": {
+          "key": str,                    // "reconciliation", "settlement", ...
+          "title": str,                  // "Daily reconciliation report"
+          "module": str | null,          // slug; null for B7
+          "filters": object,             // the filters applied, normalised
+                                         // (dates filled in, csv split to lists)
+          "generated_at": timestamp,     // "figures as of" on screen
+          "generated_by": str,           // username
+          "versions": {                  // what the figures were produced with,
+            "rule_sets": [str],          // distinct values in the range; [] if n/a
+            "ntsl_mappings": [str],
+            "tolerances": [str]
+          }
+        }
+  RR3 Every JSON answer that can be exported carries an "export" block, so
+      the screen can label the button and refuse big downloads up front:
+        "export": {
+          "formats": ["xlsx", "csv"],    // what THIS server can write now.
+                                         // ["csv"] until openpyxl is approved
+                                         // by IT (R1 fallback). The SPA shows
+                                         // "Download Excel" when "xlsx" is
+                                         // present, else "Download CSV".
+          "row_count": int,              // rows the export would hold (main sheet)
+          "limit": 100000,
+          "allowed": bool,               // row_count <= limit
+          "sheets": [{"key": str, "label": str, "row_count": int}]
+        }
+
+--------------------------------------------------------------------------------
+A. DOWNLOADS (R1, R8, R10) - one parameter on every report endpoint
+--------------------------------------------------------------------------------
+Parameter: export=xlsx | csv          (omit = the JSON answer)
+           sheet=<key>                (csv only; default = the first sheet)
+
+  NOTE: deliberately NOT "?format=xlsx" (the design draft's wording). DRF
+  reads ?format= as its renderer override (URL_FORMAT_OVERRIDE) and answers
+  404 when no renderer matches, before the view runs. "export" avoids that
+  without changing DRF settings. (BE: confirm, or set URL_FORMAT_OVERRIDE
+  = None and keep "format".)
+
+  - Same filters as the JSON answer; no paging (page / page_size ignored).
+  - 200: the file, streamed.
+      xlsx: Content-Type application/vnd.openxmlformats-officedocument.
+            spreadsheetml.sheet; ALL sheets of the report in one workbook.
+      csv:  Content-Type text/csv; charset=utf-8; ONE sheet per file
+            (sheet=...), UTF-8 with BOM, CRLF line ends (Excel opens it
+            correctly).
+      Content-Disposition: attachment; filename="<file name>"
+      File name: <MODULE>_<report key>_<date_from>_to_<date_to>[_<sheet>].<ext>
+        e.g. UPI_exception_report_2026-07-14_to_2026-07-31.xlsx
+             UPI_settlement_2026-07-01_to_2026-07-31_cycles.csv
+        (B5 ageing: UPI_ageing_as_of_2026-10-23.xlsx;
+         B7: user_activity_<from>_to_<to>.xlsx)
+  - 400 errors.export:
+      ["Excel download is not available on this server; use CSV."]
+        (export=xlsx while openpyxl is not installed)
+      ["<n> rows is more than the 100,000 a download may hold; narrow the
+        filters."]  plus top-level "row_count": int, "limit": 100000
+      ["Unknown export format."]
+    400 errors.sheet: ["Unknown sheet; allowed: dates, rules"]
+  - Every successful download is written to core.OperationLog as a NEW
+    event type REPORT_EXPORTED, label "Report downloaded", details:
+      {"report": key, "format": "xlsx"|"csv", "sheet": key|null,
+       "filters": <same as report.filters>, "row_count": int,
+       "file_name": str}
+    module = the report's module (null for B7), business_date = null.
+    It appears in GET /api/v1/audit/operations/ (event_type=REPORT_EXPORTED,
+    link null) and in /api/v1/audit/meta/ operation_types. Refused downloads
+    are not logged. (BE: confirm.)
+
+  File content rules (both formats unless stated):
+  - Header block first: bank, module, report title, filters, produced by,
+    produced at (IST), versions (RR2). Then one blank row, then the table
+    with a header row.
+  - RRNs are text, never numbers. xlsx: string cells. csv: written as
+    ="<rrn>" so Excel keeps all digits (a fixed server-made shape, not user
+    text). (BE: confirm; the alternative is a leading apostrophe, which
+    Excel shows in the cell.)
+  - Text cells (remarks, reasons, names) starting with = + - @ TAB or CR
+    are prefixed with an apostrophe (formula injection). Amount and count
+    cells are numbers and are never prefixed (negative amounts stay -35.00).
+  - Amounts: xlsx numbers, format #,##,##0.00 (Indian grouping); csv plain
+    "1070.50". Dates: xlsx real dates shown dd-mmm-yyyy; csv ISO.
+  - xlsx is written with openpyxl in write-only mode (streamed).
+
+  How the SPA downloads: fetch() with the session cookie, then save the
+  Blob under the Content-Disposition name. A 400 is shown as its message;
+  a 401 starts the normal "session ended" flow. No plain <a href> links,
+  so a refusal never lands the user on a JSON page.
+
+--------------------------------------------------------------------------------
+B. REPORT ENDPOINTS
+--------------------------------------------------------------------------------
+Roles (R2) and the /me capability that gates each (see section C):
+  B1 B2 B3 B4 B5 B8   all five roles     reports.view
+  B6                  A, U, C            reports.approvals
+  B7                  A, U               reports.user_activity
+
+B0 GET /api/v1/reports/meta/                                  Slice 6.2
+   Roles: all five. Static facts for the screens; no module.
+   200: {
+     "export_formats": ["xlsx", "csv"],     // as RR3 "formats"
+     "max_export_rows": 100000,
+     "max_range_days": 92,
+     "max_range_months": 24,
+     "reports": [{"key", "title", "description", "module_scoped": bool,
+                  "capability": str}]       // the catalogue, in menu order
+   }
+
+B1 GET /api/v1/<module>/reports/reconciliation/               Slice 6.2
+   = "Results (all dates)", daily reconciliation report (design 2.1).
+   Filters: date_from, date_to (RR1); open_cases_only=true|false;
+            ordering = "-business_date" (default) | "business_date";
+            page, page_size (default 31, max 92).
+   One row per business date that has anything (same set of dates as
+   GET /dates/ in the range).
+   Row:
+   {
+     "business_date": date,
+     "files": {"expected": int, "present": int, "missing": int,
+               "received": int},
+     "match_groups": {"total": int,
+                      "by_status": {"MATCHED": int, "UNMATCHED": int,
+                                    "PENDING_RULE_EVALUATION": int},
+                      "on_us": int, "cbs_reversed": int},
+                      // (BE: on_us / cbs_reversed from TransactionMatchGroup
+                      //  flags - confirm they are cheap per date, else drop)
+     "results_by_category": {<status_category value>: int},  // meta.status_categories
+     "rule_counts": {<rule code>: int},       // RuleEvaluationRun.rule_counts
+     "cases": {"created": int, "open": int},  // open = ACTIVE_STATUSES
+     "settlement": {"status": "TALLIED"|"UNEXPLAINED"|"NOT_READY",
+                    "unexplained_amount": str} | null,
+     "rule_evaluation": {"id": int, "rule_set": str, "finished_at": timestamp|null,
+                         "triggered_by": str} | null,
+     "last_run": {"id": int, "status": str, "requested_by": str,
+                  "finished_at": timestamp|null} | null,
+     "links": {"results": str | null,         // "/upi/dates/2026-07-14/results"
+               "settlement": str | null,      // null when no settlement result
+               "date": str}                   // "/upi/dates/2026-07-14"
+   }
+   Extra top-level keys:
+     "rule_codes": [str],          // every rule with a count in the range, rule order
+     "totals": {<same numeric fields as a row, summed over the WHOLE range,
+                 not just the page>},
+     "months": [{"month": "2026-07", <same numeric fields summed>}]
+                                   // only when the range spans 2+ months
+     "report", "export"
+   Export sheets: "dates" (one row per date + month and grand totals),
+                  "rules" (rule x date counts).
+
+B2 GET /api/v1/<module>/reports/settlement/                   Slice 6.2
+   = "Settlement (all dates)" (design 2.2).
+   Filters: date_from, date_to; status (csv: TALLIED, UNEXPLAINED,
+            NOT_READY, NONE = no settlement result yet); ordering as B1;
+            page, page_size (default 31, max 92).
+   Row:
+   {
+     "business_date": date,
+     "status": str | null, "status_label": str | null,
+     "reasons": [str],                        // plain text, [] when none
+     "computed_at": timestamp | null,
+     "self_check": {"cycles_pass": int, "cycles_total": int},
+     "sop": {"cbs_net": str, "ntsl_net": str, "difference": str,
+             "explained": str, "unexplained": str} | null,
+     "unexplained_amount": str | null, "unexplained_count": int | null,
+     "fees_net": str | null,
+     "tolerance_version": str | null, "ntsl_mapping_version": str | null,
+     "settlement_case": {"id": int, "status": str, "link": str} | null,
+     "links": {"settlement": str | null, "date": str}
+   }
+   Extra: "totals": {"by_status": {<status|"NONE">: int},
+                     "unexplained_amount": str, "fees_net": str},
+          "report", "export".
+   Export sheets: "dates"; "cycles" = one row per date x cycle x side:
+     business_date, cycle, side (meta.settlement_sides), ntsl_amount,
+     ntsl_count, matched_amount, explained_amount, unexplained_amount,
+     within_tolerance (bool).
+
+B3 GET /api/v1/<module>/reports/volume/                       Slice 6.2
+   Daily / monthly transaction volume (design 2.3, read from the new daily
+   summary table, R4a).
+   Filters: date_from, date_to; group_by=day|month (default day);
+            file_type (csv of file type codes, meta.file_types[].code);
+            by_cycle=true|false (default false); page, page_size.
+   Row:
+   {
+     "period": str,                 // "2026-07-14" (day) or "2026-07" (month)
+     "file_type": str, "file_type_label": str,
+     "cycle": str | null,           // null unless by_cycle=true
+     "sides": [{"side": str, "side_label": str, "count": int, "amount": str}],
+                 // R5: NPCI files -> ACQUIRER / ISSUER; CBS -> DEBIT / CREDIT
+     "total_count": int, "total_amount": str,
+     "npci": {"approved": int, "declined": int} | null   // approved = 00 / RB
+   }
+   Extra: "totals" per file type over the whole range; "report", "export".
+   Not shown: TD 2% / BD 8% rates (R11).
+   Export sheets: "volume".
+   (BE: summary table name / backfill command are yours; 400 errors.date_from
+    ["No volume figures before <date>; run the fill-in command."] if the
+    summary has gaps is a suggestion.)
+
+B4 GET /api/v1/<module>/reports/exceptions/                   Slice 6.3
+   Exception report (design 2.4).
+   Filters: date_from, date_to (business date);
+            status: "" = active (default, as the queue), "all", or csv of
+              case statuses (meta.case_statuses);
+            priority (csv), rule_code (csv), case_type, overdue=true|false,
+            assigned_to (username, exact; "none" = unassigned);
+            ordering as the queue (meta.case_orderings); page, page_size.
+   Row:
+   {
+     "id": int, "business_date": date, "rrn": str, "case_type": str,
+     "rule_code": str, "status_category": str, "priority": str,
+     "amount": str | null,          // (BE: source - rule result or presence
+                                    //  rows; not guessed by the frontend)
+     "status": str, "due_date": date | null, "age_days": int,
+     "ageing_bucket": str,          // meta.ageing_buckets[].label
+     "is_overdue": bool, "assigned_to": str | null,
+     "proposed_action": {"action_type": str, "response_code": str | null,
+                         "decision": str, "reference": str} | null,
+     "created_at": timestamp,
+     "closed_at": timestamp | null, // COMPLETED / CLOSED_SUPERSEDED event
+     "last_remark": str,
+     "link": str                    // "/upi/cases/123"
+   }
+   Extra: "summary": {
+            "by_status_priority": [{"status": str, "priority": str, "count": int}],
+            "by_rule": [{"rule_code": str, "count": int, "open": int}]
+          }, "report", "export".
+   Export sheets: "cases", "summary".
+
+B5 GET /api/v1/<module>/reports/ageing/                       Slice 6.3
+   Ageing of OPEN cases, as of now (R6; no date filter - date_from /
+   date_to are refused with 400).
+   Filters: priority (csv), rule_code (csv), case_type.
+   200 (not paged):
+   {
+     "buckets": [{"label": str, "min_days": int, "max_days": int | null}],
+                                     // = meta.ageing_buckets, in order
+     "by_priority": [{"priority": str,
+                      "cells": [{"bucket": str, "count": int, "amount": str,
+                                 "overdue": int, "link": str}],
+                      "total": {"count": int, "amount": str, "overdue": int}}],
+     "by_rule": [{"rule_code": str, "cells": [...same...], "total": {...}}],
+     "totals": {"cells": [...], "total": {...}},
+     "oldest_case": {"id": int, "rrn": str, "age_days": int, "link": str} | null,
+     "report", "export"
+   }
+   cell.link = the case queue filtered to the cell, e.g.
+     "/upi/cases?status=&priority=HIGH&ageing_bucket=2-5%20d"
+   Export sheets: "by_priority", "by_rule".
+
+B6 GET /api/v1/<module>/reports/approvals/                    Slice 6.3
+   Maker-checker decisions on case actions (design 2.6 a).
+   Roles: Administrator, Auditor, Checker (R2).
+   Filters: date_from, date_to on the DECISION date (R7); for
+            decision=PENDING (no decision yet) they apply to submitted_at;
+            decision (csv: APPROVED, REJECTED, PENDING, WITHDRAWN);
+            checker, maker (username, exact); action_type (csv);
+            self_approved=true|false; page, page_size.
+   Row:
+   {
+     "id": int, "case_id": int, "business_date": date, "rrn": str,
+     "rule_code": str, "action_type": str, "action_type_label": str,
+     "response_code": str | null,
+     "maker": str, "submitted_at": timestamp,
+     "checker": str | null, "decided_at": timestamp | null,
+     "decision": str, "self_approved": bool, "rejection_reason": str,
+     "marked_done_at": timestamp | null, "reference": str,
+     "hours_to_decision": number | null,   // 1 decimal
+     "link": str                           // "/upi/cases/123"
+   }
+   Extra: "summary": {
+            "by_checker": [{"checker": str, "approved": int, "rejected": int,
+                            "self_approved": int}],
+            "pending_now": int,
+            "oldest_pending": {"id": int, "submitted_at": timestamp,
+                               "link": str} | null
+          }, "report", "export".
+   Export sheets: "actions", "settings" (B6s), "summary".
+
+B6s GET /api/v1/<module>/reports/approvals/settings/          Slice 6.3
+   Settings changes (response codes, NTSL mapping, tolerance; design 2.6 b).
+   Roles and date basis as B6.
+   Filters: date_from, date_to, decision (csv), checker, maker,
+            kind (csv: response_code, ntsl_mapping, tolerance),
+            self_approved; page, page_size.
+   Row: {"kind": str, "kind_label": str, "item_label": str,
+         "proposed_by": str | null, "proposed_at": timestamp,
+         "decided_by": str | null, "decided_at": timestamp | null,
+         "decision": str, "self_approved": bool, "remarks": str,
+         "link": str}               // the settings tab, as audit B2
+   Extra: "report", "export" (export of either B6 or B6s gives the same
+   workbook; csv uses sheet=).
+   (BE: NPCI file generations join this list once built - design 2.6.)
+
+B7 GET /api/v1/reports/user-activity/                         Slice 6.4
+   Not under a module (logins are global). Roles: Administrator, Auditor.
+   Filters: date_from, date_to (event timestamp, IST); user (username);
+            role (one of the five); module (slug; filters the WORK counts
+            only, not logins); active=true|false; page, page_size.
+   One row per user (including users with no activity in the range):
+   {
+     "user_id": int, "username": str, "full_name": str, "roles": [str],
+     "is_active": bool,
+     "logins": int, "failed_logins": int,
+     "last_login": timestamp | null, "last_login_ip": str | null,
+     "cases": {"taken": int, "submitted": int, "approved": int,
+               "rejected": int, "marked_done": int, "remarks": int},
+     "files": {"uploaded": int, "refused": int},
+     "cbs_dates_selected": int, "runs_started": int,
+     "settings": {"proposed": int, "decided": int},
+     "report_downloads": int,
+     "links": {                     // the existing Audit screens, filtered
+       "case_events": "/audit/case-events?user=<u>&date_from=..&date_to=..",
+       "user_activity": "/audit/user-activity?user=...",
+       "operations": "/audit/operations?user=..."
+     }
+   }
+   Extra: "report", "export". Export sheets: "users".
+
+B8 GET /api/v1/<module>/dates/<date>/results/?export=xlsx|csv  Slice 6.2
+   One date's full results list (the existing per-date screen), with the
+   same filters as that screen (ResultFilters). Rules of section A; the
+   biggest download (~70,000 rows). Roles: all five. Export sheet:
+   "results".
+
+--------------------------------------------------------------------------------
+C. CHANGES TO EXISTING ENDPOINTS
+--------------------------------------------------------------------------------
+C1 /api/v1/me/ "permissions" - three NEW capabilities (api/base.py
+   CAPABILITIES):
+     "reports.view"           all five roles   (Reports page, B1-B5, B8)
+     "reports.approvals"      Administrator, Auditor, Checker   (B6, B6s)
+     "reports.user_activity"  Administrator, Auditor            (B7)
+   Until they exist, the SPA (Slice 6.1) falls back to:
+     reports.view           -> "results.view"   (same five roles)
+     reports.approvals      -> "audit.view" OR "cases.approve" (= A, U, C)
+     reports.user_activity  -> "audit.view"     (A, U)
+   The fallback is used only while the key is ABSENT from /me; once the
+   server sends it, its value wins. The SPA never treats the menu as the
+   permission: the endpoints must check the role themselves (403).
+
+C2 GET /api/v1/<module>/cases/ - new filter ageing_bucket (csv of
+   meta.ageing_buckets[].label) for the ageing report cell links.
+   (BE: if labels with spaces are awkward, add a "value" to
+   meta.ageing_buckets and use that in both places.)
+
+C3 core.OperationLog - new type REPORT_EXPORTED (section A); listed in
+   /api/v1/audit/meta/ operation_types.
+
+C4 ProposedAction - index on decided_at (design 6; no API change).
+
+Not changed: GET /api/v1/<module>/dates/ keeps its shape; Slice 6.1 uses it
+as is (page_size 31 on the all-dates screens).
+
+--------------------------------------------------------------------------------
+D. QUESTIONS FOR THE BACKEND ENGINEER
+--------------------------------------------------------------------------------
+  D1 "export" instead of "format" (section A note) - agree?
+  D2 CSV RRNs as ="<rrn>" - agree, or prefer another way?
+  D3 B1 on_us / cbs_reversed per date - cheap enough, or drop them?
+  D4 B4 / B5 case amount - which source (rule result or presence rows)?
+  D5 B1 / B2 default page_size 31 and max 92 (one page = the whole 92-day
+     range): is date_overviews() fast enough for 92 dates? If not, the SPA
+     keeps paging at 31.
+  D6 Log refused downloads as well as successful ones?

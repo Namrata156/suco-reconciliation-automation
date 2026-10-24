@@ -6,6 +6,34 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-23 / 24
+
+- **Added: NPCI File Generation** (un-deferred by owner 2026-10-22).
+  New app `npci_files/` (migrations `core/0012`, `npci_files/0001`):
+  SSKUPI file per business date from Checker-approved replies, partial
+  file with confirmation, later files `_2`, `_3` with only new rows, a
+  case never in two files, every generation and download audited and
+  shown as a download history. The app only generates the file; the user
+  downloads it and uploads it to the NPCI portal by hand. Design:
+  `docs/npci_file_design_draft_v1.txt` (+ Amendment 1, contract A7).
+  Rebuilt from system data, the 3 real samples match (14 Jul 301/301
+  rows; 25 Sep identical apart from wording; 26 Sep split into file + _2).
+  Frontend: NPCI file section on the Business date page.
+- **Changed: Response code wording** can be edited for codes in use
+  (description only, maker-checker); seeding no longer finds codes by
+  description. Six new wordings proposed 2026-10-22, awaiting Checker.
+- **Added: Phase 6 slices 6.0 and 6.1** — report API contract
+  (`docs/phase6_api_contract.txt`), Reports page, filter bar, print
+  layout, Results / Settlement (all dates) with menu entries.
+- **Changed: previous-day (T-1) working** (owner 2026-10-23: day D
+  reconciles D-1, every calendar day). Rule set v3.3 = v3.2 with
+  calendar-day deadlines (migration `rule_engine/0006`); a re-run no
+  longer changes a COMPLETED case's deadline; business dates on or after
+  today refused (upload, CBS date pick, run, NPCI file); report presets
+  and the home heading use the latest business date (yesterday).
+- Verified: 707/707 Django tests, Vitest 205/205, lint/type-check/build
+  clean. Not run: Playwright e2e for these items.
+
 ## 2026-10-22
 
 - **Changed: Auditor can read the users-and-roles list** (owner decision,
