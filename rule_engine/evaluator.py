@@ -16,7 +16,9 @@ rule_engine.conditions' semantics exactly -- in particular a leaf whose
 fact is null is FALSE whatever the operator (SQL's UNKNOWN, as the oracle
 docs/phase2_rule_table_v3_1_reference.sql relies on).
 
-Deadlines (Rule.tat_*; working days from core.working_days):
+Deadlines (Rule.tat_*; working days from core.working_days -- since rule
+set v3.3, owner 2026-10-23, every deadline is CALENDAR, so for business
+date D "T+1" is D+1 whatever the weekday, R05 by D+1 16:00):
   T  = the group's business date, except for a rule whose condition reads
        the Adjustment overlay (adjustment.* facts) -- then T = the
        Adjustment's own date (Adjdate), since an overlay can sit on its
@@ -196,7 +198,7 @@ def _add_days(t: date, days: int, basis: str, calendar: WorkingDayCalendar) -> t
     if basis == DayBasis.WORKING:
         r = calendar.add_working_days(t, days)
         return r.date, r.calendar_incomplete, f"T+{days} working day{'s' if days != 1 else ''}"
-    return t + timedelta(days=days), False, f"{days} calendar days"
+    return t + timedelta(days=days), False, f"{days} calendar day{'s' if days != 1 else ''}"
 
 
 def rule_outcome(compiled: CompiledRule, tat_start: date, facts: dict, calendar: WorkingDayCalendar) -> Outcome:

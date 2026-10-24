@@ -15,7 +15,7 @@ import json
 import shutil
 import tempfile
 import zipfile
-from datetime import date
+from datetime import date, datetime, time
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -23,9 +23,12 @@ from unittest import mock
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import Client, override_settings
+from django.utils import timezone
 
+from api.tests.test_npci_files import NpciApiBase
 from api.tests.test_v1 import ALL_ROLES, V1, V1TestBase, csrf_client
 from core.models import OperationLog, OperationType, SettlementCycle
+from core.operations import FUTURE_BUSINESS_DATE_MESSAGE, InvalidInput, require_past_business_date
 from exception_management.roles import Role
 from file_processing import intake
 from file_processing.models import (
@@ -35,6 +38,7 @@ from file_processing.models import (
     UploadedFile,
     ValidationSeverity,
 )
+from npci_files.models import NpciFile
 from reconciliation.models import ReconciliationRun, RunStatus, TransactionMatchGroup
 from reconciliation.runs import execute_run
 from rule_engine.models import RuleEvaluationRun
@@ -726,3 +730,127 @@ class OperationLogAppendOnlyTests(Slice2Base):
             OperationLog.objects.all().delete()
         with self.assertRaises(AppendOnlyError):
             OperationLog.objects.update(username="x")
+
+
+# ---------------------------------------------------------------------------
+# T-1 working pattern (owner 2026-10-23): on calendar day D ops reconcile
+# business date D-1. A business date on or after today (IST,
+# timezone.localdate()) is refused wherever a user sets one: upload, the CBS
+# date pick (API and admin), the run, NPCI file generation. The home summary
+# returns today, business_date (= today - 1) and, for one release, the old
+# business_date_today (= today). "Today" is frozen with the test_slice4 `at`
+# pattern (django.utils.timezone.now patched).
+# ---------------------------------------------------------------------------
+def at(day, hour=10, minute=0):
+    return mock.patch("django.utils.timezone.now",
+                      return_value=timezone.make_aware(datetime.combine(day, time(hour, minute))))
+
+
+T1_MSG = FUTURE_BUSINESS_DATE_MESSAGE
+
+
+class T1RefusedShape:
+    def assert_refused(self, r):
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.json(), {"detail": T1_MSG, "errors": {"business_date": [T1_MSG]}})
+
+
+class T1HelperTests(V1TestBase):
+    def test_before_today_only_in_ist(self):
+        self.assertEqual(T1_MSG, "Business date must be before today: ops reconcile the previous day.")
+        with at(date(2026, 7, 15)):
+            require_past_business_date(D)
+            for d in (date(2026, 7, 15), date(2026, 7, 16)):
+                with self.subTest(d=d), self.assertRaises(InvalidInput) as cm:
+                    require_past_business_date(d)
+                self.assertEqual(cm.exception.errors, {"business_date": [T1_MSG]})
+        # 00:30 IST on 15 Jul is still 14 Jul in UTC: the IST date counts.
+        with at(date(2026, 7, 15), hour=0, minute=30), self.assertRaises(InvalidInput):
+            require_past_business_date(date(2026, 7, 15))
+        with at(date(2026, 7, 14), hour=23, minute=59):
+            require_past_business_date(date(2026, 7, 13))
+
+
+class T1UploadTests(T1RefusedShape, Slice2Base):
+    def test_today_and_later_refused_yesterday_accepted(self):
+        items = [{"file_type_config_id": self.cfg["DRC"].pk, "cycle": None}]
+        for today in (D, date(2026, 7, 13)):  # business date = today, and after today
+            with self.subTest(today=today), at(today):
+                self.assert_refused(self.post_upload(self.as_(OPS), [upload(DRC_NAME, drc_csv())], items))
+        self.assertFalse(UploadedFile.objects.exists())
+        self.assertFalse(OperationLog.objects.exists())
+        with at(date(2026, 7, 15)):
+            r = self.do_upload((DRC_NAME, drc_csv(), "DRC", None))
+        self.assertEqual(r.status_code, 201, r.content)
+
+
+class T1SelectDateTests(T1RefusedShape, Slice2Base):
+    def setUp(self):
+        super().setUp()
+        self.cbs = self.make_file("CBS_GL_EXTRACT", None, status=ProcessingStatus.AWAITING_DATE_SELECTION,
+                                  detected_dates=["2026-07-13", "2026-07-14", "2026-07-15"], filename="cbs.xls")
+        self.url = f"{FILES}{self.cbs.pk}/select-date/"
+        patcher = mock.patch("file_processing.intake.chain")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def select(self, value):
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.post(self.as_(OPS), self.url, {"business_date": value})
+
+    def test_today_refused_yesterday_accepted(self):
+        with at(date(2026, 7, 15)):
+            self.assert_refused(self.select("2026-07-15"))
+            self.cbs.refresh_from_db()
+            self.assertEqual((self.cbs.business_date, self.cbs.processing_status),
+                             (None, ProcessingStatus.AWAITING_DATE_SELECTION))
+            self.assertFalse(OperationLog.objects.exists())
+            r = self.select("2026-07-14")
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_admin_path_uses_the_same_check(self):
+        with at(date(2026, 7, 15)), self.assertRaises(InvalidInput):
+            intake.select_business_date(self.ops, self.cbs, "2026-07-15", source="admin")
+
+
+class T1RunTests(T1RefusedShape, Slice2Base):
+    def setUp(self):
+        super().setUp()
+        self.make_file("RAW_DATA_ACQ", "1C")
+
+    def start(self):
+        with mock.patch("reconciliation.tasks.run_business_date.delay") as delay, \
+                self.captureOnCommitCallbacks(execute=True):
+            return self.post(self.as_(OPS), f"{DATES}2026-07-14/run/"), delay
+
+    def test_today_refused_yesterday_started(self):
+        with at(D):
+            r, delay = self.start()
+            self.assert_refused(r)
+            delay.assert_not_called()
+            self.assertFalse(ReconciliationRun.objects.exists())
+        with at(date(2026, 7, 15)):
+            r, delay = self.start()
+        self.assertEqual(r.status_code, 202, r.content)
+        delay.assert_called_once()
+
+
+class T1NpciGenerateTests(T1RefusedShape, NpciApiBase):
+    def test_today_refused_yesterday_generated(self):  # GENERATE is the 2026-07-14 file
+        with at(D):
+            self.assert_refused(self.generate(confirm_partial=True))
+        self.assertFalse(NpciFile.objects.exists())
+        with at(date(2026, 7, 15)):
+            r = self.generate(confirm_partial=True)
+        self.assertEqual(r.status_code, 201, r.content)
+
+
+class T1SummaryDateFieldTests(V1TestBase):
+    def test_today_business_date_and_old_key(self):
+        url = f"{V1}/upi/summary/"
+        with at(date(2026, 10, 23)):
+            body = self.as_(Role.MAKER).get(url).json()
+        self.assertEqual((body["today"], body["business_date"], body["business_date_today"]),
+                         ("2026-10-23", "2026-10-22", "2026-10-23"))
+        with at(date(2026, 3, 1)):  # month boundary
+            self.assertEqual(self.as_(Role.MAKER).get(url).json()["business_date"], "2026-02-28")

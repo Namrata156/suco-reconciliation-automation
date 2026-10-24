@@ -5,7 +5,27 @@
                   new rules R06b and R07x. See "v3.1 AMENDMENT" below.
  v3.2 amendment - APPROVED 2026-10-10 (project owner): R13 changed, no
                   cross-day checks. See "v3.2 AMENDMENT" below.
+ v3.3 amendment - DECIDED 2026-10-23 (project owner): deadlines count
+                  calendar days. See "v3.3 AMENDMENT" below.
 ================================================================================
+
+v3.3 AMENDMENT (2026-10-23)
+---------------------------
+  - Owner: on calendar day D, ops reconcile business date D-1, every day
+    of the year, with no holidays (T+1 settlement per RBI/NPCI). Saturday's
+    date is done on Sunday, Sunday's on Monday, and the same for holidays.
+  - Every deadline that counted working days now counts CALENDAR days,
+    with the same number of days and the same cutoff time. Wherever this
+    document says "T+1" or "T+1 (working days)", read: the next calendar
+    day. Example: R05 (RET) for business date D is due D+1 by 16:00,
+    whatever the weekday.
+  - This reverses the 2026-10-10 working-day rule (Sundays, 2nd/4th
+    Saturdays and Karnataka holidays skipped). The holiday list
+    (docs/bank_holidays_bengaluru_2026.txt) is kept but not used.
+  - 35-day and 7-day TATs were already calendar days: unchanged.
+  - Nothing else changes: conditions, order, status, priority, codes and
+    rule counts are as in v3.2.
+  - Ageing still counts from the business date (owner, 2026-10-23).
 
 v3.2 AMENDMENT (2026-10-10)
 ---------------------------

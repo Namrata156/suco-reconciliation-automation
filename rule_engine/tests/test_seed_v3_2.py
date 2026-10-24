@@ -3,7 +3,8 @@ Rule set v3.2 (docs/phase2_rule_table_v3_approved.txt "v3.2 AMENDMENT",
 owner 2026-10-10): v3.1 with only R13 changed -- Pending Investigation,
 MEDIUM, T+1 working day, no next-business-date-load TAT, no cross-day
 check. Seeded by `seed_rule_sets` (fresh DBs) and data migration 0005
-(existing DBs), both activating v3.2 and retiring v3.1.
+(existing DBs), both activating v3.2 and retiring v3.1. Since v3.3 (owner
+2026-10-23) the command goes on to v3.3, which retires v3.2.
 """
 from __future__ import annotations
 
@@ -60,10 +61,10 @@ class CommandTests(TestCase):
         call_command("seed_rule_sets", stdout=self.out)
         self.upi = PaymentModule.objects.get(code="UPI")
 
-    def test_v3_2_active_v3_1_retired(self):
+    def test_v3_2_seeded_v3_1_retired(self):
         v31 = RuleSet.objects.get(version_label="v3.1")
         v32 = RuleSet.objects.get(version_label="v3.2")
-        self.assertEqual((v31.status, v32.status), (RuleSetStatus.RETIRED, RuleSetStatus.ACTIVE))
+        self.assertEqual((v31.status, v32.status), (RuleSetStatus.RETIRED, RuleSetStatus.RETIRED))  # v3.3 active
         self.assertEqual(RuleSet.objects.filter(payment_module=self.upi, status="ACTIVE").count(), 1)
         self.assertEqual(v32.rules.count(), 24)
         self.assertIn("rule set v3.2 created and activated with 24 rules", self.out.getvalue())
@@ -85,8 +86,8 @@ class CommandTests(TestCase):
         out = StringIO()
         call_command("seed_rule_sets", stdout=out)
         self.assertNotIn("differs", out.getvalue())
-        self.assertEqual((RuleSet.objects.count(), Rule.objects.count()), (2, 48))
-        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.2")
+        self.assertEqual((RuleSet.objects.count(), Rule.objects.count()), (3, 72))
+        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.3")
 
 
 class MigrationTests(TestCase):

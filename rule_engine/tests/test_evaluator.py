@@ -1,7 +1,8 @@
 """
 Rule evaluator (Phase 2 Step 4): fact extraction, condition semantics,
 first-match order, deadlines, supersede-on-rerun, single-day evaluation
-(rule set v3.2: R13 a T+1 review item, no cross-day check), read-time ageing, admin,
+(rule set v3.2: R13 a T+1 review item, no cross-day check; v3.3: calendar-day
+deadlines), read-time ageing, admin,
 command and Celery task.
 
 Match groups are built directly (presence rows + the facts they point at)
@@ -314,7 +315,7 @@ class FirstMatchTests(EvaluatorTestBase):
                 self.assertEqual(self.result(f"3000000000{suffix}").rule_code, expected)
         self.assertEqual(RuleResult.objects.filter(is_superseded=False).count(), len(self.CASES))
         results = RuleResult.objects.filter(is_superseded=False)
-        self.assertEqual({r.rule_set.version_label for r in results}, {"v3.2"})
+        self.assertEqual({r.rule_set.version_label for r in results}, {"v3.3"})
         self.assertTrue(all(r.facts and r.rule.code == r.rule_code for r in results))
 
     def test_first_match_helper_never_returns_none(self):
@@ -349,6 +350,21 @@ class OutcomeTests(EvaluatorTestBase):
         self.assertEqual(len(r.alternative_codes), 7)
         self.assertTrue(r.rbi_compensation)
 
+    def test_r05_ret_due_d_plus_1_16_00_whatever_the_weekday(self):
+        # v3.3 (owner 2026-10-23): calendar days, no holidays. Mon 21 .. Sun 27 Sep 2026 (26 = 4th
+        # Saturday) and Thu 1 Oct (2 Oct = Gandhi Jayanti, a bank holiday).
+        days = [date(2026, 9, 21) + timedelta(days=i) for i in range(7)] + [date(2026, 10, 1)]
+        for i, d in enumerate(days):
+            self.group(f"41000000000{i}", d=d, timeout=True)
+            self.evaluate(d)
+            r = self.result(f"41000000000{i}", d)
+            with self.subTest(d=d, weekday=d.strftime("%a")):
+                self.assertEqual(r.rule_code, "R05")
+                self.assertEqual((r.tat_start_date, r.due_date, r.due_cutoff_time), (d, d + timedelta(days=1), time(16, 0)))
+                self.assertEqual(r.due_datetime.isoformat(), f"{d + timedelta(days=1)}T16:00:00+05:30")
+                self.assertEqual(r.tat_label, "1 calendar day, by 16:00")
+                self.assertEqual(r.rule.tat_day_basis, "CALENDAR")
+
     def test_r07x_clock_on_adjdate_and_reason(self):
         g = self.group("400000000002", d=D, adj=dict(type="Re-presentment Raise", adj_date=D, txn_date="03-06-2026"))
         self.evaluate()
@@ -370,9 +386,9 @@ class OutcomeTests(EvaluatorTestBase):
         r = self.result("400000000003", d)
         self.assertEqual(r.rule_code, "R06")
         self.assertEqual(r.tat_start_date, date(2026, 9, 26))
-        self.assertEqual(r.due_date, date(2026, 9, 28))  # 26 = 4th Sat, 27 = Sun
+        self.assertEqual(r.due_date, date(2026, 9, 27))  # v3.3: calendar days (Sat 26 -> Sun 27)
         drc = self.result("400000000004", d)
-        self.assertEqual((drc.tat_start_date, drc.due_date), (d, date(2026, 9, 28)))
+        self.assertEqual((drc.tat_start_date, drc.due_date), (d, date(2026, 9, 26)))  # Fri 25 -> Sat 26
 
     def test_calendar_day_tat_not_shifted(self):
         # Sun 6 Sep + 35 calendar days = Sun 11 Oct, left on the Sunday.
@@ -397,15 +413,16 @@ class OutcomeTests(EvaluatorTestBase):
         r = self.result("400000000007")
         self.assertEqual((r.status_category, r.priority, r.due_date, r.tat_label), ("RECONCILED", "NONE", None, ""))
 
-    def test_crossing_into_unloaded_year_flags_result(self):
+    def test_crossing_into_unloaded_year_is_not_flagged_on_calendar_days(self):
+        # v3.3 (owner 2026-10-23): calendar days need no holiday list, so a 2027 deadline is complete.
         d = date(2026, 12, 31)
         self.group("400000000008", d=d, cbs=True, drc=True)
-        with self.assertLogs("core.working_days", level="WARNING"):
+        with self.assertNoLogs("core.working_days", level="WARNING"):
             summary = self.evaluate(d)
         r = self.result("400000000008", d)
         self.assertEqual((r.rule_code, r.due_date), ("R02", date(2027, 1, 1)))
-        self.assertTrue(r.calendar_incomplete)
-        self.assertEqual(summary.calendar_incomplete_count, 1)
+        self.assertFalse(r.calendar_incomplete)
+        self.assertEqual(summary.calendar_incomplete_count, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -450,18 +467,18 @@ class SingleDayTests(EvaluatorTestBase):
     day"): each business date is evaluated against its own files only. R13
     is a T+1 review item; there is no cross-day check in either direction."""
 
-    def test_active_set_is_v3_2(self):
+    def test_active_set_is_v3_3(self):
         self.group("620000000001", cbs=True)
         summary = self.evaluate()
-        self.assertEqual(summary.rule_set_version, "v3.2")
+        self.assertEqual(summary.rule_set_version, "v3.3")
         r = self.result("620000000001")
-        self.assertEqual((r.rule_set.version_label, r.rule.rule_set.version_label), ("v3.2", "v3.2"))
+        self.assertEqual((r.rule_set.version_label, r.rule.rule_set.version_label), ("v3.3", "v3.3"))
 
-    def test_r13_pending_investigation_medium_due_next_working_day(self):
+    def test_r13_pending_investigation_medium_due_next_calendar_day(self):
         for rrn, d, due in (
             ("620000000002", date(2026, 7, 14), date(2026, 7, 15)),  # Tue -> Wed
-            ("620000000003", date(2026, 9, 25), date(2026, 9, 28)),  # Fri -> (4th Sat, Sun) Mon
-            ("620000000004", date(2026, 9, 26), date(2026, 9, 28)),  # Sat -> (Sun) Mon
+            ("620000000003", date(2026, 9, 25), date(2026, 9, 26)),  # Fri -> Sat (4th Saturday)
+            ("620000000004", date(2026, 9, 26), date(2026, 9, 27)),  # Sat -> Sun
         ):
             self.group(rrn, d=d, cbs=True)
             self.evaluate(d)
@@ -470,7 +487,7 @@ class SingleDayTests(EvaluatorTestBase):
                 self.assertEqual(r.rule_code, "R13")
                 self.assertEqual((r.status_category, r.priority), ("PENDING_INVESTIGATION", "MEDIUM"))
                 self.assertEqual((r.tat_start_date, r.due_date, r.due_cutoff_time), (d, due, None))
-                self.assertEqual(r.tat_label, "T+1 working day")
+                self.assertEqual(r.tat_label, "1 calendar day")
                 self.assertFalse(r.rbi_compensation)
                 self.assertIsNone(r.response_code)
                 self.assertIn("In CBS only, not in this date's NPCI files", r.reason)
@@ -581,6 +598,15 @@ class EntryPointAndAdminTests(EvaluatorTestBase):
 
 class WorkingCalendarInjectionTests(EvaluatorTestBase):
     def test_calendar_can_be_passed_in(self):
+        # v3.3 counts calendar days: a holiday on D+1 no longer moves the deadline.
         self.group("900000000001", drc=True)  # R03, T+1
         evaluate_business_date(self.module, D, calendar=WorkingDayCalendar(holidays={D + timedelta(1): "x"}))
-        self.assertEqual(self.result("900000000001").due_date, date(2026, 7, 16))
+        self.assertEqual(self.result("900000000001").due_date, date(2026, 7, 15))
+
+    def test_working_basis_still_uses_the_calendar(self):
+        # The WORKING path is kept for retired v3.1/v3.2 data (owner 2026-10-23).
+        from rule_engine.evaluator import _add_days
+
+        cal = WorkingDayCalendar(holidays={D + timedelta(1): "x"})
+        self.assertEqual(_add_days(D, 1, "WORKING", cal), (date(2026, 7, 16), False, "T+1 working day"))
+        self.assertEqual(_add_days(D, 1, "CALENDAR", cal), (date(2026, 7, 15), False, "1 calendar day"))

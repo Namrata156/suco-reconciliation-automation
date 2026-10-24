@@ -182,6 +182,32 @@ class RerunTests(CaseTestBase):
         c = self.case(self.RRN)
         self.assertEqual((c.status, c.needs_review), (CaseStatus.COMPLETED, True))
 
+    def test_completed_case_keeps_its_deadline_on_a_deadline_only_rerun(self):
+        # Owner 2026-10-23 (rule set v3.3, calendar days): closed cases never change.
+        self._approved()
+        services.mark_completed(self.c, self.m, external_reference="REF")
+        before = self.case(self.RRN)
+        events = CaseEvent.objects.filter(case=before).count()
+        self.rerun({self.RRN: "R01"}, **{self.RRN: {"due": D + timedelta(days=3), "cutoff": time(16)}})
+        s = self.sync()
+        self.assertEqual((s.closed_deadline_kept, s.result_updated, s.events_written), (1, 0, 0))
+        c = self.case(self.RRN)
+        self.assertEqual((c.status, c.due_date, c.due_cutoff_time, c.needs_review),
+                         (CaseStatus.COMPLETED, before.due_date, before.due_cutoff_time, False))
+        self.assertNotEqual(c.rule_result_id, before.rule_result_id)  # re-linked, as on any re-run
+        self.assertEqual((s.relinked, s.unchanged), (1, 0))
+        self.assertEqual(CaseEvent.objects.filter(case=c).count(), events)
+        self.assertEqual(self.sync().events_written, 0)
+
+    def test_approved_case_still_gets_the_new_deadline(self):
+        # APPROVED is not closed: the action still has to be carried out by the deadline.
+        self._approved()
+        self.rerun({self.RRN: "R01"}, **{self.RRN: {"due": D + timedelta(days=3)}})
+        s = self.sync()
+        self.assertEqual((s.closed_deadline_kept, s.result_updated), (0, 1))
+        c = self.case(self.RRN)
+        self.assertEqual((c.status, c.due_date), (CaseStatus.APPROVED, D + timedelta(days=3)))
+
     def test_no_longer_needs_action_closes_open_case(self):
         services.take(self.c, self.m)
         self.rerun({self.RRN: "R10"})

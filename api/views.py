@@ -18,7 +18,7 @@ audit CaseEvent), same serializers. v1 adds only:
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
 from django.db.models import Exists, F, OuterRef, Q
@@ -239,7 +239,10 @@ class SummaryView(ModuleView):
         everything = bool(roles & {Role.ADMINISTRATOR, Role.AUDITOR})
         d = digest_counts(payment_module=self.module)
         t, me = d["totals"], request.user.pk
-        body = {"business_date_today": d["today"], "roles": [r for r in Role.ALL if r in roles]}
+        # today = the calendar day (IST); business_date = the date ops reconcile on it, D-1 (owner
+        # 2026-10-23). business_date_today is the old name of `today`, kept for one release only.
+        body = {"today": d["today"], "business_date": d["today"] - timedelta(days=1),
+                "business_date_today": d["today"], "roles": [r for r in Role.ALL if r in roles]}
         if everything or Role.MAKER in roles:
             maker_open, maker_all = "OPEN,IN_PROGRESS", "OPEN,IN_PROGRESS,APPROVED"
             body["maker"] = {
@@ -353,9 +356,16 @@ class V1CaseListSerializer(_SelfApprovalField, legacy.CaseListSerializer):
 class V1CaseDetailSerializer(_SelfApprovalField, legacy.CaseDetailSerializer):
     payment_module = serializers.SlugRelatedField(slug_field="code", read_only=True)
     self_approval = serializers.SerializerMethodField()
+    npci_file = serializers.SerializerMethodField()
 
     class Meta(legacy.CaseDetailSerializer.Meta):
-        fields = ("payment_module",) + legacy.CaseDetailSerializer.Meta.fields + ("self_approval",)
+        fields = ("payment_module",) + legacy.CaseDetailSerializer.Meta.fields + ("self_approval", "npci_file")
+
+    def get_npci_file(self, obj) -> dict | None:
+        """The NPCI file the case was sent in, or null (docs/npci_file_design_draft_v1.txt Amendment 1, A7 API contract)."""
+        from api.npci_files import case_npci_file
+
+        return case_npci_file(obj)
 
 
 class CaseMixin(ModuleMixin):

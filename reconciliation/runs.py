@@ -29,7 +29,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from core.models import OperationType, PaymentModule
-from core.operations import InvalidInput, WrongState, log_operation
+from core.operations import InvalidInput, WrongState, log_operation, require_past_business_date
 from file_processing.intake import date_checklists, require_operations_user
 from reconciliation.models import ACTIVE_RUN_STATUSES, RUN_STEPS, ReconciliationRun, RunStatus, RunStep
 
@@ -77,6 +77,7 @@ def _queue(run_id: int) -> None:
 
 def start_run(user, module: PaymentModule, business_date: date, *, source: str = "api") -> ReconciliationRun:
     require_operations_user(user)
+    require_past_business_date(business_date)  # owner 2026-10-23: on day D ops reconcile D-1
     checklist = date_checklists(module, [business_date])[business_date]["summary"]
     blockers = blockers_from(checklist, active_run(module, business_date))
     if blockers:

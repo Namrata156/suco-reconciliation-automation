@@ -1,7 +1,7 @@
 """End-to-end fixture for the Slice 2 settlement tests: real facts (CBS, NPCI
 Raw Data with the response code in staging cell 5, Adjustment rows with
 Uid / Adjtype / Remitter / Beneficiary cells), the real presence matrix and
-the real rule evaluator (rule set v3.2), and NTSL lines built so the S2
+the real rule evaluator (the active rule set, v3.3 since 2026-10-23), and NTSL lines built so the S2
 self-check passes. The gap rules then run against exactly what production
 would see.
 

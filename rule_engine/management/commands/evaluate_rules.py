@@ -2,7 +2,7 @@
 Runs the Business Rule Engine evaluator (Phase 2 Step 4) for one business
 date, or every date that has a current presence matrix (--all-loaded,
 oldest first). Each date is evaluated against its own files only (no
-cross-day checks, rule set v3.2). Idempotent: a re-run supersedes the date's current results
+cross-day checks; rule set v3.3, calendar-day deadlines). Idempotent: a re-run supersedes the date's current results
 (kept, not deleted) and recreates them. Each date's exception cases are then
 synced from the new results in the same transaction (Phase 3,
 exception_management.sync).

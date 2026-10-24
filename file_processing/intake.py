@@ -42,7 +42,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from core.models import OperationType, PaymentModule, RegisterType, SettlementCycle
-from core.operations import InvalidInput, RoleRequired, WrongState, log_operation
+from core.operations import InvalidInput, RoleRequired, WrongState, log_operation, require_past_business_date
 from exception_management.roles import Role, has_role
 from file_processing.models import (
     DateValidationMode,
@@ -444,6 +444,7 @@ def upload_files(user, module: PaymentModule, business_date: date, items: list[U
     require_operations_user(user)
     if not items:
         raise InvalidInput("Choose at least one file.", {"files": ["Choose at least one file."]})
+    require_past_business_date(business_date)  # owner 2026-10-23: on day D ops reconcile D-1
     if date_is_archived(module, business_date):
         raise WrongState(ARCHIVED_MESSAGE.format(d=business_date.isoformat()))
 
@@ -563,6 +564,7 @@ def select_business_date(user, uploaded_file: UploadedFile, chosen: str | date, 
                 {"business_date": ["Choose one of the dates found in the file."]},
             )
         chosen_date = date.fromisoformat(chosen_iso)
+        require_past_business_date(chosen_date)  # owner 2026-10-23: on day D ops reconcile D-1
         if date_is_archived(f.payment_module, chosen_date):
             raise WrongState(ARCHIVED_MESSAGE.format(d=chosen_iso))
         existing = slot_conflict(f.file_type_config, f.settlement_cycle, chosen_date, exclude_id=f.pk)

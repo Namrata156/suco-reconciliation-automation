@@ -6,10 +6,11 @@ Acceptance check for the rule evaluator (Phase 2 Step 4), read-only.
    swapped for a per-group one) in a READ ONLY transaction and compares its
    rule per match group with the current RuleResult of every group.
 2. Compares the current per-rule counts with
-   rule_engine.seed_data.v3_2.EXPECTED_COUNTS (identical to v3.1's: v3.2
-   changes only R13's outcome, not which groups it matches) and reports
+   rule_engine.seed_data.v3_3.EXPECTED_COUNTS (identical to v3.1's: v3.2
+   changes only R13's outcome and v3.3 only the deadline basis, not which
+   groups a rule matches) and reports
    which rule set version the current results reference.
-The oracle SQL encodes v3.1's CASE order and conditions, which v3.2 keeps
+The oracle SQL encodes v3.1's CASE order and conditions, which v3.2 and v3.3 keep
 unchanged, so it remains the per-group oracle.
 
 The project's tests load only single-cycle samples, so the full-date counts
@@ -28,7 +29,7 @@ from django.db import connection, transaction
 
 from core.models import PaymentModule
 from rule_engine.models import RuleResult
-from rule_engine.seed_data import v3_2 as expected
+from rule_engine.seed_data import v3_3 as expected
 
 ORACLE = Path(settings.BASE_DIR) / "docs" / "phase2_rule_table_v3_1_reference.sql"
 _CASE_HEAD = "r as (select business_date, case"

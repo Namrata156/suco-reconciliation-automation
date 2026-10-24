@@ -48,6 +48,9 @@ DC2) already reflects this — no schema change needed. See `tracker.md`.
 After each cycle completes, NPCI makes files available; the bank
 downloads and reconciles them, then updates dispute files back to NPCI.
 
+(owner 2026-10-23) reconciliation runs on D for business date D-1, every
+calendar day, no holidays.
+
 ## Transaction flow
 
 Customer initiates in the UPI app → debited from the SUCO account →

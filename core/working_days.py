@@ -1,6 +1,13 @@
 """
 Working-day calendar for rule deadlines (Phase 2 Step 4).
 
+NOT USED BY RULE SET v3.3 (owner 2026-10-23): deadlines count calendar
+days, because ops reconcile business date D-1 on day D every calendar day,
+with no holidays (T+1 settlement per RBI/NPCI). This module, the
+BankHoliday data and docs/bank_holidays_bengaluru_2026.txt are kept: the
+evaluator still applies WORKING for any rule that has it (retired v3.1 /
+v3.2), and a later version could use it again.
+
 Working-day rule (project owner, 2026-10-10; docs/bank_holidays_bengaluru_2026.txt):
 a day is NOT a working day if it is
   - a Sunday,

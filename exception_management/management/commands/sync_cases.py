@@ -57,3 +57,5 @@ def write_summary(command: BaseCommand, s) -> None:
         command.stdout.write(command.style.WARNING(f"  no deadline (A4): {s.no_deadline}"))
     if s.flagged_for_review:
         command.stdout.write(command.style.WARNING(f"  flagged for review: {s.flagged_for_review}"))
+    if s.closed_deadline_kept:
+        command.stdout.write(f"  completed cases that kept their deadline: {s.closed_deadline_kept}")

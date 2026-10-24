@@ -30,6 +30,13 @@ re-linked to the new result.
                                           (e.g. its due date after a holiday
                                           was added) the case is updated and
                                           a RESULT_UPDATED event records it.
+                                          Exception: a COMPLETED case whose
+                                          only difference is the deadline
+                                          (due_date / due_cutoff_time, e.g.
+                                          rule set v3.3's calendar days)
+                                          keeps its old deadline, no event
+                                          (owner 2026-10-23: closed cases
+                                          never change).
   - Rule changed, not yet approved     -> case updated (rule, priority, due
     (OPEN / IN_PROGRESS / PENDING_       date, pre-filled action) + RULE_CHANGED
     APPROVAL)                             event. A PENDING_APPROVAL case goes
@@ -93,6 +100,7 @@ _LOOKUP_BATCH = 5000
 # The case's copy of its rule result, compared on every sync.
 _COPIED = ("rule_code", "status_category", "priority", "due_date", "due_cutoff_time")
 _RESULT_FIELDS = _COPIED + ("no_deadline",)
+_DEADLINE_FIELDS = ("due_date", "due_cutoff_time")
 _DEFAULT_FIELDS = ("default_action_type", "default_response_code_id")
 _RESULT_VALUES = ("id", "match_group_id", "rrn", "response_code_id", "tat_unresolved") + _COPIED
 _UPDATE_FIELDS = (
@@ -136,6 +144,7 @@ class SyncSummary:
     actions_withdrawn: int = 0
     adjustment_flag_changed: int = 0
     rrc_warning_changed: int = 0
+    closed_deadline_kept: int = 0
     events_written: int = 0
     cases_by_rule_status: dict = field(default_factory=dict)
     multiple_adjustment_rows: int = 0
@@ -268,6 +277,12 @@ def sync_cases_for_date(payment_module: PaymentModule, business_date: date, *, s
             if r is not None:
                 values = _values_from_result(r)
                 changes = _diff(case, values)
+                if old_status == CaseStatus.COMPLETED and changes and set(changes) <= set(_DEADLINE_FIELDS):
+                    # A closed case keeps the deadline it was closed under (owner 2026-10-23, rule set
+                    # v3.3 re-runs): re-linked as on any re-run, but no field or event changes.
+                    values.update({f: getattr(case, f) for f in _DEADLINE_FIELDS})
+                    changes = {}
+                    summary.closed_deadline_kept += 1
                 if case.result_missing:
                     changes["result_missing"] = [True, False]
                     case.result_missing = False
