@@ -3,7 +3,9 @@
  * panel with the "Run" button (Operations User), the expected-files
  * checklist, files outside the checklist, earlier runs and the operations
  * history, and the reconciliation results summary (design 4.12, Slice 3)
- * with links to the results list and the settlement. Refreshes itself while a run is active or files are being
+ * with links to the results list and the settlement, and the NPCI file
+ * section (docs/npci_file_design_draft_v1.txt A7: generate, files, download).
+ * Refreshes itself while a run is active or files are being
  * processed (lib/polling.ts).
  */
 import { Alert, Anchor, Card, List, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
@@ -19,6 +21,7 @@ import { AutoRefresh } from '../components/AutoRefresh';
 import { RunStatusBadge, SettlementStatusBadge } from '../components/Badges';
 import { Checklist } from '../features/dates/Checklist';
 import { RunPanel } from '../features/dates/RunPanel';
+import { NpciFilePanel } from '../features/npci/NpciFilePanel';
 import { ResultsSummaryPanel } from '../features/results/ResultsSummaryPanel';
 import { OperationHistory } from '../features/files/OperationHistory';
 import { useModuleCode } from '../hooks/module';
@@ -73,6 +76,7 @@ export function DateDetailPage() {
       void qc.invalidateQueries({ queryKey: ['cases', module] });
       void qc.invalidateQueries({ queryKey: ['results-summary', module, businessDate] });
       void qc.invalidateQueries({ queryKey: ['settlement', module, businessDate] });
+      void qc.invalidateQueries({ queryKey: ['npci-preview', module, businessDate] });
     }
   };
 
@@ -170,6 +174,8 @@ export function DateDetailPage() {
         runId={d.rule_evaluation?.id ?? null}
         enabled={d.matrix.built || d.rule_evaluation !== null}
       />
+
+      <NpciFilePanel module={module} businessDate={d.business_date} />
 
       <Stack gap="xs" component="section" aria-labelledby="checklist-title">
         <Title order={2} size="h4" id="checklist-title">

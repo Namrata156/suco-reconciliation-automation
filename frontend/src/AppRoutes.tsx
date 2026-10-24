@@ -34,6 +34,8 @@ const pages = {
   alerts: () => import('./pages/AlertsPage'),
   audit: () => import('./pages/AuditPage'),
   users: () => import('./pages/UsersPage'),
+  reports: () => import('./pages/ReportsPage'),
+  allDates: () => import('./pages/AllDatesPages'),
 };
 
 const LoginPage = named(pages.login, 'LoginPage');
@@ -60,6 +62,9 @@ const AuditSettingsEvents = named(pages.audit, 'AuditSettingsEvents');
 const AuditUserActivity = named(pages.audit, 'AuditUserActivity');
 const AuditOperations = named(pages.audit, 'AuditOperations');
 const UsersPage = named(pages.users, 'UsersPage');
+const ReportsPage = named(pages.reports, 'ReportsPage');
+const ResultsAllDatesPage = named(pages.allDates, 'ResultsAllDatesPage');
+const SettlementAllDatesPage = named(pages.allDates, 'SettlementAllDatesPage');
 
 function IndexRedirect() {
   const me = useMe();
@@ -136,6 +141,10 @@ export function AppRoutes() {
             <Route path="tolerance" element={<ToleranceTab />} />
           </Route>
           <Route path="approvals" element={<PendingApprovalsPage />} />
+          {/* Phase 6: all-dates views (R3) and the reports page. */}
+          <Route path="results" element={<ResultsAllDatesPage />} />
+          <Route path="settlement" element={<SettlementAllDatesPage />} />
+          <Route path="reports" element={<ReportsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />

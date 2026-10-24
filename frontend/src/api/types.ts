@@ -48,6 +48,21 @@ export interface Permissions {
   'users.view': boolean;
   /** The Django admin link (Administrator only). */
   'users.admin': boolean;
+  /** NPCI file list and details (all five; docs/npci_file_design_draft_v1.txt A7). */
+  'npci_files.view': boolean;
+  /** Generate the next NPCI file of a date (Checker). */
+  'npci_files.generate': boolean;
+  /** Download a generated file (Maker, Checker, Operations User). */
+  'npci_files.download': boolean;
+  // Phase 6 (docs/phase6_api_contract.txt C1): NOT sent by the server yet.
+  // Optional until the backend adds them; lib/roles.ts allows() falls back
+  // to existing capabilities while a key is absent.
+  /** Reports page and the all-roles reports (all five). */
+  'reports.view'?: boolean;
+  /** Approval report (Administrator, Auditor, Checker; R2). */
+  'reports.approvals'?: boolean;
+  /** User activity report (Administrator, Auditor; R2). */
+  'reports.user_activity'?: boolean;
 }
 export type Capability = keyof Permissions;
 
@@ -184,8 +199,14 @@ export interface SummaryCount {
 }
 
 export interface ModuleSummary {
-  /** ISO date (IST) the counts were taken for. */
+  /** ISO date (IST): today's calendar date, when the counts were taken. Not the business date. */
   business_date_today: string;
+  /**
+   * ISO date (IST): the latest business date that can be complete (today
+   * minus one; ops reconcile the previous day). Being added by the backend;
+   * absent from older servers (the SPA then uses business_date_today - 1).
+   */
+  business_date?: string;
   roles: RoleName[];
   /** Maker block (also to Administrator / Auditor). */
   maker?: {
@@ -1073,6 +1094,9 @@ export interface SettingsEvent {
   changes?: Record<string, unknown>;
 }
 
+/** A response-code field an edit proposal may change. */
+export type ResponseCodeField = 'code' | 'description' | 'notes';
+
 /** One row of GET /settings/response-codes/. */
 export interface ResponseCodeRow {
   id: number;
@@ -1083,8 +1107,17 @@ export interface ResponseCodeRow {
   source: string;
   notes: string;
   label: string;
-  /** Used by the active rule set: only an unknown numeric code may be filled in. */
+  /**
+   * Used by the active rule set: its flag, a known numeric code, its notes and
+   * its rule links stay locked (see editable_fields).
+   */
   locked: boolean;
+  /**
+   * What an edit proposal may change (NPCI file design Amendment 1, A7):
+   * ["code", "description", "notes"] on an unlocked code; ["description"] on a
+   * locked one, or ["code", "description"] while its numeric code is unknown.
+   */
+  editable_fields: ResponseCodeField[];
   /** Rule codes using it. */
   used_by: string[];
   pending_request_id: number | null;
@@ -1501,4 +1534,155 @@ export interface UserRoleFilters {
 export interface UserRoleListPage extends Paginated<UserRoleRow> {
   /** "/admin/auth/user/", or null without Django staff status. */
   admin_users_url: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// NPCI file generation (api/npci_files.py; docs/npci_file_design_draft_v1.txt
+// Amendment 1, A7). The app only GENERATES the file; the user downloads it,
+// has it approved and uploads it to the NPCI portal by hand (owner
+// 2026-10-22/23). Account numbers are masked (last 4 only).
+// ---------------------------------------------------------------------------
+export type NpciNotIncludedReason =
+  'OPEN' | 'PENDING_APPROVAL' | 'NEEDS_REVIEW' | 'NO_NUMERIC_CODE' | 'NO_NPCI_ROW' | 'BAD_SOURCE_DATA';
+
+/** Rows and amount per flag / code / text. */
+export interface NpciFileCount {
+  flag: string;
+  code: string;
+  text: string;
+  rows: number;
+  amount: string;
+}
+
+/** One line of a file (or of the next file, in the preview). */
+export interface NpciFileLine {
+  line: number;
+  case_id: number;
+  /** An RRC case can belong to another date's file (its Adjustment's Adjdate). */
+  case_business_date: string;
+  rrn: string;
+  flag: string;
+  code: string;
+  /** YYYY-MM-DD. */
+  shtdat: string;
+  /** As written in the file ("140.5"). */
+  amount: string;
+  account_masked: string;
+  text: string;
+}
+
+export interface NpciPreviewLine extends NpciFileLine {
+  rule_code: string;
+  action_type: string;
+}
+
+/** A case that would give a row once decided, and why it is left out. */
+export interface NpciNotIncluded {
+  case_id: number;
+  case_business_date: string;
+  rrn: string;
+  rule_code: string;
+  status: string;
+  flag: string;
+  /** null when the reply code has no numeric NPCI code yet. */
+  code: string | null;
+  reason: NpciNotIncludedReason | string;
+  reason_label: string;
+  detail: string;
+}
+
+/** preview.files / detail.other_files_for_date. */
+export interface NpciFileRef {
+  id: number;
+  file_name: string;
+  sequence: number;
+  row_count: number;
+  partial: boolean;
+  generated_at: string;
+  generated_by: string;
+}
+
+/** GET /dates/<date>/npci-file/preview/: what the NEXT file would hold now. */
+export interface NpciFilePreview {
+  file_date: string;
+  file_format: string;
+  next_sequence: number;
+  next_file_name: string;
+  row_count: number;
+  total_amount: string;
+  partial: boolean;
+  counts: NpciFileCount[];
+  rows: NpciPreviewLine[];
+  not_included: NpciNotIncluded[];
+  not_included_counts: Partial<Record<NpciNotIncludedReason | string, number>>;
+  /** Cases of this date already included in a file. */
+  already_sent_count: number;
+  already_sent_files: string[];
+  /** Shown as they are. */
+  warnings: string[];
+  files: NpciFileRef[];
+  /** Rows > 0 and the user is a Checker. */
+  can_generate: boolean;
+}
+
+export interface NpciGeneratePayload {
+  confirm_partial?: boolean;
+  remarks?: string;
+}
+
+/** One row of GET /npci-files/. */
+export interface NpciFileRow {
+  id: number;
+  file_date: string;
+  sequence: number;
+  file_name: string;
+  file_format: string;
+  row_count: number;
+  total_amount: string;
+  partial: boolean;
+  not_included_count: number;
+  sha256: string;
+  size_bytes: number;
+  generated_by: string;
+  generated_at: string;
+  remarks: string;
+  /** null when the user may not download (Administrator, Auditor). */
+  download_url: string | null;
+  /**
+   * Who downloaded it and when, newest first (owner 2026-10-23; A7 update).
+   * Optional until the backend sends it.
+   */
+  downloads?: NpciFileDownload[];
+  download_count?: number;
+}
+
+/** One download of a generated file. */
+export interface NpciFileDownload {
+  /** Username. */
+  by: string;
+  at: string;
+}
+
+export interface NpciFileListPage extends Paginated<NpciFileRow> {
+  can_download: boolean;
+}
+
+export interface NpciFileFilters {
+  file_date?: string;
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+  page_size?: number;
+}
+
+/** GET /npci-files/<id>/ (also the body of a 201 generate). */
+export interface NpciFileDetail extends NpciFileRow {
+  counts: NpciFileCount[];
+  warnings: string[];
+  /** As they stood at generation. */
+  not_included: NpciNotIncluded[];
+  rows: NpciFileLine[];
+  other_files_for_date: NpciFileRef[];
+  /** NPCI_FILE_GENERATED and NPCI_FILE_DOWNLOADED entries, oldest first. */
+  history: OperationLogEntry[];
 }

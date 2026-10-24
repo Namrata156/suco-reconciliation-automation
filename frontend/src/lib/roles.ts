@@ -22,6 +22,27 @@ export const hasRole = (roles: readonly string[] | undefined, role: RoleName) =>
 /** A capability check that treats a missing permissions object as "no". */
 export const can = (perms: Partial<Permissions> | undefined, cap: Capability) => perms?.[cap] === true;
 
+/**
+ * Phase 6 capabilities the server does not send yet (docs/phase6_api_contract.txt
+ * C1), with the existing ones that give the same roles (R2 matrix):
+ *   reports.view          all five          = results.view
+ *   reports.approvals     A, U, C           = audit.view (A, U) or cases.approve (C)
+ *   reports.user_activity A, U              = audit.view
+ * Used only while the key is ABSENT from /me; once sent, the server's value wins.
+ */
+export const CAPABILITY_FALLBACK: Partial<Record<Capability, readonly Capability[]>> = {
+  'reports.view': ['results.view'],
+  'reports.approvals': ['audit.view', 'cases.approve'],
+  'reports.user_activity': ['audit.view'],
+};
+
+/** can(), plus the fallback above for a capability the server does not send yet. */
+export function allows(perms: Partial<Permissions> | undefined, cap: Capability): boolean {
+  const sent = perms?.[cap];
+  if (typeof sent === 'boolean') return sent;
+  return (CAPABILITY_FALLBACK[cap] ?? []).some((c) => can(perms, c));
+}
+
 export interface MenuItem {
   key: string;
   label: string;
@@ -33,8 +54,11 @@ export interface MenuItem {
   external?: boolean;
   /** The /me permission that shows the item. */
   capability: Capability;
-  /** First slice whose screen backs the item; later slices are hidden. */
-  slice: 1 | 2 | 3 | 4 | 'deferred';
+  /**
+   * First slice whose screen backs the item; later slices are hidden.
+   * Phase 5 slices are 1-4, Phase 6 slices 6.1-6.4.
+   */
+  slice: 1 | 2 | 3 | 4 | 6.1 | 6.2 | 6.3 | 6.4 | 'deferred';
   /** Also highlighted on the addresses below it (settings tabs). */
   matchPrefix?: boolean;
 }
@@ -68,8 +92,35 @@ export const MENU: readonly MenuItem[] = [
   },
   { key: 'files', label: 'Files', to: 'files', scoped: true, capability: 'files.view', slice: 2 },
   { key: 'dates', label: 'Business dates', to: 'dates', scoped: true, capability: 'files.view', slice: 2 },
-  // Results and settlement are per business date (design 4.12 / 4.14): they
-  // open from the business-date list and overview, not from a menu item.
+  // Per-date results and settlement open from the business-date list. The
+  // all-dates views have their own entries (Phase 6 R3, owner 2026-10-22/23);
+  // they read GET /dates/, which every role may read (results.view).
+  {
+    key: 'results-all',
+    label: 'Results (all dates)',
+    to: 'results',
+    scoped: true,
+    capability: 'results.view',
+    slice: 6.1,
+  },
+  {
+    key: 'settlement-all',
+    label: 'Settlement (all dates)',
+    to: 'settlement',
+    scoped: true,
+    capability: 'results.view',
+    slice: 6.1,
+  },
+  // The page shows each user only the reports their role may open (R2).
+  {
+    key: 'reports',
+    label: 'Reports',
+    to: 'reports',
+    scoped: true,
+    capability: 'reports.view',
+    slice: 6.1,
+    matchPrefix: true,
+  },
   {
     key: 'settings',
     label: 'Settings',
@@ -120,8 +171,8 @@ export const MENU: readonly MenuItem[] = [
   },
 ];
 
-/** The slice the running build implements. */
-export const BUILT_SLICE = 4;
+/** The slice the running build implements (Phase 6 slice 6.1). */
+export const BUILT_SLICE = 6.1;
 
 /** Menu items for a user, limited to screens already built. */
 export function menuFor(
@@ -130,7 +181,7 @@ export function menuFor(
 ): MenuItem[] {
   return MENU.filter((item) => {
     if (item.slice === 'deferred' || item.slice > builtSlice) return false;
-    if (!can(me.permissions, item.capability)) return false;
+    if (!allows(me.permissions, item.capability)) return false;
     // The admin link only when the server gives one (Administrator with staff status).
     if (item.key === 'django-admin' && !me.admin_url) return false;
     return true;

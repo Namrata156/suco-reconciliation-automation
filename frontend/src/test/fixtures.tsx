@@ -18,8 +18,10 @@ import type {
 } from '../api/types';
 import { makeQueryClient, Providers } from '../App';
 
+type ReportCap = 'reports.view' | 'reports.approvals' | 'reports.user_activity';
+
 /** api/base.py CAPABILITIES, so menu tests use the server's own matrix. */
-const CAPS: Record<keyof Permissions, RoleName[]> = {
+const CAPS: Record<Exclude<keyof Permissions, ReportCap>, RoleName[]> = {
   'cases.view': ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'],
   'cases.work': ['Maker'],
   'cases.approve': ['Checker'],
@@ -36,11 +38,26 @@ const CAPS: Record<keyof Permissions, RoleName[]> = {
   'audit.view': ['Administrator', 'Auditor'],
   'users.view': ['Administrator', 'Auditor'],
   'users.admin': ['Administrator'],
+  'npci_files.view': ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'],
+  'npci_files.generate': ['Checker'],
+  'npci_files.download': ['Operations User', 'Maker', 'Checker'],
 };
 
-export function permissionsFor(roles: RoleName[]): Permissions {
+/**
+ * Phase 6 capabilities as proposed in docs/phase6_api_contract.txt C1 (R2).
+ * NOT sent by the server yet: permissionsFor() leaves them out unless asked,
+ * so the tests see what /me sends today.
+ */
+export const REPORT_CAPS: Record<ReportCap, RoleName[]> = {
+  'reports.view': ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'],
+  'reports.approvals': ['Administrator', 'Auditor', 'Checker'],
+  'reports.user_activity': ['Administrator', 'Auditor'],
+};
+
+export function permissionsFor(roles: RoleName[], { reportCaps = false } = {}): Permissions {
+  const caps = reportCaps ? { ...CAPS, ...REPORT_CAPS } : CAPS;
   return Object.fromEntries(
-    Object.entries(CAPS).map(([cap, allowed]) => [cap, allowed.some((r) => roles.includes(r))]),
+    Object.entries(caps).map(([cap, allowed]) => [cap, allowed.some((r) => roles.includes(r))]),
   ) as unknown as Permissions;
 }
 

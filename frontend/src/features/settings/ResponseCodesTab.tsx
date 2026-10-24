@@ -2,7 +2,10 @@
  * Response codes (design 4.16 a; owner 2026-10-20): the module's code table,
  * a Maker proposes an edit or a new code with a reason, a Checker approves
  * or rejects it in the request history. A code the active rule set uses is
- * locked: only its unknown numeric code may be filled in (the server checks).
+ * locked: the list's editable_fields says what a proposal may change (NPCI
+ * file design Amendment 1, A7: its description, and an unknown numeric code);
+ * the flag, a known numeric code, the notes and the rule links stay locked.
+ * The server checks.
  * A code's pending request opens in a drawer with its events; the request
  * history can be narrowed to one code.
  */
@@ -29,7 +32,13 @@ import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 
 import { getCodeRequest, listCodeRequests, listResponseCodes, proposeCodeChange } from '../../api/client';
-import type { CodeChangeProposal, CodeChangeRequest, ModuleMeta, ResponseCodeRow } from '../../api/types';
+import type {
+  CodeChangeProposal,
+  CodeChangeRequest,
+  ModuleMeta,
+  ResponseCodeField,
+  ResponseCodeRow,
+} from '../../api/types';
 import { useMe } from '../../auth/auth';
 import { SelfApprovedBadge, VersionStatusBadge } from '../../components/Badges';
 import { ListPager } from '../../components/ListPager';
@@ -58,16 +67,41 @@ export const editCodeSchema = z.object({
   reason: z.string().trim().min(1, 'A reason (and the source of the change) is required'),
 });
 
-/** Only the fields that differ from the code are sent (left out = unchanged). */
+/**
+ * What a proposal may change: the server's editable_fields, or (from a server
+ * that does not send it yet) the rule before Amendment 1: everything on an
+ * unlocked code, only an unknown numeric code on a locked one.
+ */
+export function editableFields(code: ResponseCodeRow): readonly ResponseCodeField[] {
+  if (Array.isArray(code.editable_fields)) return code.editable_fields;
+  if (!code.locked) return ['code', 'description', 'notes'];
+  return code.code_known ? [] : ['code'];
+}
+
+/** Only the editable fields that differ from the code are sent (left out = unchanged). */
 export function editPayload(
   code: ResponseCodeRow,
   v: z.infer<typeof editCodeSchema>,
 ): CodeChangeProposal | null {
+  const fields = editableFields(code);
   const p: CodeChangeProposal = { kind: 'EDIT', response_code: code.id, reason: v.reason.trim() };
-  if (v.new_code.trim() !== (code.code ?? '')) p.new_code = v.new_code.trim();
-  if (v.new_description.trim() !== code.description) p.new_description = v.new_description.trim();
-  if (v.new_notes.trim() !== code.notes) p.new_notes = v.new_notes.trim();
+  if (fields.includes('code') && v.new_code.trim() !== (code.code ?? '')) p.new_code = v.new_code.trim();
+  if (fields.includes('description') && v.new_description.trim() !== code.description)
+    p.new_description = v.new_description.trim();
+  if (fields.includes('notes') && v.new_notes.trim() !== code.notes) p.new_notes = v.new_notes.trim();
   return p.new_code === undefined && p.new_description === undefined && p.new_notes === undefined ? null : p;
+}
+
+/** What a locked code allows, from its editable fields. */
+export function lockedText(fields: readonly ResponseCodeField[]): string {
+  const may = [
+    fields.includes('description') ? 'its description (wording)' : null,
+    fields.includes('code') ? 'its unknown numeric code' : null,
+  ].filter(Boolean);
+  const locked = fields.includes('code') ? 'The flag, notes and rule links' : 'The flag, numeric code, notes and rule links';
+  return may.length
+    ? `Only ${may.join(' and ')} may change. ${locked} stay locked.`
+    : 'Nothing on this code may change.';
 }
 
 export function EditCodeForm({
@@ -105,26 +139,45 @@ export function EditCodeForm({
       applyApiError(e, setError, ['new_code', 'new_description', 'new_notes', 'reason']);
     }
   });
-  const codeLocked = code.locked && code.code_known;
+  const fields = editableFields(code);
+  const editable = (f: ResponseCodeField) => fields.includes(f);
   return (
     <form onSubmit={submit} noValidate>
       <Stack>
         <Text size="sm">Editing {code.label}. A Checker approves the change before it applies.</Text>
         {code.locked && (
           <Alert color="yellow" title="Used by the active rule set">
-            {code.used_by.length ? `Rules ${code.used_by.join(', ')} use this code. ` : ''}Only an unknown
-            numeric code may be filled in; description and notes cannot change.
+            {code.used_by.length ? `Rules ${code.used_by.join(', ')} use this code. ` : ''}
+            {lockedText(fields)}
           </Alert>
+        )}
+        {editable('description') && (
+          <Text size="xs" c="dimmed">
+            The description is also the reply text written into the NPCI file: an approved change applies to the
+            next file generated, not to files already generated.
+          </Text>
         )}
         <RootError message={errors.root?.message} />
         <TextInput
           label="Numeric code"
-          disabled={codeLocked}
+          disabled={!editable('code')}
           {...register('new_code')}
           error={errors.new_code?.message}
         />
-        <TextInput label="Description" disabled={code.locked} {...register('new_description')} />
-        <Textarea label="Notes" disabled={code.locked} autosize minRows={2} {...register('new_notes')} />
+        <TextInput
+          label="Description"
+          disabled={!editable('description')}
+          {...register('new_description')}
+          error={errors.new_description?.message}
+        />
+        <Textarea
+          label="Notes"
+          disabled={!editable('notes')}
+          autosize
+          minRows={2}
+          {...register('new_notes')}
+          error={errors.new_notes?.message}
+        />
         <Textarea
           label="Reason"
           required

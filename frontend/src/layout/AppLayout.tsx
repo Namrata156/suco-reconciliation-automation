@@ -36,6 +36,22 @@ export function isActive(href: string, pathname: string, search: string, matchPr
 }
 
 /**
+ * The address of the same screen in another module (header switcher). A case
+ * / file id or a single date would not carry over; the reports keep their
+ * filters (business-date range), since the module is their only other filter.
+ */
+export function switchModuleHref(pathname: string, search: string, slug: string): string {
+  const rest = pathname.split('/').slice(2);
+  const first = rest[0] ?? '';
+  if (['results', 'settlement', 'reports'].includes(first)) {
+    const path = first === 'reports' ? rest.join('/') : first;
+    return `/${slug}/${path}${search}`;
+  }
+  const section = ['cases', 'files', 'dates', 'settings', 'approvals'].includes(first) ? `/${first}` : '';
+  return `/${slug}${section}`;
+}
+
+/**
  * The module the module-less screens (alerts, audit, users) link back to:
  * the last one visited in this tab, kept in memory only (design 7.1).
  */
@@ -72,12 +88,7 @@ export function AppLayout({ global = false }: { global?: boolean }) {
 
   const switchModule = (code: string | null) => {
     if (!code) return;
-    // Same screen in the other module; a case / file id or date would not carry over.
-    const rest = location.pathname.split('/').slice(2);
-    const section = ['cases', 'files', 'dates', 'settings', 'approvals'].includes(rest[0] ?? '')
-      ? `/${rest[0]}`
-      : '';
-    navigate(`/${me.modules.find((m) => m.code === code)?.slug ?? code.toLowerCase()}${section}`);
+    navigate(switchModuleHref(location.pathname, location.search, me.modules.find((m) => m.code === code)?.slug ?? code.toLowerCase()));
   };
 
   const signOut = async () => {

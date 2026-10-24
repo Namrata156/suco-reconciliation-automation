@@ -50,17 +50,23 @@ describe('Refresh keeps the session alive while auto-refresh is paused', () => {
       runs: [],
       history: [],
     };
-    const fetch = vi.fn().mockImplementation(() => Promise.resolve(json(running)));
+    // The date answers with its overview; the other panels (NPCI file) have nothing (404).
+    const fetch = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(
+        /\/npci-file/.test(url) ? new Response(JSON.stringify({ detail: 'none' }), { status: 404 }) : json(running),
+      ),
+    );
     vi.stubGlobal('fetch', fetch);
     render('/:module/dates/:businessDate', '/upi/dates/2026-07-14', <DateDetailPage />);
 
     expect(await screen.findByText(/Automatic refresh paused while you are inactive/)).toBeTruthy();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // Only the date itself is polled (the NPCI file section loads its own data once).
+    const dateCalls = () => fetch.mock.calls.filter((c) => c[0] === '/api/v1/upi/dates/2026-07-14/');
+    expect(dateCalls()).toHaveLength(1);
     sessionClock.touch(0);
 
     await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-    expect(fetch.mock.calls[1]?.[0]).toBe('/api/v1/upi/dates/2026-07-14/');
+    await waitFor(() => expect(dateCalls()).toHaveLength(2));
     await waitFor(() => expect(sessionClock.lastRequestAt()).toBeGreaterThan(0));
     // Exactly one control is named "Refresh" (the e2e spec clicks it in strict mode).
     expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1);

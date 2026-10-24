@@ -99,7 +99,9 @@ export function rowNotes(
     );
   }
   if (row.file.size > maxFileBytes) {
-    notes.push(`The file is larger than the limit of ${Math.round(maxFileBytes / (1024 * 1024))} MB: it will be refused.`);
+    notes.push(
+      `The file is larger than the limit of ${Math.round(maxFileBytes / (1024 * 1024))} MB: it will be refused.`,
+    );
   }
   if (t?.date_mode === 'RANGE_CONTAINS') {
     notes.push('After processing, confirm its business date from the dates found in the file.');
@@ -151,12 +153,18 @@ export interface UploadOutcome {
   errors: string[];
 }
 
+/** The server refused the batch business date itself (400 with errors.business_date). */
+export function isBusinessDateError(e: unknown): e is ApiError {
+  return e instanceof ApiError && e.status === 400 && (e.fieldErrors.business_date?.length ?? 0) > 0;
+}
+
 /**
  * Uploads the included rows ONE FILE PER REQUEST, in order, so the screen
  * can show progress and one slow or failed file (the ~100 MB CBS) does not
  * hold back or fail the others. The API accepts several files per request
  * too; each file is checked on its own either way. Stops (throws) on 401 /
- * 403, which would refuse every file; any other failure is that file's.
+ * 403, and on a business_date field error (e.g. a date on or after today),
+ * which would refuse every file; any other failure is that file's.
  */
 export async function uploadRows(
   module: string,
@@ -175,7 +183,7 @@ export async function uploadRows(
         { file: row.file, item: { file_type_config_id: row.typeId as number, cycle: row.cycle } },
       ]);
     } catch (e) {
-      if (e instanceof ApiError && (e.isUnauthenticated || e.isForbidden)) throw e;
+      if (e instanceof ApiError && (e.isUnauthenticated || e.isForbidden || isBusinessDateError(e))) throw e;
       const msg = e instanceof ApiError ? e.detail : 'The file could not be sent (network error).';
       out.push({ index: row.index, filename: row.file.name, accepted: null, errors: [msg] });
       continue;

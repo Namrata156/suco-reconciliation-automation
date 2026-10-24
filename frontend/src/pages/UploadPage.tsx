@@ -9,6 +9,9 @@
  *   3. The user confirms or corrects each row (send, type, cycle) and the
  *      business date, then uploads. Each file is accepted or refused on its
  *      own; the result table says why.
+ * The business date can be at most yesterday (IST): on calendar day D ops
+ * reconcile D-1, and the server refuses a date on or after today (owner
+ * decision 2026-10-23); its field message is shown under the date.
  * CBS covers several dates: its date is confirmed after processing, on the
  * file's own screen (4.10). Operations User only (P10b); the server decides.
  */
@@ -37,10 +40,11 @@ import type { DetectResult, FileTypeOption } from '../api/types';
 import { useMe } from '../auth/auth';
 import { FileStateBadge } from '../components/Badges';
 import { useModuleCode } from '../hooks/module';
-import { formatBytes, formatDate } from '../lib/format';
+import { BUSINESS_DATE_TOO_LATE, formatBytes, formatDate, latestBusinessDateIst } from '../lib/format';
 import { can } from '../lib/roles';
 import {
   buildRows,
+  isBusinessDateError,
   reviewTotals,
   rowNotes,
   rowProblems,
@@ -151,7 +155,9 @@ function ReviewTable({
                     data={typeData}
                     value={row.typeId === null ? '' : String(row.typeId)}
                     onChange={(e) =>
-                      onChange(withType(row, e.currentTarget.value ? Number(e.currentTarget.value) : null, types))
+                      onChange(
+                        withType(row, e.currentTarget.value ? Number(e.currentTarget.value) : null, types),
+                      )
                     }
                     disabled={disabled || !row.include}
                     size="xs"
@@ -267,7 +273,13 @@ function ResultsTable({ module, outcomes }: { module: string; outcomes: UploadOu
   );
 }
 
-function Working({ verb, progress }: { verb: string; progress: { done: number; total: number; current: string } }) {
+function Working({
+  verb,
+  progress,
+}: {
+  verb: string;
+  progress: { done: number; total: number; current: string };
+}) {
   return (
     <Stack gap={4}>
       <Text size="sm" role="status">
@@ -292,6 +304,12 @@ export function UploadPage() {
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' });
   const [outcomes, setOutcomes] = useState<UploadOutcome[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // The server's refusal of the business date itself, shown under the date.
+  const [dateError, setDateError] = useState<string | null>(null);
+  // On calendar day D ops reconcile D-1; a date on or after today is refused.
+  const latest = latestBusinessDateIst();
+  // E.g. a date proposed from the file names that is today: refused before sending.
+  const tooLate = !!businessDate && businessDate > latest;
 
   if (!can(me.permissions, 'files.upload')) {
     return (
@@ -317,6 +335,7 @@ export function UploadPage() {
     setBusinessDate(null);
     setOutcomes([]);
     setError(null);
+    setDateError(null);
   };
 
   const check = async () => {
@@ -341,8 +360,9 @@ export function UploadPage() {
   };
 
   const upload = async () => {
-    if (!businessDate) return;
+    if (!businessDate || tooLate) return;
     setError(null);
+    setDateError(null);
     setPhase('uploading');
     try {
       const out = await uploadRows(module, businessDate, rows, (done, total, current) =>
@@ -351,7 +371,8 @@ export function UploadPage() {
       setOutcomes(out);
       setPhase('done');
     } catch (e) {
-      setError(errorText(e));
+      if (isBusinessDateError(e)) setDateError(e.fieldErrors.business_date!.join(' '));
+      else setError(errorText(e));
       setPhase('review');
     } finally {
       void qc.invalidateQueries({ queryKey: ['files', module] });
@@ -367,6 +388,10 @@ export function UploadPage() {
   // CBS (RANGE_CONTAINS) has no business date until it is confirmed.
   const cbs = accepted.filter((o) => o.accepted?.business_date === null);
   const busy = phase === 'checking' || phase === 'uploading';
+  const changeDate = (v: string | null) => {
+    setBusinessDate(v);
+    setDateError(null);
+  };
 
   return (
     <Stack>
@@ -383,8 +408,8 @@ export function UploadPage() {
       {(phase === 'pick' || phase === 'checking') && (
         <Stack gap="xs" component="section" aria-label="Pick files">
           <Text size="sm">
-            Choose the day&apos;s files, or the whole folder. The system proposes each file&apos;s type, cycle and
-            business date; you check them before anything is saved.
+            Choose the day&apos;s files, or the whole folder. The system proposes each file&apos;s type, cycle
+            and business date; you check them before anything is saved.
           </Text>
           <Group gap="lg" align="flex-end">
             <div>
@@ -438,7 +463,9 @@ export function UploadPage() {
               }
               valueFormat="DD-MMM-YYYY"
               value={businessDate}
-              onChange={setBusinessDate}
+              onChange={changeDate}
+              maxDate={latest}
+              error={dateError ?? (tooLate ? BUSINESS_DATE_TOO_LATE : undefined)}
               required
               disabled={busy}
               w={260}
@@ -476,7 +503,7 @@ export function UploadPage() {
             <Button
               onClick={upload}
               loading={phase === 'uploading'}
-              disabled={!businessDate || totals.included === 0 || totals.blocked > 0}
+              disabled={!businessDate || tooLate || totals.included === 0 || totals.blocked > 0}
             >
               Upload {totals.included} file(s)
             </Button>
@@ -508,8 +535,9 @@ export function UploadPage() {
           )}
           {cbs.length > 0 && (
             <Alert color="violet" title="CBS business date">
-              Once processed, {cbs.map((o) => o.filename).join(', ')} will wait for its business date: open the
-              file and confirm the date (pre-selected: {formatDate(businessDate)}, when it is in the file).
+              Once processed, {cbs.map((o) => o.filename).join(', ')} will wait for its business date: open
+              the file and confirm the date (pre-selected: {formatDate(businessDate)}, when it is in the
+              file).
             </Alert>
           )}
           <ResultsTable module={module} outcomes={outcomes} />

@@ -26,3 +26,59 @@
   bottom: 0;
   z-index: 5;
 }
+
+/*
+ * Print layout of the report screens (Phase 6 design 1 / 5.3): no menu,
+ * header, filter inputs or buttons; the report's print header (filters,
+ * who, when) shows instead. "Print -> Save as PDF" covers the PDF need (R1).
+ */
+.print-only {
+  display: none;
+}
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+  body {
+    font-size: 10pt;
+  }
+  .no-print,
+  .skip-link,
+  .mantine-AppShell-header,
+  .mantine-AppShell-navbar,
+  .mantine-Notifications-root,
+  .mantine-Pagination-root {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+    margin-bottom: 4mm;
+  }
+  .mantine-AppShell-main {
+    padding: 0 !important;
+    min-height: 0 !important;
+  }
+  /* Tables print at page width instead of their on-screen scroll width. */
+  .mantine-TableScrollContainer-scrollContainer,
+  .mantine-ScrollArea-root,
+  .mantine-ScrollArea-viewport {
+    overflow: visible !important;
+  }
+  .mantine-TableScrollContainer-scrollContainerInner {
+    min-width: 0 !important;
+  }
+  table {
+    width: 100% !important;
+  }
+  thead {
+    display: table-header-group;
+  }
+  tr {
+    break-inside: avoid;
+  }
+  a {
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+}

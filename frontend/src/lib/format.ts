@@ -84,8 +84,29 @@ export const isAmountString = (v: unknown): v is string => typeof v === 'string'
 export const yesNo = (v: boolean | null | undefined) =>
   v === null || v === undefined ? '-' : v ? 'Yes' : 'No';
 
-/** Today's date in IST as ISO (the bank's business day). */
+/**
+ * Today's calendar date in IST as ISO. This is NOT the business date being
+ * worked: on calendar day D, ops reconcile business date D-1 (every day, no
+ * holidays). Use latestBusinessDateIst() for the business date.
+ */
 export function todayIst(now = new Date()): string {
   const p = Object.fromEntries(IST_PARTS.formatToParts(now).map((x) => [x.type, x.value]));
   return `${p.year}-${p.month}-${p.day}`;
 }
+
+/** ISO date plus n calendar days (n may be negative); no time zone involved. */
+export function addIsoDays(iso: string, n: number): string {
+  const [y, m, d] = iso.split('-').map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/**
+ * The latest business date that can be complete: yesterday in IST. A business
+ * date on or after today is refused by the server (owner decision 2026-10-23).
+ */
+export function latestBusinessDateIst(now = new Date()): string {
+  return addIsoDays(todayIst(now), -1);
+}
+
+/** The server's wording for a business date on or after today (shown as-is when it comes back). */
+export const BUSINESS_DATE_TOO_LATE = 'Business date must be before today: ops reconcile the previous day.';

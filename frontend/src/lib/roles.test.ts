@@ -15,6 +15,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'my-cases',
       'files',
       'dates',
+      'results-all',
+      'settlement-all',
+      'reports',
       'settings',
       'pending-approvals',
       'alerts',
@@ -28,6 +31,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'awaiting-approval',
       'files',
       'dates',
+      'results-all',
+      'settlement-all',
+      'reports',
       'settings',
       'pending-approvals',
       'alerts',
@@ -40,6 +46,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'cases',
       'files',
       'dates',
+      'results-all',
+      'settlement-all',
+      'reports',
       'settings',
       'pending-approvals',
       'alerts',
@@ -61,6 +70,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'upload',
       'files',
       'dates',
+      'results-all',
+      'settlement-all',
+      'reports',
       'settings',
       'pending-approvals',
       'alerts',
@@ -73,6 +85,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'cases',
       'files',
       'dates',
+      'results-all',
+      'settlement-all',
+      'reports',
       'settings',
       'pending-approvals',
       'alerts',
@@ -126,6 +141,9 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
       'awaiting-approval',
       'files',
       'dates',
+      'results-all',
+      'settlement-all',
+      'reports',
       'settings',
       'pending-approvals',
       'alerts',
@@ -149,7 +167,7 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(keys(['Checker'], 2)).toEqual(['home', 'cases', 'awaiting-approval', 'files', 'dates']);
   });
 
-  it('pending approvals: all five roles read it (owner 2026-10-20); no results / settlement menu items', () => {
+  it('pending approvals: all five roles read it (owner 2026-10-20); no per-date results menu item', () => {
     for (const role of ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'] as RoleName[]) {
       expect(keys([role])).toContain('pending-approvals');
     }

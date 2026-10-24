@@ -48,6 +48,11 @@ import type {
   Me,
   ModuleMeta,
   ModuleSummary,
+  NpciFileDetail,
+  NpciFileFilters,
+  NpciFileListPage,
+  NpciFilePreview,
+  NpciGeneratePayload,
   NtslMappingState,
   Paginated,
   PaymentModuleRef,
@@ -475,6 +480,48 @@ export function listSettlementTransactions(
       ? `${mod(module)}/cases/${source.caseId}/settlement/transactions/`
       : `${day(module, source.businessDate)}/settlement/transactions/`;
   return request<SettlementTransactionsPage>('GET', path, { query: { ...filters } });
+}
+
+// ---------------------------------------------------------------------------
+// NPCI file generation (docs/npci_file_design_draft_v1.txt Amendment 1, A7).
+// The app only generates the file; it never sends anything to NPCI. 409 on
+// generate: errors.confirm_partial (cases left out: confirm, then POST again
+// with confirm_partial true) or errors.rows (nothing new to include).
+// ---------------------------------------------------------------------------
+export function getNpciFilePreview(module: string, businessDate: string): Promise<NpciFilePreview> {
+  return request<NpciFilePreview>('GET', `${day(module, businessDate)}/npci-file/preview/`);
+}
+
+export function generateNpciFile(
+  module: string,
+  businessDate: string,
+  payload: NpciGeneratePayload,
+): Promise<NpciFileDetail> {
+  return request<NpciFileDetail>('POST', `${day(module, businessDate)}/npci-file/`, { body: payload });
+}
+
+export function listNpciFiles(module: string, filters: NpciFileFilters): Promise<NpciFileListPage> {
+  return request<NpciFileListPage>('GET', `${mod(module)}/npci-files/`, { query: { ...filters } });
+}
+
+export function getNpciFile(module: string, id: number): Promise<NpciFileDetail> {
+  return request<NpciFileDetail>('GET', `${mod(module)}/npci-files/${id}/`);
+}
+
+/**
+ * GET a file row's download_url as a Blob (the stored bytes, unchanged: the
+ * CRLF line endings stay). The server logs every download; awaiting it lets
+ * the screen refresh the download history afterwards.
+ */
+export async function downloadNpciFile(downloadUrl: string): Promise<Blob> {
+  const res = await fetch(downloadUrl, { method: 'GET', credentials: 'same-origin' });
+  if (res.status === 401) sessionClock.expire();
+  else sessionClock.touch();
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new ApiError(res.status, body, STATUS_TEXT[res.status] ?? `Request failed (${res.status}).`);
+  }
+  return res.blob();
 }
 
 // ---------------------------------------------------------------------------

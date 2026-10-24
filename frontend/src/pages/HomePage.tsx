@@ -12,7 +12,7 @@ import { Link } from 'react-router';
 
 import type { ModuleSummary, SummaryCount } from '../api/types';
 import { useModuleCode, useSummary } from '../hooks/module';
-import { formatCount, formatDate } from '../lib/format';
+import { addIsoDays, formatCount, formatDate } from '../lib/format';
 
 export interface CountTile {
   key: string;
@@ -86,7 +86,8 @@ export function operationsTiles(s: ModuleSummary): CountTile[] {
   if (!o) return [];
   const d = o.latest_business_date;
   const on = d ? ` (${formatDate(d)})` : '';
-  const files = (q: Record<string, string>) => `files?${new URLSearchParams(d ? { business_date: d, ...q } : q)}`;
+  const files = (q: Record<string, string>) =>
+    `files?${new URLSearchParams(d ? { business_date: d, ...q } : q)}`;
   return [
     {
       key: 'files_received',
@@ -184,6 +185,16 @@ function Tiles({
   );
 }
 
+/**
+ * The business date the home page is about: the latest one that can be
+ * complete (calendar day D -> business date D-1). From the summary's
+ * business_date; an older server only sends business_date_today, so that
+ * minus one day.
+ */
+export function summaryBusinessDate(s: Pick<ModuleSummary, 'business_date' | 'business_date_today'>): string {
+  return s.business_date ?? addIsoDays(s.business_date_today, -1);
+}
+
 export function HomePage() {
   const module = useModuleCode();
   const { data: s, isPending, error } = useSummary(module);
@@ -191,7 +202,7 @@ export function HomePage() {
   return (
     <Stack>
       <Title order={1} size="h3">
-        My work{s ? ` - ${formatDate(s.business_date_today)}` : ''}
+        My work{s ? ` - business date ${formatDate(summaryBusinessDate(s))}` : ''}
       </Title>
       {error && (
         <Alert color="red" role="alert" title="Counts could not be loaded">

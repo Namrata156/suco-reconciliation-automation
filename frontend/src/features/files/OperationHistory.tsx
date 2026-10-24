@@ -25,6 +25,13 @@ export function operationSummary(e: OperationLogEntry): string {
     }
     case 'RUN_STARTED':
       return e.run_id ? `Run #${e.run_id}` : '';
+    // NPCI file design A4: the app generates the file; the user downloads and uploads it by hand.
+    case 'NPCI_FILE_GENERATED': {
+      const rows = typeof d.rows === 'number' ? `${d.rows} row(s)` : null;
+      return [str(d.file_name), rows, d.partial === true ? 'partial' : null].filter(Boolean).join(', ');
+    }
+    case 'NPCI_FILE_DOWNLOADED':
+      return str(d.file_name) ?? '';
     default:
       return '';
   }

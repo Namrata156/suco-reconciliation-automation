@@ -37,11 +37,27 @@ describe('CBS date selection (design 4.10 / Amendment 1)', () => {
     const onSelect = vi
       .fn()
       .mockRejectedValue(
-        new ApiError(409, { detail: "A file for this type, cycle and date is already loaded: 'cbs.xls'." }, ''),
+        new ApiError(
+          409,
+          { detail: "A file for this type, cycle and date is already loaded: 'cbs.xls'." },
+          '',
+        ),
       );
     renderWithProviders(<DateSelection selection={selection} canSelect onSelect={onSelect} />);
     await userEvent.click(screen.getByRole('button', { name: 'Confirm business date' }));
     expect((await screen.findByRole('alert')).textContent).toMatch(/already loaded/);
+  });
+
+  it('shows the server field error for a business date on or after today', async () => {
+    const msg = 'Business date must be before today: ops reconcile the previous day.';
+    const onSelect = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(400, { detail: 'Invalid input', errors: { business_date: [msg] } }, ''),
+      );
+    renderWithProviders(<DateSelection selection={selection} canSelect onSelect={onSelect} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm business date' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(msg);
   });
 
   it('warns when the batch date is not in the file and pre-selects nothing', () => {
@@ -52,10 +68,12 @@ describe('CBS date selection (design 4.10 / Amendment 1)', () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText(/uploaded for 20-Jul-2026, but that date is not among the dates found/)).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Confirm business date' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect(
+      screen.getByText(/uploaded for 20-Jul-2026, but that date is not among the dates found/),
+    ).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Confirm business date' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it('is read-only for roles that may not choose', () => {
@@ -92,7 +110,9 @@ describe('operations history summary', () => {
     ).toBe('Chose 14-Jul-2026 from 13-Jul-2026, 14-Jul-2026');
     expect(operationSummary(entry({ operation: 'RUN_STARTED', run_id: 9 }))).toBe('Run #9');
     expect(
-      operationSummary(entry({ operation: 'FILE_REFUSED', details: { filename: 'a.csv', errors: ['Dup.'] } })),
+      operationSummary(
+        entry({ operation: 'FILE_REFUSED', details: { filename: 'a.csv', errors: ['Dup.'] } }),
+      ),
     ).toBe('a.csv - Dup.');
   });
 });

@@ -20,7 +20,7 @@ import type {
 import { MeProvider } from '../../auth/auth';
 import { PendingApprovalsPage } from '../../pages/PendingApprovalsPage';
 import { json, makeMe, META, renderWithProviders, routeFetch, sentBody } from '../../test/fixtures';
-import { editPayload, ResponseCodesTab } from './ResponseCodesTab';
+import { editableFields, editPayload, lockedText, ResponseCodesTab } from './ResponseCodesTab';
 import { mappingPayload, NtslMappingTab } from './NtslMappingTab';
 import { ToleranceTab } from './ToleranceTab';
 
@@ -372,7 +372,16 @@ describe('Pending approvals (design 4.16)', () => {
 // response codes (4.16 a)
 // ---------------------------------------------------------------------------
 function code(o: Partial<ResponseCodeRow> = {}): ResponseCodeRow {
+  // The server's rule (api/settings_views._editable_fields) unless the test says otherwise.
+  const locked = o.locked ?? false;
+  const known = o.code_known ?? false;
+  const editable_fields: ResponseCodeRow['editable_fields'] = !locked
+    ? ['code', 'description', 'notes']
+    : known
+      ? ['description']
+      : ['code', 'description'];
   return {
+    editable_fields,
     id: 21,
     flag: 'RET',
     code: null,
@@ -468,6 +477,84 @@ describe('Response codes (design 4.16 a)', () => {
       response_code: 21,
       new_code: '116',
       reason: 'NPCI circular',
+    });
+  });
+
+  it('sends only the fields the server lists as editable (NPCI file A7)', () => {
+    const locked = code({ id: 22, flag: 'DRC', code: '103', code_known: true, locked: true, description: 'Old' });
+    const v = { new_code: '104', new_description: ' Manually Credited ', new_notes: 'x', reason: 'owner wording' };
+    expect(editPayload(locked, v)).toEqual({
+      kind: 'EDIT',
+      response_code: 22,
+      new_description: 'Manually Credited',
+      reason: 'owner wording',
+    });
+    // Unknown numeric code on a locked code: code and description, never notes.
+    const unknown = code({ locked: true, code_known: false });
+    expect(editPayload(unknown, { ...v, new_code: '116' })).toEqual({
+      kind: 'EDIT',
+      response_code: 21,
+      new_code: '116',
+      new_description: 'Manually Credited',
+      reason: 'owner wording',
+    });
+  });
+
+  it('falls back to the old lock rule when editable_fields is not sent', () => {
+    const old = { ...code({ locked: true, code_known: true, code: '102' }) } as Partial<ResponseCodeRow>;
+    delete old.editable_fields;
+    expect(editableFields(old as ResponseCodeRow)).toEqual([]);
+    expect(editableFields({ ...old, code_known: false } as ResponseCodeRow)).toEqual(['code']);
+    expect(lockedText(['description'])).toBe(
+      'Only its description (wording) may change. The flag, numeric code, notes and rule links stay locked.',
+    );
+    expect(lockedText([])).toBe('Nothing on this code may change.');
+  });
+
+  it("Maker proposes new wording for a locked code: only the description is open", async () => {
+    const fetch = routeFetch({
+      '/settings/response-codes/': page(
+        [
+          code({
+            id: 22,
+            code: '103',
+            code_known: true,
+            flag: 'DRC',
+            description: 'Credited',
+            notes: 'SOP',
+            label: 'DRC 103 - Credited',
+            locked: true,
+            used_by: ['R02'],
+          }),
+        ],
+        { rule_set: 'v3.2', can_propose: true, can_decide: false },
+      ),
+      '/settings/response-codes/requests/': (init: RequestInit | undefined) =>
+        isPost(init) ? json(201, request()) : json(200, page([])),
+      '/meta/': META,
+    });
+    vi.stubGlobal('fetch', fetch);
+    renderAs(['Maker'], '/:module/settings/response-codes', '/upi/settings/response-codes', <ResponseCodesTab />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Propose edit of DRC 103 - Credited' }));
+    const dialog = await screen.findByRole('dialog');
+    const description = within(dialog).getByRole('textbox', { name: 'Description' }) as HTMLInputElement;
+    expect(description.disabled).toBe(false);
+    expect((within(dialog).getByRole('textbox', { name: 'Numeric code' }) as HTMLInputElement).disabled).toBe(true);
+    expect((within(dialog).getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement).disabled).toBe(true);
+    expect(within(dialog).getByText(/Rules R02 use this code\. Only its description \(wording\) may change/)).toBeTruthy();
+    expect(within(dialog).getByText(/reply text written into the NPCI file/)).toBeTruthy();
+
+    await userEvent.clear(description);
+    await userEvent.type(description, 'Manually Credited');
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Reason' }), 'Owner wording');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Submit code change' }));
+    await waitFor(() => expect(fetch.mock.calls.some((c) => isPost(c[1] as RequestInit))).toBe(true));
+    expect(sentBody(fetch.mock.calls.find((c) => isPost(c[1] as RequestInit)))).toEqual({
+      kind: 'EDIT',
+      response_code: 22,
+      new_description: 'Manually Credited',
+      reason: 'Owner wording',
     });
   });
 

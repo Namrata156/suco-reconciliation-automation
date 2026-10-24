@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DetectResult, ModuleSummary, RoleName } from '../api/types';
 import { MeProvider } from '../auth/auth';
 import { FILE_TYPES, makeFileRow, makeMe, renderWithProviders } from '../test/fixtures';
-import { operationsTiles } from './HomePage';
+import { HomePage, operationsTiles, summaryBusinessDate } from './HomePage';
 import { UploadPage } from './UploadPage';
 
 const RAW = 'UPIRAWDATAACQSSK140726_1C.csv';
@@ -63,7 +63,24 @@ function renderUpload(roles: RoleName[] = ['Operations User']) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
+
+const TOO_LATE = 'Business date must be before today: ops reconcile the previous day.';
+
+/** DETECT for the raw file only, proposing the given business date. */
+const detectOne = (businessDate: string): DetectResult => ({
+  ...DETECT,
+  business_date: businessDate,
+  business_dates_found: [businessDate],
+  files: [{ ...DETECT.files[0]!, proposal: { ...DETECT.files[0]!.proposal!, business_date: businessDate } }],
+});
+
+async function checkOneFile() {
+  await userEvent.upload(screen.getByLabelText('Choose files'), [new File(['a,b'], RAW)]);
+  await userEvent.click(screen.getByRole('button', { name: 'Check files' }));
+  await screen.findByRole('table', { name: 'Files to upload' });
+}
 
 describe('Upload screen (design 4.8 / P5 c / Amendment 1)', () => {
   it('checks the files, lets the user correct a type, uploads and shows per-file results', async () => {
@@ -71,7 +88,9 @@ describe('Upload screen (design 4.8 / P5 c / Amendment 1)', () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(json(200, DETECT))
-      .mockResolvedValueOnce(json(201, { business_date: '2026-07-14', accepted: [makeFileRow({ id: 21 })], refused: [] }))
+      .mockResolvedValueOnce(
+        json(201, { business_date: '2026-07-14', accepted: [makeFileRow({ id: 21 })], refused: [] }),
+      )
       .mockResolvedValueOnce(
         json(400, {
           business_date: '2026-07-14',
@@ -83,7 +102,10 @@ describe('Upload screen (design 4.8 / P5 c / Amendment 1)', () => {
     vi.stubGlobal('fetch', fetch);
     renderUpload();
 
-    await userEvent.upload(screen.getByLabelText('Choose files'), [new File(['a,b'], RAW), new File(['<x/>'], CBS)]);
+    await userEvent.upload(screen.getByLabelText('Choose files'), [
+      new File(['a,b'], RAW),
+      new File(['<x/>'], CBS),
+    ]);
     await userEvent.click(screen.getByRole('button', { name: 'Check files' }));
 
     const table = await screen.findByRole('table', { name: 'Files to upload' });
@@ -93,7 +115,9 @@ describe('Upload screen (design 4.8 / P5 c / Amendment 1)', () => {
     expect(sent.getAll('files').map((f) => (f as File).name)).toEqual([RAW, CBS]);
     expect((sent.getAll('sha256')[0] as string).length).toBe(64);
     expect((init.headers as Record<string, string>)['X-CSRFToken']).toBe('tok');
-    expect((screen.getByLabelText(/Business date of this upload/) as HTMLInputElement).value).toBe('14-Jul-2026');
+    expect((screen.getByLabelText(/Business date of this upload/) as HTMLInputElement).value).toBe(
+      '14-Jul-2026',
+    );
 
     // The unrecognised CBS row blocks the upload until a type is chosen.
     expect(within(table).getByText('Choose the file type.')).toBeTruthy();
@@ -116,10 +140,111 @@ describe('Upload screen (design 4.8 / P5 c / Amendment 1)', () => {
     expect(form(1).get('business_date')).toBe('2026-07-14');
   });
 
+  it('refuses a business date on or after today before sending (pre-filled from the file names)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-23T06:00:00Z')); // 23 Oct IST
+    const fetch = vi.fn().mockResolvedValueOnce(json(200, detectOne('2026-10-23')));
+    vi.stubGlobal('fetch', fetch);
+    renderUpload();
+    await checkOneFile();
+    expect(screen.getByText(TOO_LATE)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Upload 1 file(s)' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1); // detect only
+  });
+
+  it('the date picker stops at yesterday (IST)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-23T06:00:00Z'));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(200, detectOne('2026-10-21'))));
+    renderUpload();
+    await checkOneFile();
+    await userEvent.click(screen.getByLabelText(/Business date of this upload/));
+    const day = (label: string) =>
+      screen.getByRole('button', { name: label, hidden: true }) as HTMLButtonElement;
+    await screen.findByRole('button', { name: '22 October 2026', hidden: true });
+    expect(day('22 October 2026').disabled).toBe(false);
+    expect(day('23 October 2026').disabled).toBe(true);
+    expect(day('24 October 2026').disabled).toBe(true);
+  });
+
+  it('shows the server refusal of the business date under the date and stops the upload', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-23T06:00:00Z'));
+    const two = {
+      ...DETECT,
+      files: DETECT.files.map((f) => ({ ...f, proposal: f.proposal ?? DETECT.files[0]!.proposal })),
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json(200, { ...two, business_date: '2026-10-22' }))
+      .mockResolvedValueOnce(json(400, { detail: 'Invalid input', errors: { business_date: [TOO_LATE] } }));
+    vi.stubGlobal('fetch', fetch);
+    renderUpload();
+    await userEvent.upload(screen.getByLabelText('Choose files'), [
+      new File(['a,b'], RAW),
+      new File(['<x/>'], CBS),
+    ]);
+    await userEvent.click(screen.getByRole('button', { name: 'Check files' }));
+    await screen.findByRole('table', { name: 'Files to upload' });
+    await userEvent.click(screen.getByRole('button', { name: 'Upload 2 file(s)' }));
+    expect(await screen.findByText(TOO_LATE)).toBeTruthy();
+    // Back on the review, nothing more sent: the date refuses every file.
+    expect(screen.getByRole('table', { name: 'Files to upload' })).toBeTruthy();
+    expect(screen.queryByRole('table', { name: 'Upload results' })).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('tells other roles that uploading is for the Operations User', () => {
     renderUpload(['Administrator']);
     expect(screen.getByText(/are for the Operations User/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Check files' })).toBeNull();
+  });
+});
+
+describe('Home heading: the business date, not today', () => {
+  it('uses business_date, else business_date_today minus one day', () => {
+    expect(summaryBusinessDate({ business_date_today: '2026-10-23', business_date: '2026-10-22' })).toBe(
+      '2026-10-22',
+    );
+    expect(summaryBusinessDate({ business_date_today: '2026-11-01' })).toBe('2026-10-31');
+  });
+
+  it('shows "My work - business date 22-Oct-2026"', async () => {
+    const summary: ModuleSummary = {
+      business_date_today: '2026-10-23',
+      business_date: '2026-10-22',
+      roles: ['Maker'],
+    };
+    const fetch = vi.fn().mockResolvedValue(json(200, summary));
+    vi.stubGlobal('fetch', fetch);
+    renderWithProviders(
+      <MeProvider me={makeMe(['Maker'])}>
+        <Routes>
+          <Route path="/:module" element={<HomePage />} />
+        </Routes>
+      </MeProvider>,
+      { route: '/upi' },
+    );
+    expect(await screen.findByRole('heading', { name: 'My work - business date 22-Oct-2026' })).toBeTruthy();
+    expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/upi/summary/');
+  });
+
+  it('falls back to business_date_today minus one day from an older server', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(json(200, { business_date_today: '2026-10-23', roles: ['Maker'] })),
+    );
+    renderWithProviders(
+      <MeProvider me={makeMe(['Maker'])}>
+        <Routes>
+          <Route path="/:module" element={<HomePage />} />
+        </Routes>
+      </MeProvider>,
+      { route: '/upi' },
+    );
+    expect(await screen.findByRole('heading', { name: 'My work - business date 22-Oct-2026' })).toBeTruthy();
   });
 });
 
