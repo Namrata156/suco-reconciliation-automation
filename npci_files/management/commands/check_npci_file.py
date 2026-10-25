@@ -6,11 +6,13 @@ Compares an NPCI file with a reference file (ops' own), column by column
 
   --file-id N       compare a file already generated (its stored bytes);
   --rule-defaults   VERIFICATION ONLY: build the date's file as if every case
-                    had been approved with its rule's pre-filled reply
-                    (generator.plan_file(rule_defaults=True)). Nothing is
-                    saved: it runs in a READ ONLY transaction.
-  (neither)         build what the next file would hold now from approved
-                    cases (read only, nothing saved).
+                    carried its rule's suggested reply and a Checker had
+                    approved it, ignoring files already generated
+                    (generator.plan_file(rule_defaults=True)).
+  (neither)         build what the next file would hold now (Amendment 2:
+                    each case's current reply -- approved, submitted, or the
+                    rule's suggestion -- minus the cases held back).
+Both build modes save nothing: they run in a READ ONLY transaction.
 The filename column is written with the reference file's own name, so the
 comparison is about the data.
 """
@@ -62,9 +64,9 @@ class Command(BaseCommand):
                         cursor.execute("SET TRANSACTION READ ONLY")
                 plan = plan_file(module, file_date, rule_defaults=opts["rule_defaults"])
                 generated = plan.render(reference_path.name).encode("ascii")
-            self.stdout.write(f"{'rule defaults' if opts['rule_defaults'] else 'approved cases'}: "
-                              f"{len(plan.rows)} rows, {len(plan.excluded)} not included "
-                              f"{plan.excluded_counts() or ''}")
+            self.stdout.write(f"{'rule defaults' if opts['rule_defaults'] else 'next file now'}: "
+                              f"{len(plan.rows)} rows {plan.source_counts() or ''}, {len(plan.excluded)} not "
+                              f"included {plan.excluded_counts() or ''}, {len(plan.already_sent)} already in a file")
             for warning in plan.warnings:
                 self.stdout.write(f"warning: {warning}")
         result = compare(generated, reference, ignore=() if opts["include_text"] else ("specifyother",))

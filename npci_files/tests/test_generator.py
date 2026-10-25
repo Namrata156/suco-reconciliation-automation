@@ -1,8 +1,11 @@
 """
 NPCI file generation (docs/npci_file_design_draft_v1.txt + Amendment 1,
-owner 2026-10-22/23): which cases go in, the values and the exact format,
-partial files, later files of the same date (_2, _3) holding only new rows,
-a case never sent twice, missing numeric codes, the wording taken from the
+owner 2026-10-22/23, + Amendment 2, owner 2026-10-24): which cases go in (the
+reply each case carries now: approved, submitted, or the rule's suggestion;
+R06b / R07x / R04b / evidence replies only once approved; rejected and
+flagged cases held back), the values and the exact format, partial files,
+later files of the same date (_2, _3) holding only new rows, a case never
+included twice, missing numeric codes, the wording taken from the
 response-code repository, roles, audit, append-only storage. Synthetic data.
 """
 from __future__ import annotations
@@ -17,12 +20,12 @@ from core.models import OperationLog, OperationType
 from core.operations import RoleRequired, WrongState
 from exception_management import code_changes, services
 from exception_management.actions import ActionType
-from exception_management.models import ExceptionCase
+from exception_management.models import CaseStatus, ExceptionCase
 from exception_management.roles import Role
 from npci_files.compare import compare
 from npci_files.formats import SSKUPI, FileLine, format_amount
 from npci_files.generator import Reason, download_file, generate_file, plan_file
-from npci_files.models import NpciFile, NpciFileImmutableError, NpciFileRow
+from npci_files.models import NpciFile, NpciFileImmutableError, NpciFileRow, ReplySource
 from npci_files.tests.base import D, D2, NpciTestBase
 from rule_engine.models import CodeFlag, ResponseCode
 
@@ -90,6 +93,26 @@ class SelectionAndValuesTests(NpciTestBase):
         self.assertEqual((log.user, log.business_date, log.details["npci_file_id"], log.details["rows"],
                           log.details["sha256"], log.details["partial"]), (self.chk, D, f.pk, 7, f.sha256, False))
 
+    def test_same_rows_straight_after_reconciliation_without_approval(self):
+        """Amendment 2: open cases give their rules' replies, no approval first."""
+        d3 = date(2026, 7, 20)
+        self.drc_case("200000000001", "R01", d=d3)
+        self.drc_case("200000000002", "R02", d=d3)
+        self.timeout_case("200000000003", "R05", d=d3)
+        f = generate_file(self.chk, self.module, d3)
+        self.assertEqual((f.row_count, f.partial), (3, False))
+        self.assertEqual(list(f.rows.values_list("flag", "code", "reply_source", "action_type", "action")),
+                         [("DRC", "102", "RULE", "DRC_102", None), ("DRC", "103", "RULE", "DRC_103", None),
+                          ("RET", "115", "RULE", "RET", None)])
+        log = OperationLog.objects.get(operation=OperationType.NPCI_FILE_GENERATED)
+        self.assertEqual(log.details["reply_sources"], {"RULE": 3})
+
+    def test_approved_rows_record_their_action(self):
+        self.build_day()
+        f = generate_file(self.chk, self.module, D)
+        self.assertEqual(set(f.rows.values_list("reply_source", flat=True)), {ReplySource.APPROVED})
+        self.assertFalse(f.rows.filter(action__isnull=True).exists())
+
     def test_text_is_the_repository_description_at_generation(self):
         """Option B: change the wording through maker-checker, the next file uses it."""
         self.build_day()
@@ -126,39 +149,58 @@ class SelectionAndValuesTests(NpciTestBase):
 
 
 class PartialAndLaterFileTests(NpciTestBase):
-    def test_only_approved_cases_and_partial_needs_confirmation(self):
+    def test_current_reply_of_every_case_and_partial_needs_confirmation(self):
         approved = self.drc_case("100000000001")
         self.approve(approved)
-        self.drc_case("100000000002")  # open
+        self.drc_case("100000000002")  # open: the rule's reply
         pending = self.drc_case("100000000003")
-        self.submit_only(pending)
+        services.take(pending, self.mk)
+        services.submit(pending, self.mk, action_type=ActionType.DRC_104)  # the Maker's reply, not yet approved
         reviewed = self.drc_case("100000000004")
         self.approve(reviewed)
         ExceptionCase.objects.filter(pk=reviewed.pk).update(needs_review=True, needs_review_reason="re-run")
+        self.rrc_case("100000000005", rule="R06b")  # needs a Checker's approval first
         plan = plan_file(self.module, D)
-        self.assertEqual([r.case.rrn for r in plan.rows], ["100000000001"])
-        self.assertEqual(plan.excluded_counts(),
-                         {Reason.OPEN: 1, Reason.PENDING_APPROVAL: 1, Reason.NEEDS_REVIEW: 1})
+        self.assertEqual([(r.case.rrn, r.code, r.source) for r in plan.rows],
+                         [("100000000001", "102", ReplySource.APPROVED), ("100000000002", "102", ReplySource.RULE),
+                          ("100000000003", "104", ReplySource.SUBMITTED)])
+        self.assertEqual(plan.excluded_counts(), {Reason.NEEDS_REVIEW: 1, Reason.NEEDS_APPROVAL: 1})
+        self.assertTrue(any("flagged for review" in w for w in plan.warnings))
+        self.assertTrue(any("until a Checker approves their reply (R06b: 1)" in w for w in plan.warnings))
         with self.assertRaises(WrongState) as ctx:
             generate_file(self.chk, self.module, D)
         self.assertIn("confirm_partial", ctx.exception.errors)
         self.assertFalse(NpciFile.objects.exists())
         f = generate_file(self.chk, self.module, D, confirm_partial=True, remarks="RET deadline")
         self.assertTrue(f.partial)
-        self.assertEqual(len(f.not_included), 3)
+        self.assertEqual(len(f.not_included), 2)
         self.assertEqual(f.remarks, "RET deadline")
+        self.assertEqual(list(f.rows.values_list("reply_source", flat=True)), ["APPROVED", "RULE", "SUBMITTED"])
+
+    def test_no_confirmation_when_nothing_is_left_out(self):
+        self.drc_case("100000000001")
+        self.timeout_case("100000000002")
+        f = generate_file(self.chk, self.module, D)  # no confirm_partial needed
+        self.assertEqual((f.row_count, f.partial, f.not_included), (2, False, []))
 
     def test_second_file_holds_only_new_rows_and_no_case_twice(self):
         first_cases = [self.drc_case(f"10000000010{i}") for i in range(3)]
-        later_cases = [self.drc_case(f"10000000020{i}") for i in range(2)]
-        for case in first_cases:
-            self.approve(case)
-        f1 = generate_file(self.chk, self.module, D, confirm_partial=True)
-        self.assertEqual((f1.file_name, f1.row_count), ("SSKUPI14072026.csv", 3))
-        with self.assertRaisesRegex(WrongState, "Nothing to include"):  # nothing new approved yet
+        f1 = generate_file(self.chk, self.module, D)
+        self.assertEqual((f1.file_name, f1.row_count, f1.partial), ("SSKUPI14072026.csv", 3, False))
+        with self.assertRaisesRegex(WrongState, "Nothing to include"):  # nothing new yet
             generate_file(self.chk, self.module, D, confirm_partial=True)
-        for case in later_cases:
+        for case in first_cases:  # approving an included case adds nothing
             self.approve(case)
+        with self.assertRaisesRegex(WrongState, "Nothing to include"):
+            generate_file(self.chk, self.module, D, confirm_partial=True)
+        # A re-run brings two new cases.
+        mapping = {c.rrn: "R01" for c in first_cases}
+        mapping.update({"100000000200": "R01", "100000000201": "R03"})
+        self.rerun(mapping)
+        self.sync()
+        later_cases = [self.case("100000000200"), self.case("100000000201")]
+        for case in later_cases:
+            self.dispute(case, "DRC", "10", "000000009999")
         plan = plan_file(self.module, D)
         self.assertEqual(len(plan.already_sent), 3)
         f2 = generate_file(self.chk, self.module, D)
@@ -169,7 +211,7 @@ class PartialAndLaterFileTests(NpciTestBase):
         self.assertEqual(NpciFileRow.objects.values("case").distinct().count(), 5)
         with self.assertRaisesRegex(WrongState, "Nothing to include"):
             generate_file(self.chk, self.module, D)
-        # The database refuses a second row for a sent case too.
+        # The database refuses a second row for an included case too.
         row = f1.rows.first()
         with self.assertRaises(IntegrityError), transaction.atomic():
             NpciFileRow.objects.create(npci_file=f2, line=99, case=row.case, action=row.action,
@@ -185,6 +227,25 @@ class PartialAndLaterFileTests(NpciTestBase):
         self.assertEqual((plan.rows, plan.excluded, len(plan.already_sent)), ([], [], 1))
         self.assertTrue(any("already included in an earlier file" in w for w in plan.warnings))
         self.assertFalse(any("sent" in w for w in plan.warnings))
+
+    def test_included_case_that_changes_later_gives_a_warning_not_a_row(self):
+        """Included with the rule's reply; then the Maker chooses another one,
+        or a re-run closes the case: the file never changes, a warning shows."""
+        other = self.drc_case("100000000001")
+        closed = self.drc_case("100000000002")
+        generate_file(self.chk, self.module, D)
+        services.take(other, self.mk)
+        services.submit(other, self.mk, action_type=ActionType.DRC_104)
+        plan = plan_file(self.module, D)
+        self.assertEqual((plan.rows, plan.excluded, len(plan.already_sent)), ([], [], 2))
+        self.assertEqual([c.pk for c, _r in plan.changed_since_included], [other.pk])
+        self.rerun({"100000000001": "R01"})  # 100000000002 no longer needs action
+        self.sync()
+        self.assertEqual(self.case("100000000002").status, CaseStatus.CLOSED_SUPERSEDED)
+        plan = plan_file(self.module, D)
+        self.assertEqual({c.pk for c, _r in plan.changed_since_included}, {other.pk, closed.pk})
+        self.assertTrue(any(w.startswith("2 case(s) already included in an earlier file have changed since")
+                            for w in plan.warnings))
 
     def test_missing_numeric_code_left_out_then_picked_up(self):
         closed = ResponseCode.objects.get(payment_module=self.module, flag=CodeFlag.RET, description="Account closed")
@@ -220,6 +281,7 @@ class PartialAndLaterFileTests(NpciTestBase):
 
     def test_manual_credit_warning_until_marked_done(self):
         case = self.drc_case("100000000001", "R02")  # DRC 103
+        self.assertTrue(any("credited by hand" in w for w in plan_file(self.module, D).warnings))  # open too
         self.approve(case)
         self.assertTrue(any("credited by hand" in w for w in plan_file(self.module, D).warnings))
         services.mark_completed(case, self.mk, external_reference="CBS-REF-1")
@@ -283,3 +345,81 @@ class CompareTests(NpciTestBase):
         self.assertEqual(result.column_mismatch_counts, {"shcrd": 1})
         self.assertEqual(result.mismatches[0]["generated"], "***********1111")
         self.assertNotIn("100000000002", "\n".join(result.lines()))
+
+
+class HeldUntilApprovedTests(NpciTestBase):
+    """Amendment 2: replies that need evidence or a person's decision (R06b,
+    R07x, R04b, RRC 501 without a new credit) wait for a Checker; a reply the
+    Checker rejected never goes in through the rule's suggestion."""
+
+    EVIDENCE = {"evidence_cbs_reversal_date": D, "evidence_cbs_reversal_amount": "100",
+                "evidence_cbs_reversal_rrn": "900000000001"}
+
+    def test_r06b_needs_the_checker_with_evidence(self):
+        case = self.rrc_case("100000000001", rule="R06b")
+        plan = plan_file(self.module, D)
+        self.assertEqual(plan.rows, [])
+        self.assertEqual([(e.reason, e.flag, e.code) for e in plan.excluded], [(Reason.NEEDS_APPROVAL, "RRC", "501")])
+        self.assertIn("R06b", plan.excluded[0].detail)
+        self.assertIn("CBS reversal", plan.warnings[0])
+        with self.assertRaisesRegex(WrongState, "Nothing to include"):
+            generate_file(self.chk, self.module, D, confirm_partial=True)
+        services.take(case, self.mk)
+        services.submit(case, self.mk, **self.EVIDENCE)  # submitted with evidence: still the Checker's call
+        self.assertEqual(plan_file(self.module, D).excluded_counts(), {Reason.NEEDS_APPROVAL: 1})
+        services.approve(case, self.chk)
+        f = generate_file(self.chk, self.module, D)
+        self.assertEqual(list(f.rows.values_list("flag", "code", "reply_source", "action_type")),
+                         [("RRC", "501", "APPROVED", "RRC_501_NO_CREDIT")])
+
+    def test_r06b_switched_to_a_manual_credit_still_waits_for_the_checker(self):
+        case = self.rrc_case("100000000001", rule="R06b")
+        services.take(case, self.mk)
+        services.submit(case, self.mk, action_type=ActionType.MANUAL_CREDIT_RRC_501)
+        self.assertEqual(plan_file(self.module, D).excluded_counts(), {Reason.NEEDS_APPROVAL: 1})
+
+    def test_evidence_reply_on_another_rule_waits_for_the_checker(self):
+        case = self.rrc_case("100000000001", rule="R06")
+        self.assertEqual(len(plan_file(self.module, D).rows), 1)  # R06's own reply: no approval needed
+        services.take(case, self.mk)
+        services.submit(case, self.mk, action_type=ActionType.RRC_501_NO_CREDIT, **self.EVIDENCE)
+        plan = plan_file(self.module, D)
+        self.assertEqual(plan.excluded_counts(), {Reason.NEEDS_APPROVAL: 1})
+        self.assertIn("RRC_501_NO_CREDIT", plan.excluded[0].detail)
+
+    def test_r07x_reply_only_once_approved(self):
+        case = self.drc_case("100000000001", "R07x")
+        plan = plan_file(self.module, D)
+        self.assertEqual((plan.rows, plan.excluded), ([], []))  # no suggested reply: nothing listed
+        services.take(case, self.mk)
+        services.submit(case, self.mk, action_type=ActionType.DRC_102)
+        plan = plan_file(self.module, D)
+        self.assertEqual(plan.excluded_counts(), {Reason.NEEDS_APPROVAL: 1})
+        self.assertIn("35 days", plan.excluded[0].detail)
+        services.approve(case, self.chk)
+        self.assertEqual([r.source for r in plan_file(self.module, D).rows], [ReplySource.APPROVED])
+
+    def test_r04b_waits_for_the_account_check(self):
+        case = self.timeout_case("100000000001", "R04b")
+        self.assertEqual(plan_file(self.module, D).excluded_counts(), {Reason.NEEDS_APPROVAL: 1})
+        self.approve(case)
+        self.assertEqual([(r.flag, r.code) for r in plan_file(self.module, D).rows], [("TCC", "102")])
+
+    def test_rejected_reply_waits_for_a_new_submission(self):
+        case = self.drc_case("100000000001")
+        services.take(case, self.mk)
+        services.submit(case, self.mk)
+        services.reject(case, self.chk, reason="customer not reversed yet")
+        plan = plan_file(self.module, D)
+        self.assertEqual([(e.reason, e.detail) for e in plan.excluded],
+                         [(Reason.REJECTED, "customer not reversed yet")])
+        self.assertTrue(any("rejected their last reply" in w for w in plan.warnings))
+        services.submit(case, self.mk, action_type=ActionType.DRC_104)
+        self.assertEqual([(r.code, r.source) for r in plan_file(self.module, D).rows],
+                         [("104", ReplySource.SUBMITTED)])
+
+    def test_rule_defaults_mode_ignores_the_holds(self):
+        self.rrc_case("100000000001", rule="R06b")
+        self.timeout_case("100000000002", "R04b")
+        plan = plan_file(self.module, D, rule_defaults=True)
+        self.assertEqual(([r.flag for r in plan.rows], plan.excluded), (["RRC", "TCC"], []))

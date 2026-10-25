@@ -3,7 +3,8 @@
 preview, generate, list, detail, download, the /me capabilities and the case
 page link. Roles per owner Q2: all five roles read; Checker generates;
 Maker, Checker and Operations User download; Administrator and Auditor get
-no download. Synthetic data only.
+no download. Amendment 2 (owner 2026-10-24): open cases go in with their
+rule's reply; R06b waits for the Checker. Synthetic data only.
 """
 from __future__ import annotations
 
@@ -30,7 +31,12 @@ class NpciApiBase(V1TestBase, NpciTestBase):
         self._row = 0
         self.approved = self.drc_case("100000000001", "R01", "140.50", "'000000001111")
         self.approve(self.approved)
-        self.open_case = self.timeout_case("100000000002", "R05")
+        self.open_case = self.timeout_case("100000000002", "R05")  # goes in with the rule's reply
+        self.held = self.rrc_case("100000000003", rule="R06b")  # waits for the Checker (evidence)
+
+    def approve_held(self):
+        self.approve(self.held, evidence_cbs_reversal_date=D, evidence_cbs_reversal_amount="100",
+                     evidence_cbs_reversal_rrn="900000000001")
 
     def ok(self, who, url, params=None):
         r = self.as_(who).get(url, params or {})
@@ -50,19 +56,25 @@ class PreviewTests(NpciApiBase):
         body = self.ok(U, PREVIEW)
         self.assertEqual((body["file_date"], body["file_format"], body["next_file_name"], body["next_sequence"]),
                          ("2026-07-14", "SSKUPI", "SSKUPI14072026.csv", 1))
-        self.assertEqual((body["row_count"], body["total_amount"], body["partial"]), (1, "140.50", True))
+        self.assertEqual((body["row_count"], body["total_amount"], body["partial"]), (2, "240.50", True))
         row = body["rows"][0]
         self.assertEqual({k: row[k] for k in ("line", "rrn", "flag", "code", "shtdat", "amount", "account_masked",
-                                              "text", "rule_code", "action_type")},
+                                              "text", "rule_code", "action_type", "reply_source")},
                          {"line": 1, "rrn": "100000000001", "flag": "DRC", "code": "102", "shtdat": "2026-07-14",
                           "amount": "140.5", "account_masked": "********1111", "text": "Online reverse",
-                          "rule_code": "R01", "action_type": "DRC_102"})
-        self.assertEqual(body["counts"], [{"flag": "DRC", "code": "102", "text": "Online reverse", "rows": 1,
-                                           "amount": "140.50"}])
-        self.assertEqual(body["not_included_counts"], {"OPEN": 1})
+                          "rule_code": "R01", "action_type": "DRC_102", "reply_source": "APPROVED"})
+        self.assertEqual((body["rows"][1]["rrn"], body["rows"][1]["flag"], body["rows"][1]["reply_source"]),
+                         ("100000000002", "RET", "RULE"))
+        self.assertEqual(body["reply_sources"], {"APPROVED": 1, "RULE": 1})
+        self.assertEqual(body["counts"][0], {"flag": "DRC", "code": "102", "text": "Online reverse", "rows": 1,
+                                             "amount": "140.50"})
+        self.assertEqual(body["not_included_counts"], {"NEEDS_APPROVAL": 1})
         excluded = body["not_included"][0]
         self.assertEqual((excluded["case_id"], excluded["flag"], excluded["code"], excluded["reason"]),
-                         (self.open_case.pk, "RET", "115", "OPEN"))
+                         (self.held.pk, "RRC", "501", "NEEDS_APPROVAL"))
+        self.assertIn("R06b", excluded["detail"])
+        self.assertTrue(any("until a Checker approves" in w for w in body["warnings"]))
+        self.assertEqual(body["changed_since_included_count"], 0)
         self.assertFalse(body["can_generate"])  # Auditor
         self.assertTrue(self.ok(C, PREVIEW)["can_generate"])
         self.assertNotIn("000000001111", str(body))
@@ -96,28 +108,40 @@ class GenerateTests(NpciApiBase):
         b = r.json()
         self.assertEqual((b["file_name"], b["sequence"], b["row_count"], b["partial"], b["remarks"],
                           b["generated_by"], b["not_included_count"]),
-                         ("SSKUPI14072026.csv", 1, 1, True, "RET due 4 pm", self.chk.username, 1))
+                         ("SSKUPI14072026.csv", 1, 2, True, "RET due 4 pm", self.chk.username, 1))
         self.assertTrue(b["download_url"].endswith(f"/npci-files/{b['id']}/download/"))
         self.assertEqual([h["operation"] for h in b["history"]], ["NPCI_FILE_GENERATED"])
         self.assertEqual(b["rows"][0]["account_masked"], "********1111")
+        self.assertEqual([(x["reply_source"], x["action_type"]) for x in b["rows"]],
+                         [("APPROVED", "DRC_102"), ("RULE", "RET")])
         r = self.generate(confirm_partial=True)
         self.assertEqual(r.status_code, 409)  # nothing new to include
         self.assertIn("rows", r.json()["errors"])
         self.assertNotIn("sent", str(r.json()))  # the app never sends anything to NPCI (owner 2026-10-23)
 
+    def test_no_confirmation_needed_when_nothing_is_left_out(self):
+        self.approve_held()
+        r = self.generate()
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual((r.json()["row_count"], r.json()["partial"]), (3, False))
+
     def test_second_file_and_case_link(self):
         self.generate(confirm_partial=True)
-        self.approve(self.open_case)
+        self.approve_held()
         preview = self.ok(M, PREVIEW)
         self.assertEqual((preview["next_file_name"], preview["row_count"], preview["already_sent_count"],
                           preview["already_sent_files"], preview["partial"]),
-                         ("SSKUPI14072026_2.csv", 1, 1, ["SSKUPI14072026.csv"], False))
+                         ("SSKUPI14072026_2.csv", 1, 2, ["SSKUPI14072026.csv"], False))
         self.assertEqual([f["file_name"] for f in preview["files"]], ["SSKUPI14072026.csv"])
         r = self.generate()
         self.assertEqual(r.status_code, 201, r.content)
-        self.assertEqual([x["rrn"] for x in r.json()["rows"]], ["100000000002"])
-        case = self.ok(M, f"{UPI}/cases/{self.open_case.pk}/")
+        self.assertEqual([(x["rrn"], x["reply_source"]) for x in r.json()["rows"]], [("100000000003", "APPROVED")])
+        case = self.ok(M, f"{UPI}/cases/{self.held.pk}/")
         self.assertEqual((case["npci_file"]["file_name"], case["npci_file"]["line"]), ("SSKUPI14072026_2.csv", 1))
+        case = self.ok(M, f"{UPI}/cases/{self.open_case.pk}/")
+        self.assertEqual({k: case["npci_file"][k] for k in ("file_name", "line", "flag", "code", "reply_source")},
+                         {"file_name": "SSKUPI14072026.csv", "line": 2, "flag": "RET", "code": "115",
+                          "reply_source": "RULE"})
         self.assertIsNone(self.ok(M, f"{UPI}/cases/{self.make_case('100000000099').pk}/")["npci_file"])
 
 
@@ -177,7 +201,7 @@ class FileReadAndDownloadTests(NpciApiBase):
         self.assertGreaterEqual(row["downloads"][0]["at"], row["downloads"][1]["at"])
         self.assertEqual(self.ok(A, self.detail)["downloads"], row["downloads"])
         # A second file: its own (empty) history; the list reads all histories in one query.
-        self.approve(self.open_case)
+        self.approve_held()
         second = self.generate().json()
         self.assertEqual((second["download_count"], second["downloads"]), (0, []))
         client = self.as_(O)

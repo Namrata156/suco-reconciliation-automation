@@ -28,7 +28,8 @@ class NpciFileAdmin(_ReadOnly):
 
 @admin.register(NpciFileRow)
 class NpciFileRowAdmin(_ReadOnly):
-    list_display = ("npci_file", "line", "rrn", "flag", "code", "shtdat", "amount", "account_masked", "text")
-    list_filter = ("flag", "code")
+    list_display = ("npci_file", "line", "rrn", "flag", "code", "reply_source", "shtdat", "amount", "account_masked",
+                    "text")
+    list_filter = ("flag", "code", "reply_source")
     search_fields = ("rrn",)
     raw_id_fields = ("case", "action")

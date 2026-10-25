@@ -1,16 +1,18 @@
 """
 `npci_files` app: NPCI File Generation (Phase 4 component, un-deferred
 2026-10-22). Design: docs/npci_file_design_draft_v1.txt, approved by the
-project owner 2026-10-22/23 with Amendment 1.
+project owner 2026-10-22/23 with Amendment 1; Amendment 2 (owner 2026-10-24):
+the file is built right after reconciliation from the reply each case carries
+now (the Maker's submitted or approved reply, else the rule's suggestion).
 
   NpciFile     one generated upload file (e.g. SSKUPI14072026.csv), with its
                exact bytes, hash and counts. The first file of a date is
                sequence 1; a later file for the same date (sequence 2, 3...,
-               named ..._2.csv, ..._3.csv) holds ONLY cases approved since
-               the earlier files (Amendment 1). Files are never changed,
-               replaced or deleted.
-  NpciFileRow  one line of a file: which case and which approved action it
-               came from. A case appears in at most one row of all files (DB
+               named ..._2.csv, ..._3.csv) holds ONLY cases that appeared or
+               became eligible since the earlier files (Amendments 1 and 2).
+               Files are never changed, replaced or deleted.
+  NpciFileRow  one line of a file: which case, which reply (and the Maker's
+               action, if the reply was the Maker's) it came from. A case appears in at most one row of all files (DB
                constraint), so a case is never included in two files.
                (The app never sends anything to NPCI: the user downloads
                the file and uploads it to the portal by hand.)
@@ -28,6 +30,14 @@ from core.models import PaymentModule
 from exception_management.models import ExceptionCase, ProposedAction
 
 
+class ReplySource(models.TextChoices):
+    """Where a row's reply (flag + code) came from (Amendment 2, owner 2026-10-24)."""
+
+    RULE = "RULE", "The rule's suggested reply"
+    SUBMITTED = "SUBMITTED", "The Maker's submitted reply (not yet approved)"
+    APPROVED = "APPROVED", "The Checker-approved reply"
+
+
 class NpciFileImmutableError(AppendOnlyError):
     """A generated NPCI file (or one of its rows) was about to change."""
 
@@ -38,7 +48,7 @@ class NpciFile(AppendOnlyModel):
     payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="npci_files")
     file_date = models.DateField(help_text="The date in the file name (the business date the file is for)")
     sequence = models.PositiveSmallIntegerField(
-        help_text="1 = the date's first file; 2, 3... = later files holding only newly approved cases"
+        help_text="1 = the date's first file; 2, 3... = later files holding only cases not in an earlier file"
     )
     file_format = models.CharField(max_length=20, help_text="e.g. SSKUPI (npci_files.formats)")
     file_name = models.CharField(max_length=64)
@@ -79,7 +89,12 @@ class NpciFileRow(AppendOnlyModel):
     npci_file = models.ForeignKey(NpciFile, on_delete=models.PROTECT, related_name="rows")
     line = models.PositiveIntegerField(help_text="1 = the first line after the header")
     case = models.ForeignKey(ExceptionCase, on_delete=models.PROTECT, related_name="npci_file_rows")
-    action = models.ForeignKey(ProposedAction, on_delete=models.PROTECT, related_name="npci_file_rows")
+    action = models.ForeignKey(
+        ProposedAction, on_delete=models.PROTECT, related_name="npci_file_rows", null=True, blank=True,
+        help_text="The Maker's action the reply came from; empty when it was the rule's suggested reply",
+    )
+    action_type = models.CharField(max_length=40, blank=True, help_text="exception_management ActionType")
+    reply_source = models.CharField(max_length=10, choices=ReplySource.choices, blank=True)
     case_business_date = models.DateField()
     rrn = models.CharField(max_length=20)
     flag = models.CharField(max_length=10)

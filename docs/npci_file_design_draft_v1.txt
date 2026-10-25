@@ -417,6 +417,7 @@ A1. THE OWNER'S DECISIONS
       Operations User download; Administrator and Auditor see the list and
       details only.
   Q3  Only Checker-approved replies go in (approved or completed cases).
+      REVERSED by the owner on 2026-10-24: see Amendment 2.
   Q4  No "mark all done" action. Cases are still marked done one at a time.
   Q5  A partial file is allowed, with an explicit confirmation.
   Q7  The dropped "18" in ops' 14 Jul file was a slip: copy NPCI's value
@@ -596,17 +597,31 @@ A7. API CONTRACT (for Slice 3, frontend-engineer)
       row_count, total_amount: "703.50", partial: bool,
       counts: [{flag, code, text, rows, amount}],
       rows: [{line, case_id, case_business_date, rrn, rule_code,
-              action_type, flag, code, shtdat, amount: "140.5",
-              account_masked, text}],
+              action_type, reply_source, flag, code, shtdat,
+              amount: "140.5", account_masked, text}],
           (amount as written in the file; shtdat YYYY-MM-DD)
+          reply_source (Amendment 2): RULE (the rule's suggested reply),
+          SUBMITTED (the Maker's reply, not yet approved) or APPROVED
+      reply_sources: {RULE: n, SUBMITTED: n, APPROVED: n}   (Amendment 2;
+                                  only the sources present are listed)
       not_included: [{case_id, case_business_date, rrn, rule_code, status,
                       flag, code (null when there is no numeric code),
                       reason, reason_label, detail}],
-          reason is one of OPEN, PENDING_APPROVAL, NEEDS_REVIEW,
-          NO_NUMERIC_CODE, NO_NPCI_ROW, BAD_SOURCE_DATA
+          reason is one of NEEDS_REVIEW, NEEDS_APPROVAL, REJECTED,
+          NO_NUMERIC_CODE, NO_NPCI_ROW, BAD_SOURCE_DATA (Amendment 2:
+          OPEN and PENDING_APPROVAL are gone; files generated before
+          2026-10-24 may still show them in their stored not_included,
+          with their stored reason_label). detail: for NEEDS_APPROVAL why
+          the reply waits for a Checker, for REJECTED the Checker's
+          rejection reason, for NEEDS_REVIEW the review reason.
       not_included_counts: {reason: n},
       already_sent_count: n,      cases of this date already in a file
       already_sent_files: ["SSKUPI14072026.csv", ...],
+      changed_since_included_count: n   (Amendment 2) cases already in a
+                                  file of this date that changed since
+                                  (flagged for review, another reply
+                                  chosen, or closed by a re-run); a
+                                  warning explains it
       warnings: [text, ...],      show them as they are
       files: [{id, file_name, sequence, row_count, partial, generated_at,
                generated_by}],    files already generated for this date
@@ -620,7 +635,11 @@ A7. API CONTRACT (for Slice 3, frontend-engineer)
     201 -> the new file, same body as GET /npci-files/<id>/.
     409 with errors.confirm_partial: cases are left out. Ask the user to
         confirm a partial file, then POST again with true.
-    409 with errors.rows (and errors.not_included): nothing new to include.
+    409 with errors.rows (and errors.not_included): nothing new to include
+        ("No reply is waiting to be included in a file for this date.").
+    Amendment 2: the partial confirmation is asked only when cases are
+    left out (not_included is not empty); a file built straight after
+    reconciliation with nothing held back needs no confirmation.
     400 confirm_partial not a boolean, or remarks not text.
     403 not a Checker.
 
@@ -644,7 +663,9 @@ A7. API CONTRACT (for Slice 3, frontend-engineer)
   GET /api/v1/<module>/npci-files/<id>/                      all 5 roles
     file row + {counts, warnings, not_included (as in the preview, as they
     stood at generation), rows: [{line, case_id, case_business_date, rrn,
-    flag, code, shtdat, amount, account_masked, text}],
+    action_type, reply_source, flag, code, shtdat, amount, account_masked,
+    text}],  (action_type, reply_source: Amendment 2; rows of files
+    generated before 2026-10-24 say APPROVED)
     other_files_for_date: [like preview.files], history: [operations log
     entries {id, operation, operation_label, username, created_at, source,
     business_date, uploaded_file_id, run_id, details}]}
@@ -657,8 +678,10 @@ A7. API CONTRACT (for Slice 3, frontend-engineer)
     a blob, without changing the bytes (the CRLF line endings must stay).
 
   GET /api/v1/<module>/cases/<id>/  (existing)  new field
-    npci_file: {id, file_name, file_date, line, generated_at} or null
-    ("included in file SSKUPI14072026.csv, line 12").
+    npci_file: {id, file_name, file_date, line, generated_at, flag, code,
+    reply_source} or null ("included in file SSKUPI14072026.csv, line 12,
+    as RET 115"). flag, code, reply_source: Amendment 2, so the case page
+    can show which reply the file holds when the case is still open.
 
   GET /api/v1/me/  new permissions
     npci_files.view (all), npci_files.generate (Checker),
@@ -693,3 +716,173 @@ A8. OPEN POINTS
   3. Ops have not yet confirmed that the NPCI portal accepts a second
      upload named ..._2.csv for the same date (the name is the owner's
      decision).
+
+================================================================================
+ AMENDMENT 2 (owner, 2026-10-24) - FILE RIGHT AFTER RECONCILIATION - BUILT
+================================================================================
+Where this amendment and anything above disagree, this amendment wins.
+
+--------------------------------------------------------------------------------
+B1. THE OWNER'S DECISION
+--------------------------------------------------------------------------------
+  Reverses A1 Q3 ("only Checker-approved replies go in"). The SSKUPI file
+  can be generated RIGHT AFTER RECONCILIATION, as ops do by hand today,
+  from the reply each rule suggests. There is no Maker/Checker step before
+  the file. Unchanged: the Checker generates; Maker, Checker and Operations
+  User download; Administrator and Auditor see the list and details only
+  (A1 Q2). Still "included", never "sent" (A2).
+
+--------------------------------------------------------------------------------
+B2. WHICH CASES GO IN NOW
+--------------------------------------------------------------------------------
+  Every current transaction case of the date whose reply is DRC, TCC, RET or
+  RRC with a numeric code. The reply is:
+    - the Checker-approved one, if the case is approved or completed;
+    - else the Maker's submitted one, if the case is waiting for approval;
+    - else the rule's suggested reply (open or in-progress case), the same
+      pre-fill the Maker starts from (R01 DRC 102, R02 DRC 103, R03 DRC 104,
+      R04a TCC 102, R05 RET 115, R06 manual credit + RRC 501).
+  Each row records where its reply came from: RULE, SUBMITTED or APPROVED
+  (A7 reply_source).
+
+  Kept from Amendment 1:
+    - a case is never in two files (database constraint);
+    - a later file of the date (_2, _3) holds only new rows. A row is new
+      when its case appeared or became eligible since the last file: a
+      re-run created it, an adjustment arrived later, a Checker approved a
+      held case, or a missing numeric code was filled in;
+    - a reply with no numeric NPCI code is left out with a warning;
+    - placement (RRC rows in the file of the Adjustment's Adjdate), values,
+      order and format: unchanged.
+
+  Left out, listed as "not included" with a warning (reason in A7):
+    NEEDS_REVIEW    flagged for review after a re-run;
+    NEEDS_APPROVAL  the reply needs evidence or a person's decision and no
+                    Checker has approved it yet (B4);
+    REJECTED        the Checker rejected the case's last reply (under its
+                    current rule) and the Maker has not submitted a new one.
+                    Without this, the rule's suggestion would put the very
+                    reply the Checker just rejected into the file. It goes
+                    in again once the Maker submits a reply (as SUBMITTED);
+    NO_NUMERIC_CODE, NO_NPCI_ROW, BAD_SOURCE_DATA   as before.
+  OPEN and PENDING_APPROVAL are no longer reasons.
+
+  The partial-file confirmation (409 confirm_partial) is asked only when
+  some case is left out for one of these reasons. A file with nothing held
+  back is generated without a confirmation and is not partial.
+
+  Warnings kept or added:
+    - rows that tell NPCI the customer was credited by hand (DRC 103,
+      manual credit + RRC 501) and are not marked done: "make sure the
+      credit is made before uploading". This now counts open cases too,
+      because those rows can now go in before anyone has acted;
+    - cases already in a file of this date that changed since: flagged
+      for review, another reply chosen by the Maker, or closed by a
+      re-run. The file never changes and the case is not included again;
+      any correction is made with NPCI outside the app (as A8 point 2).
+
+--------------------------------------------------------------------------------
+B3. AFTER THE FILE: THE CASE WORKFLOW IS UNCHANGED
+--------------------------------------------------------------------------------
+  Including a case in a file does not change its status. An open case
+  included with its rule's reply is still worked by the Maker and Checker
+  as before. If the Maker then chooses a DIFFERENT reply, the file is not
+  changed and the case is not included again. The preview warns about it
+  (B2) and the case page shows which reply the file holds (A7 npci_file
+  flag, code, reply_source).
+
+--------------------------------------------------------------------------------
+B4. RECOMMENDATION: WHAT MUST STILL WAIT FOR A CHECKER (BUILT AS DEFAULT)
+--------------------------------------------------------------------------------
+  Recommendation: these replies stay out of a no-approval file until a
+  Checker approves them. They are left out with a warning
+  (NEEDS_APPROVAL) and go into a later file of the date once approved.
+  While the Maker's reply is only submitted, they still wait.
+
+  R06b  "RRC 501 without a new credit". The owner's rule of 2026-10-10:
+        this outcome may be approved ONLY with the CBS reversal attached
+        as evidence, never automatically. The rule's suggestion carries no
+        evidence, so putting it in a file would be exactly the automatic
+        approval the owner ruled out. The risk is paying the customer
+        twice, or telling NPCI the money went back when it did not. The
+        whole rule waits for a Checker, including a Maker's switch to
+        "manual credit + RRC 501": R06b's own text is "Maker checks the
+        customer's account ... The checker approves".
+  Any reply whose action needs the CBS reversal as evidence
+        (RRC_501_NO_CREDIT), whatever the rule. This is the same legal
+        point when a Maker picks that action on another rule.
+  R07x  chargeback older than 35 days. It has no suggested reply, so it
+        never goes in by default. If a Maker submits a DRC/TCC/RET/RRC
+        reply on it, a Checker must approve it first, because whether the
+        response deadline has passed is a person's decision (R07x: "Check
+        whether the response deadline has already passed").
+  R04b  Timeout credited AND reversed in CBS. Its rule text is "Check the
+        customer's account first, then update TCC 102". The suggested
+        TCC 102 tells NPCI "credited" for a credit that was reversed, so it
+        waits for a Checker. (This one goes beyond the brief. It has 0
+        cases on the 3 checked dates. The owner may drop it from the list:
+        npci_files.generator.APPROVAL_REQUIRED_RULES.)
+  Not held back (as the owner decided): R02 DRC 103 and R06 manual credit
+  + RRC 501. They tell NPCI the customer was credited by hand and stay
+  covered by the "make sure the credit is made" warning. Rules with no
+  suggested reply (R07b, R07c, R13 and the rest) give a row only when a
+  Maker submits a reply, and then the Maker's reply is used.
+
+  To change the list: edit APPROVAL_REQUIRED_RULES (a code change, with
+  the owner's approval).
+
+--------------------------------------------------------------------------------
+B5. WHAT CHANGED IN THE CODE
+--------------------------------------------------------------------------------
+  npci_files/generator.py   selection (B2, B4), the new reasons and
+                            warnings, reply_source per row, "reply_sources"
+                            in the NPCI_FILE_GENERATED audit details.
+  npci_files/models.py      NpciFileRow.action is optional (a rule reply
+                            has no Maker action); new action_type and
+                            reply_source; ReplySource choices.
+  npci_files/migrations/0002_reply_source.py   the 2 columns and the
+                            nullable action. Rows of files generated before
+                            are filled in as APPROVED with their action's
+                            type. No other data changes.
+  api/npci_files.py         A7 fields: reply_source, reply_sources,
+                            changed_since_included_count, row
+                            action_type/reply_source in the file details,
+                            flag/code/reply_source on the case link.
+  check_npci_file           with no option it now shows what the real
+                            next file would hold (Amendment 2 rules).
+                            --rule-defaults still treats every case as
+                            approved with its rule's reply and ignores
+                            files already generated (holds ignored).
+  admin.py                  reply_source column and filter.
+  Frontend (frontend-engineer's, NOT changed here): texts that say
+  "Checker-approved replies", "once they are approved" or "have it
+  approved", and REASON_ORDER (OPEN, PENDING_APPROVAL ->
+  NEEDS_APPROVAL, REJECTED). Unknown reasons already display with the
+  server's label.
+
+--------------------------------------------------------------------------------
+B6. CHECK AGAINST OPS' FILES (2026-10-24, rule set v3.3)
+--------------------------------------------------------------------------------
+  A fresh copy of the dev database (reconciliation_npci_a2, cloned from
+  reconciliation, migrated with 0002). Every case is OPEN, so every row
+  carries its rule's reply. The files were generated by the generator as
+  a Checker and downloaded as an Operations User, then compared column by
+  column with ops' files (all columns except specifyother; filename
+  normalised for the _2 file).
+    Date     Rows (app / ops / both)   Fields           Order   Partial
+    14 Jul   301 / 301 / 301           2,407 of 2,408   same    no
+    25 Sep    60 /  60 /  60             480 of   480   same    no
+    26 Sep    20 /  21 /  20             160 of   160   same    yes (1)
+      + _2     1 /  21 /   1               8 of     8           no
+    26 Sep both files: 21 / 21 / 21     168 of   168
+  - 14 Jul: the one difference is the "18" row (A1 Q7, ops' slip).
+  - 26 Sep: the file asked for the partial confirmation (409). The one
+    case left out was the R06b row (NEEDS_APPROVAL). After a Maker
+    submitted it with evidence it was STILL held. After the Checker
+    approved it, SSKUPI26092026_2.csv held exactly that row.
+  - A further generation for each date was refused: nothing new to
+    include.
+  - The read-only check (check_npci_file with no option, on the same copy
+    before generating) gave the same figures.
+  So the rows are the same as ops' samples, except the R06b row, which
+  now needs the Checker's approval (B4) and then arrives in the _2 file.

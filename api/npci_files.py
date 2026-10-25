@@ -10,6 +10,10 @@ which checks the role, decides which cases go in and writes core.OperationLog.
   GET  /npci-files/<id>/                  one file: counts, rows (masked), what was left out, history
   GET  /npci-files/<id>/download/         the stored bytes (Maker, Checker, Operations User; logged)
 
+Amendment 2 (owner 2026-10-24): the file can be generated right after
+reconciliation from the reply each case carries now; every row says where its
+reply came from (reply_source RULE / SUBMITTED / APPROVED).
+
 Account numbers: only the last 4 characters are ever returned as JSON; the
 full values exist only in the downloaded file.
 """
@@ -97,14 +101,16 @@ def preview_payload(module, plan: generator.FilePlan, user) -> dict:
         "partial": plan.partial,
         "counts": [{**c, "amount": _m(c["amount"])} for c in plan.counts()],
         "rows": [{"line": i, "case_id": r.case.pk, "case_business_date": r.case.business_date, "rrn": r.line.rrn,
-                  "rule_code": r.case.rule_code, "action_type": r.action_type, "flag": r.flag, "code": r.code,
-                  "shtdat": r.line.shtdat, "amount": format_amount(r.line.amount),
+                  "rule_code": r.case.rule_code, "action_type": r.action_type, "reply_source": r.source,
+                  "flag": r.flag, "code": r.code, "shtdat": r.line.shtdat, "amount": format_amount(r.line.amount),
                   "account_masked": generator.mask_account(r.line.account), "text": r.line.text}
                  for i, r in enumerate(plan.rows, start=1)],
+        "reply_sources": plan.source_counts(),
         "not_included": [generator.excluded_payload(e) for e in plan.excluded],
         "not_included_counts": plan.excluded_counts(),
         "already_sent_count": len(plan.already_sent),
         "already_sent_files": already,
+        "changed_since_included_count": len({case.pk for case, _row in plan.changed_since_included}),
         "warnings": plan.warnings,
         "files": _sent_files(module, plan.file_date),
         "can_generate": bool(plan.rows) and _user_can(user, generator.GENERATE_ROLES),
@@ -186,6 +192,7 @@ def _file_detail(module, f: NpciFile, user) -> dict:
     body["warnings"] = f.warnings
     body["not_included"] = f.not_included
     body["rows"] = [{"line": r.line, "case_id": r.case_id, "case_business_date": r.case_business_date, "rrn": r.rrn,
+                     "action_type": r.action_type, "reply_source": r.reply_source,
                      "flag": r.flag, "code": r.code, "shtdat": r.shtdat, "amount": format_amount(r.amount),
                      "account_masked": r.account_masked, "text": r.text}
                     for r in f.rows.order_by("line")]
@@ -223,4 +230,4 @@ def case_npci_file(case) -> dict | None:
         return None
     f = row.npci_file
     return {"id": f.pk, "file_name": f.file_name, "file_date": f.file_date, "line": row.line,
-            "generated_at": f.generated_at}
+            "generated_at": f.generated_at, "flag": row.flag, "code": row.code, "reply_source": row.reply_source}
