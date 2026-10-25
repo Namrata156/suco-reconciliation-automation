@@ -97,9 +97,13 @@ export function LoginPage() {
     <Center mih="100vh" p="md" component="main">
       <Paper withBorder shadow="sm" p="xl" w={380}>
         <Stack gap="xs" mb="md">
-          <Text size="sm" c="dimmed">
-            {BRAND.logoPlaceholder}
-          </Text>
+          <img
+            src={BRAND.logoBanner}
+            alt={BRAND.bankFullName}
+            width={1200}
+            height={216}
+            style={{ display: 'block', width: '100%', height: 'auto', borderRadius: 4, marginBottom: 8 }}
+          />
           <Title order={1} size="h3">
             {BRAND.bankName}
           </Title>

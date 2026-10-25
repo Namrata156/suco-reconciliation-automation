@@ -113,15 +113,13 @@ export function AppLayout({ global = false }: { global?: boolean }) {
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
           <Group gap="sm" wrap="nowrap">
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle menu" />
-            <Text
-              fw={700}
-              size="sm"
-              c="dimmed"
-              aria-label="Bank logo placeholder"
-              style={{ border: '1px dashed', padding: '2px 6px' }}
-            >
-              {BRAND.logoPlaceholder}
-            </Text>
+            <img
+              src={BRAND.logoIcon}
+              alt={`${BRAND.bankName} logo`}
+              width={32}
+              height={32}
+              style={{ display: 'block', borderRadius: 4, flexShrink: 0 }}
+            />
             <Text fw={700}>{BRAND.bankName}</Text>
             <Text c="dimmed" visibleFrom="md">
               {BRAND.appName}

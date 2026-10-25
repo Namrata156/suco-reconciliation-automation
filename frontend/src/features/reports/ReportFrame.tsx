@@ -63,9 +63,12 @@ export function ReportFrame({
   return (
     <Stack gap="sm">
       <div className="print-only" data-testid="print-header">
-        <Text fw={700}>
-          {BRAND.bankName} - {BRAND.appName}
-        </Text>
+        <Group gap="xs" wrap="nowrap">
+          <img src={BRAND.logoIcon} alt={`${BRAND.bankName} logo`} width={32} height={32} />
+          <Text fw={700}>
+            {BRAND.bankFullName} - {BRAND.appName}
+          </Text>
+        </Group>
         <Text fw={700} size="lg">
           {title}
         </Text>

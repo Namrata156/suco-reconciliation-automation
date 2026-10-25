@@ -1,14 +1,23 @@
 /**
  * Branding and session settings.
  *
- * BRAND: PLACEHOLDERS until the owner supplies the bank's name and logo file
- * (design P8: "please supply the logo file"). The logo is shown as text.
+ * BRAND: logo files supplied by the owner on 2026-10-24 (design P8), kept in
+ * src/assets/ so the build bundles them. The full name is taken from the
+ * banner logo.
  */
+import logoBanner from './assets/suco_banner.jpg';
+import logoIcon from './assets/suco_icon.png';
+
 export const BRAND = {
+  /** Short name, shown in the app header. */
   bankName: 'SUCO Bank',
+  /** Full name, from the logo; login banner alt text and the print header. */
+  bankFullName: 'SUCO Souharda Sahakari Bank',
   appName: 'Payment Reconciliation',
-  /** Text stand-in for the logo image (owner to supply the file, P8). */
-  logoPlaceholder: '[Bank logo]',
+  /** Square icon (white tile, red/blue "S", "SUCO BANK"); 128x128 PNG cut from the banner. */
+  logoIcon,
+  /** Red banner with the icon and the Kannada and English names; 1200x216. */
+  logoBanner,
 };
 
 /**

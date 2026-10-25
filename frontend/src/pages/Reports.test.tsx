@@ -289,6 +289,9 @@ describe('print layout', () => {
 
     const header = screen.getByTestId('print-header');
     expect(header.classList.contains('print-only')).toBe(true);
+    // Bank icon and full name (logo supplied 2026-10-24, design P8).
+    expect(within(header).getByRole('img', { name: 'SUCO Bank logo' })).toBeTruthy();
+    expect(header.textContent).toContain('SUCO Souharda Sahakari Bank - Payment Reconciliation');
     expect(header.textContent).toContain('Results (all dates)');
     expect(header.textContent).toContain('Module: UPI');
     expect(header.textContent).toContain('Business dates: 01-Jul-2026 to 31-Jul-2026');

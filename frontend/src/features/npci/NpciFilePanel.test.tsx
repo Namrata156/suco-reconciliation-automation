@@ -22,7 +22,15 @@ import {
   routeFetch,
   sentBody,
 } from '../../test/fixtures';
-import { needsPartialConfirmation, notIncludedSummary, replyCode } from './NpciFilePanel';
+import {
+  countReplySources,
+  needsPartialConfirmation,
+  notIncludedSummary,
+  reasonLabel,
+  replyCode,
+  replySourceLabel,
+  replySourcesSummary,
+} from './NpciFilePanel';
 import { ApiError } from '../../api/client';
 
 const DATE = '2026-07-14';
@@ -43,13 +51,13 @@ const left = (o: Partial<NpciNotIncluded> = {}): NpciNotIncluded => ({
   case_id: 301,
   case_business_date: DATE,
   rrn: '419500000301',
-  rule_code: 'R01',
+  rule_code: 'R06b',
   status: 'OPEN',
-  flag: 'DRC',
-  code: '102',
-  reason: 'OPEN',
-  reason_label: 'Not submitted yet (open or in progress)',
-  detail: '',
+  flag: 'RRC',
+  code: '501',
+  reason: 'NEEDS_APPROVAL',
+  reason_label: "Needs a Checker's approval first (evidence or a person's decision)",
+  detail: 'the reply needs the CBS reversal attached as evidence',
   ...o,
 });
 
@@ -71,6 +79,7 @@ function preview(o: Partial<NpciFilePreview> = {}): NpciFilePreview {
         rrn: '419500000201',
         rule_code: 'R01',
         action_type: 'DRC_102',
+        reply_source: 'RULE',
         flag: 'DRC',
         code: '102',
         shtdat: DATE,
@@ -79,10 +88,12 @@ function preview(o: Partial<NpciFilePreview> = {}): NpciFilePreview {
         text: 'Online Reversal',
       },
     ],
+    reply_sources: { RULE: 1 },
     not_included: [],
     not_included_counts: {},
     already_sent_count: 0,
     already_sent_files: [],
+    changed_since_included_count: 0,
     warnings: [],
     files: [],
     can_generate: true,
@@ -106,7 +117,7 @@ const PARTIAL = {
       detail: 'RET (unknown) - Account closed',
     }),
   ],
-  not_included_counts: { NO_NUMERIC_CODE: 1, OPEN: 1 },
+  not_included_counts: { NO_NUMERIC_CODE: 1, NEEDS_APPROVAL: 1 },
   warnings: [
     '1 case(s) left out because their reply code has no numeric NPCI code yet (RET (unknown) - Account closed: 1). ' +
       'They go into a later file automatically once the code is filled in.',
@@ -194,9 +205,45 @@ describe('NPCI file helpers', () => {
 
   it('summarises what is left out per reason, in the screen order', () => {
     expect(notIncludedSummary(preview(PARTIAL))).toEqual([
-      '1 case(s): Not submitted yet (open or in progress)',
+      "1 case(s): Needs a Checker's approval first",
       '1 case(s): The reply code has no numeric NPCI code yet',
     ]);
+  });
+
+  it('orders the Amendment 2 reasons first and keeps the server label of unknown or older reasons', () => {
+    const p = {
+      not_included: [
+        left({ case_id: 1, reason: 'NO_NPCI_ROW', reason_label: 'No NPCI dispute row for this reply' }),
+        left({ case_id: 2, reason: 'OPEN', reason_label: 'Not submitted yet (open or in progress)' }),
+        left({ case_id: 3, reason: 'REJECTED', reason_label: 'server wording' }),
+        left({ case_id: 4 }),
+      ],
+      not_included_counts: { NO_NPCI_ROW: 1, OPEN: 1, REJECTED: 1, NEEDS_APPROVAL: 1 },
+    };
+    expect(notIncludedSummary(p)).toEqual([
+      "1 case(s): Needs a Checker's approval first",
+      "1 case(s): Rejected by the Checker; waiting for the Maker's new reply",
+      '1 case(s): No NPCI dispute row for this reply',
+      // A reason the screen does not know (a file generated before 2026-10-24): the stored label.
+      '1 case(s): Not submitted yet (open or in progress)',
+    ]);
+    expect(reasonLabel({ reason: 'PENDING_APPROVAL', reason_label: 'Waiting for approval' })).toBe(
+      'Waiting for approval',
+    );
+    expect(reasonLabel({ reason: 'SOMETHING_NEW', reason_label: '' })).toBe('SOMETHING_NEW');
+  });
+
+  it('names where the replies come from', () => {
+    expect(replySourcesSummary({ APPROVED: 11, RULE: 250, SUBMITTED: 40 })).toBe(
+      '250 from the rule, 40 from the Maker, 11 from the Checker',
+    );
+    expect(replySourcesSummary({ RULE: 0 })).toBeNull();
+    expect(replySourcesSummary(undefined)).toBeNull();
+    expect(replySourcesSummary({ OTHER: 2, RULE: 1 })).toBe('1 from the rule, 2 from OTHER');
+    expect(replySourceLabel('SUBMITTED')).toBe("Maker's reply (submitted)");
+    expect(replySourceLabel('OTHER')).toBe('OTHER');
+    expect(replySourceLabel(undefined)).toBe('-');
+    expect(countReplySources([{ reply_source: 'RULE' }, { reply_source: 'RULE' }, {}])).toEqual({ RULE: 2 });
   });
 
   it('recognises the 409 that asks to confirm a partial file', () => {
@@ -241,6 +288,9 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     const left = screen.getByRole('table', { name: `Cases not included in ${NAME}` });
     expect(within(left).getByText('RET (no numeric code yet)')).toBeTruthy();
     expect(within(left).getByText('The reply code has no numeric NPCI code yet')).toBeTruthy();
+    // NEEDS_APPROVAL in the screen's words, with the server's detail.
+    expect(within(left).getByText("Needs a Checker's approval first")).toBeTruthy();
+    expect(within(left).getByText('the reply needs the CBS reversal attached as evidence')).toBeTruthy();
     expect(within(left).getByRole('link', { name: '#302' }).getAttribute('href')).toBe('/upi/cases/302');
     expect(screen.getByText(`Not included in ${NAME}: 2 case(s)`)).toBeTruthy();
     expect(
@@ -251,7 +301,8 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     await userEvent.click(screen.getByRole('button', { name: `Generate ${NAME}` }));
     const dialog = await screen.findByRole('dialog', { name: `Generate ${NAME}?` });
     expect(within(dialog).getByText(/will be included in file SSKUPI14072026\.csv/)).toBeTruthy();
-    expect(within(dialog).getByText('1 case(s): Not submitted yet (open or in progress)')).toBeTruthy();
+    expect(within(dialog).getByText("1 case(s): Needs a Checker's approval first")).toBeTruthy();
+    expect(within(dialog).getByText('Replies: 1 from the rule.')).toBeTruthy();
     const go = within(dialog).getByRole('button', { name: 'Generate partial file' }) as HTMLButtonElement;
     expect(go.disabled).toBe(true);
     await userEvent.click(
@@ -270,11 +321,107 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     expect(screen.queryByText(/sent to NPCI/i)).toBeNull();
   });
 
+  it('a file with nothing held back generates without the tick box (Amendment 2)', async () => {
+    const fetch = routeFetch({
+      ...baseRoutes,
+      '/npci-file/preview/': () =>
+        json(
+          200,
+          preview({
+            row_count: 3,
+            total_amount: '421.50',
+            reply_sources: { APPROVED: 1, RULE: 1, SUBMITTED: 1 },
+            rows: [
+              ...preview().rows,
+              {
+                ...preview().rows[0]!,
+                line: 2,
+                case_id: 202,
+                rrn: '419500000202',
+                reply_source: 'SUBMITTED',
+              },
+              { ...preview().rows[0]!, line: 3, case_id: 203, rrn: '419500000203', reply_source: 'APPROVED' },
+            ],
+          }),
+        ),
+      '/npci-file/': (init: RequestInit | undefined) =>
+        isPost(init) ? json(201, fileDetail(fileRow({ row_count: 3 }))) : json(405, {}),
+      '/npci-files/': () => json(200, filesPage([])),
+    });
+    vi.stubGlobal('fetch', fetch);
+    renderDate(['Checker']);
+
+    expect(await screen.findByText(`Next file: ${NAME}`)).toBeTruthy();
+    expect(screen.getByText('Replies: 1 from the rule, 1 from the Maker, 1 from the Checker.')).toBeTruthy();
+    expect(screen.getAllByText(/The file uses each case's current reply/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Checker-approved repl/)).toBeNull();
+    expect(screen.queryByText(/have it approved/)).toBeNull();
+    expect(screen.queryByText('Partial')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Cases changed since included' })).toBeNull();
+
+    // Each row says where its reply came from.
+    await userEvent.click(screen.getByRole('button', { name: `Show the 3 row(s) of ${NAME}` }));
+    const rows = within(screen.getByRole('table', { name: `Rows of ${NAME}` })).getAllByRole('row');
+    expect(within(rows[0]!).getByText('Reply from')).toBeTruthy();
+    expect(within(rows[1]!).getByText("Rule's suggestion")).toBeTruthy();
+    expect(within(rows[2]!).getByText("Maker's reply (submitted)")).toBeTruthy();
+    expect(within(rows[3]!).getByText('Checker-approved')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: `Generate ${NAME}` }));
+    const dialog = await screen.findByRole('dialog', { name: `Generate ${NAME}?` });
+    expect(within(dialog).getByText(/3 replies will be included in file SSKUPI14072026\.csv/)).toBeTruthy();
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+    expect(within(dialog).queryByText(/once they are approved/)).toBeNull();
+    const go = within(dialog).getByRole('button', { name: 'Generate file' }) as HTMLButtonElement;
+    expect(go.disabled).toBe(false);
+    await userEvent.click(go);
+    await waitFor(() => expect(generatePosts(fetch)).toHaveLength(1));
+    expect(sentBody(generatePosts(fetch)[0])).toEqual({ confirm_partial: false, remarks: '' });
+    // (The notifications of earlier tests may still be on screen: match this one's message.)
+    expect(
+      await screen.findByText('3 row(s) included. Download it and upload it to the NPCI portal.'),
+    ).toBeTruthy();
+  });
+
+  it('warns when cases already included have changed since', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routeFetch({
+        ...baseRoutes,
+        '/npci-file/preview/': () =>
+          json(
+            200,
+            preview({
+              next_sequence: 2,
+              next_file_name: 'SSKUPI14072026_2.csv',
+              row_count: 0,
+              rows: [],
+              counts: [],
+              reply_sources: {},
+              can_generate: false,
+              already_sent_count: 15,
+              already_sent_files: [NAME],
+              changed_since_included_count: 2,
+            }),
+          ),
+        '/npci-files/': () => json(200, filesPage([fileRow()])),
+      }),
+    );
+    renderDate(['Checker']);
+    const changed = await screen.findByRole('group', { name: 'Cases changed since included' });
+    expect(
+      within(changed).getByText(/2 case\(s\) already included in a file of this date have changed/),
+    ).toBeTruthy();
+    expect(within(changed).getByText(/correction is made with NPCI outside the app/)).toBeTruthy();
+    expect(screen.getByText('No reply is waiting to be included in a file for 14-Jul-2026.')).toBeTruthy();
+    expect(screen.queryByText(/^Replies:/)).toBeNull();
+  });
+
   it('asks for the confirmation when the server answers 409 confirm_partial, then posts again', async () => {
     let posts = 0;
     const fetch = routeFetch({
       ...baseRoutes,
-      // Complete when the page loaded; a case was reopened meanwhile.
+      // Nothing held back when the page loaded; a case was held back meanwhile.
       '/npci-file/preview/': () => json(200, posts ? preview(PARTIAL) : preview()),
       '/npci-file/': (init: RequestInit | undefined) => {
         if (!isPost(init)) return json(405, {});
@@ -294,6 +441,7 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: `Generate ${NAME}` }));
     let dialog = await screen.findByRole('dialog', { name: `Generate ${NAME}?` });
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Generate file' }));
     dialog = await screen.findByRole('dialog', { name: `Generate ${NAME}?` });
     expect(await within(dialog).findByText(/confirm to generate a partial file/)).toBeTruthy();
@@ -382,7 +530,8 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     expect(screen.queryByRole('button', { name: /^Generate/ })).toBeNull();
     expect(screen.getByText('A Checker generates the file.')).toBeTruthy();
 
-    await userEvent.click(within(rows[0]!).getByRole('button', { name: `All downloads of ${NAME}` }));
+    // Found at click time: the table can re-render after `rows` was read, and a click on the old button is lost.
+    await userEvent.click(screen.getByRole('button', { name: `All downloads of ${NAME}` }));
     const list = await screen.findByRole('list', { name: `Downloads of ${NAME}` });
     expect(within(list).getByText('maker1, 15-Jul-2026 12:00 IST')).toBeTruthy();
 
@@ -408,7 +557,42 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
         ...baseRoutes,
         '/npci-file/preview/': () => json(200, preview({ can_generate: false })),
         '/npci-files/': () => json(200, filesPage([fileRow({ download_url: null })], false)),
-        '/npci-files/7/': () => json(200, fileDetail(fileRow({ download_url: null }))),
+        '/npci-files/7/': () =>
+          json(200, {
+            ...fileDetail(fileRow({ download_url: null, partial: true, not_included_count: 1 })),
+            rows: [
+              {
+                line: 1,
+                case_id: 201,
+                case_business_date: DATE,
+                rrn: '419500000201',
+                action_type: 'DRC_102',
+                reply_source: 'RULE',
+                flag: 'DRC',
+                code: '102',
+                shtdat: DATE,
+                amount: '140.5',
+                account_masked: '********1234',
+                text: 'Online Reversal',
+              },
+              {
+                line: 2,
+                case_id: 202,
+                case_business_date: DATE,
+                rrn: '419500000202',
+                action_type: 'RET_115',
+                reply_source: 'APPROVED',
+                flag: 'RET',
+                code: '115',
+                shtdat: DATE,
+                amount: '20',
+                account_masked: '********5678',
+                text: 'Account does not exist',
+              },
+            ],
+            // Stored before Amendment 2: the old reason keeps its stored label.
+            not_included: [left({ reason: 'OPEN', reason_label: 'Not submitted yet (open or in progress)' })],
+          }),
       }),
     );
     renderDate(['Auditor']);
@@ -420,6 +604,17 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     const drawer = await screen.findByRole('dialog', { name: NAME });
     expect(await within(drawer).findByText('History (generation and downloads)')).toBeTruthy();
     expect(within(drawer).queryByRole('button', { name: /Download/ })).toBeNull();
+    expect(within(drawer).getByText('Replies: 1 from the rule, 1 from the Checker.')).toBeTruthy();
+    const left_ = within(drawer).getByRole('table', { name: `Cases left out of ${NAME}` });
+    expect(within(left_).getByText('Not submitted yet (open or in progress)')).toBeTruthy();
+
+    await userEvent.click(within(drawer).getByRole('button', { name: `Show the 2 row(s) of ${NAME}` }));
+    const rows = within(within(drawer).getByRole('table', { name: `Rows of ${NAME}` })).getAllByRole('row');
+    // File rows carry no rule: no Rule column.
+    expect(within(rows[0]!).queryByText('Rule')).toBeNull();
+    expect(within(rows[1]!).getByText("Rule's suggestion")).toBeTruthy();
+    expect(within(rows[2]!).getByText('Checker-approved')).toBeTruthy();
+    expect(within(rows[2]!).getByText('RET 115')).toBeTruthy();
   });
 
   it('says when the module has no NPCI file format (404)', async () => {

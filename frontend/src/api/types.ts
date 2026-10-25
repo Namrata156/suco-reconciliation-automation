@@ -1538,12 +1538,22 @@ export interface UserRoleListPage extends Paginated<UserRoleRow> {
 
 // ---------------------------------------------------------------------------
 // NPCI file generation (api/npci_files.py; docs/npci_file_design_draft_v1.txt
-// Amendment 1, A7). The app only GENERATES the file; the user downloads it,
-// has it approved and uploads it to the NPCI portal by hand (owner
-// 2026-10-22/23). Account numbers are masked (last 4 only).
+// Amendments 1 and 2, A7). The app only GENERATES the file; the user downloads
+// it and uploads it to the NPCI portal by hand (owner 2026-10-22/23). Since
+// Amendment 2 (owner 2026-10-24) the file uses each case's current reply
+// (Checker-approved, else the Maker's submitted one, else the rule's
+// suggestion). Account numbers are masked (last 4 only).
 // ---------------------------------------------------------------------------
+/**
+ * Amendment 2: OPEN and PENDING_APPROVAL are gone, but files generated before
+ * 2026-10-24 may still hold them in their stored not_included (shown with
+ * their stored reason_label).
+ */
 export type NpciNotIncludedReason =
-  'OPEN' | 'PENDING_APPROVAL' | 'NEEDS_REVIEW' | 'NO_NUMERIC_CODE' | 'NO_NPCI_ROW' | 'BAD_SOURCE_DATA';
+  'NEEDS_REVIEW' | 'NEEDS_APPROVAL' | 'REJECTED' | 'NO_NUMERIC_CODE' | 'NO_NPCI_ROW' | 'BAD_SOURCE_DATA';
+
+/** Where a row's reply came from (Amendment 2). */
+export type NpciReplySource = 'RULE' | 'SUBMITTED' | 'APPROVED';
 
 /** Rows and amount per flag / code / text. */
 export interface NpciFileCount {
@@ -1569,6 +1579,13 @@ export interface NpciFileLine {
   amount: string;
   account_masked: string;
   text: string;
+  /**
+   * Amendment 2: RULE, SUBMITTED or APPROVED. Rows of files generated before
+   * 2026-10-24 say APPROVED. Optional until every server sends it.
+   */
+  reply_source?: NpciReplySource | string;
+  /** Amendment 2 on file-detail rows; always on preview rows. */
+  action_type?: string;
 }
 
 export interface NpciPreviewLine extends NpciFileLine {
@@ -1618,6 +1635,13 @@ export interface NpciFilePreview {
   /** Cases of this date already included in a file. */
   already_sent_count: number;
   already_sent_files: string[];
+  /** Amendment 2: rows of the next file per reply source (only sources present). */
+  reply_sources?: Partial<Record<NpciReplySource | string, number>>;
+  /**
+   * Amendment 2: cases already in a file of this date that changed since
+   * (flagged for review, another reply chosen, or closed by a re-run).
+   */
+  changed_since_included_count?: number;
   /** Shown as they are. */
   warnings: string[];
   files: NpciFileRef[];

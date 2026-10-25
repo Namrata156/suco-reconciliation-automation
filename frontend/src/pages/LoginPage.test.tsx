@@ -3,8 +3,9 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/client';
+import { BRAND } from '../config';
 import { makeMe, renderWithProviders } from '../test/fixtures';
-import { LoginForm, loginErrorMessage } from './LoginPage';
+import { LoginForm, LoginPage, loginErrorMessage } from './LoginPage';
 
 function mockFetch(responses: { status: number; body?: unknown }[]) {
   const fn = vi.fn();
@@ -22,6 +23,18 @@ function mockFetch(responses: { status: number; body?: unknown }[]) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('LoginPage logo (design P8, supplied 2026-10-24)', () => {
+  it('shows the bank banner with the full name as alt text, not the placeholder', () => {
+    // The "who am I" check stays pending: the card renders while it runs.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    renderWithProviders(<LoginPage />, { route: '/login' });
+    const banner = screen.getByRole('img', { name: 'SUCO Souharda Sahakari Bank' });
+    expect(banner.getAttribute('src')).toBe(BRAND.logoBanner);
+    expect(screen.getByRole('heading', { name: 'SUCO Bank' })).toBeTruthy();
+    expect(screen.queryByText('[Bank logo]')).toBeNull();
+  });
 });
 
 describe('LoginForm (design 4.1)', () => {

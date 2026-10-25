@@ -1,14 +1,21 @@
 /**
  * "NPCI file" on the business-date page (docs/npci_file_design_draft_v1.txt
- * section 6 + Amendment 1, A7; owner 2026-10-22/23).
+ * section 6 + Amendments 1 and 2, A7; owner 2026-10-22/23/24).
  *
  * The app only GENERATES the reply file. It never sends anything to NPCI: the
- * user downloads the file, has it approved and uploads it to the NPCI portal
- * by hand, so the screen says "included in file SSKUPI...csv", never "sent".
+ * user downloads the file and uploads it to the NPCI portal by hand, so the
+ * screen says "included in file SSKUPI...csv", never "sent".
  *
- * Shows what the NEXT file of the date would hold (counts, the rows with
- * masked accounts, the cases left out and why, the server's warnings), the
- * Generate button with the partial-file confirmation (Checker), and the files
+ * Amendment 2 (owner 2026-10-24): the file can be generated right after
+ * reconciliation. Each row uses the case's current reply: the Checker-approved
+ * one, else the Maker's submitted one, else the rule's suggestion
+ * (reply_source APPROVED / SUBMITTED / RULE). Some replies still wait for a
+ * Checker (NEEDS_APPROVAL) and a rejected reply stays out (REJECTED).
+ *
+ * Shows what the NEXT file of the date would hold (counts, where the replies
+ * come from, the rows with masked accounts, the cases left out and why, the
+ * server's warnings), the Generate button with the partial-file confirmation
+ * when something is held back (Checker), and the files
  * already generated for the date with their hash, download history and
  * Download (Maker, Checker, Operations User; Administrator and Auditor see the
  * list only). There is no file-approval step in the app (owner 2026-10-23). The capabilities drive the buttons; the server checks every request.
@@ -47,10 +54,10 @@ import {
 } from '../../api/client';
 import type {
   NpciFileCount,
+  NpciFileLine,
   NpciFilePreview,
   NpciFileRow,
   NpciNotIncluded,
-  NpciPreviewLine,
 } from '../../api/types';
 import { useMe } from '../../auth/auth';
 import { formatCount, formatDate, formatDateTime, formatRupees } from '../../lib/format';
@@ -59,15 +66,76 @@ import { OperationHistory } from '../files/OperationHistory';
 
 const FILES_PAGE_SIZE = 50;
 
-/** Reasons in the order the screen lists them (A2 "Not included / partial"). */
+/** Reasons in the order the screen lists them (Amendment 2, B2). */
 export const REASON_ORDER = [
-  'OPEN',
-  'PENDING_APPROVAL',
+  'NEEDS_APPROVAL',
+  'REJECTED',
   'NEEDS_REVIEW',
   'NO_NUMERIC_CODE',
   'NO_NPCI_ROW',
   'BAD_SOURCE_DATA',
 ] as const;
+
+/** The screen's own wording for the Amendment 2 reasons; every other reason shows the server's label. */
+const REASON_LABEL: Readonly<Record<string, string>> = {
+  NEEDS_APPROVAL: "Needs a Checker's approval first",
+  REJECTED: "Rejected by the Checker; waiting for the Maker's new reply",
+};
+
+/** The label of a left-out case's reason (the server's for unknown or older reasons). */
+export function reasonLabel(n: Pick<NpciNotIncluded, 'reason' | 'reason_label'>): string {
+  return REASON_LABEL[n.reason] ?? (n.reason_label || n.reason);
+}
+
+/** Where a row's reply came from (Amendment 2). */
+const REPLY_SOURCE_ORDER = ['RULE', 'SUBMITTED', 'APPROVED'] as const;
+const REPLY_SOURCE_LABEL: Readonly<Record<string, string>> = {
+  RULE: "Rule's suggestion",
+  SUBMITTED: "Maker's reply (submitted)",
+  APPROVED: 'Checker-approved',
+};
+const REPLY_SOURCE_COUNT_LABEL: Readonly<Record<string, string>> = {
+  RULE: 'from the rule',
+  SUBMITTED: 'from the Maker',
+  APPROVED: 'from the Checker',
+};
+
+export function replySourceLabel(source: string | null | undefined): string {
+  if (!source) return '-';
+  return REPLY_SOURCE_LABEL[source] ?? source;
+}
+
+/**
+ * "250 from the rule, 40 from the Maker, 11 from the Checker", or null when
+ * there is nothing to count (or the server does not send the counts).
+ */
+export function replySourcesSummary(sources: Partial<Record<string, number>> | undefined): string | null {
+  if (!sources) return null;
+  const known: readonly string[] = REPLY_SOURCE_ORDER;
+  const keys = Object.keys(sources)
+    .filter((k) => (sources[k] ?? 0) > 0)
+    .sort((a, b) => {
+      const ia = known.indexOf(a);
+      const ib = known.indexOf(b);
+      return (ia < 0 ? known.length : ia) - (ib < 0 ? known.length : ib);
+    });
+  if (keys.length === 0) return null;
+  return keys
+    .map((k) => `${formatCount(sources[k])} ${REPLY_SOURCE_COUNT_LABEL[k] ?? `from ${k}`}`)
+    .join(', ');
+}
+
+/** Counts per reply source from a file's rows (the file details carry no such counts). */
+export function countReplySources(rows: Pick<NpciFileLine, 'reply_source'>[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of rows) if (r.reply_source) out[r.reply_source] = (out[r.reply_source] ?? 0) + 1;
+  return out;
+}
+
+/** Which reply the file uses, in plain words (Amendment 2, B2). */
+const CURRENT_REPLY_TEXT =
+  "The file uses each case's current reply: the Checker-approved one, else the Maker's submitted one, else " +
+  "the rule's suggestion. Some replies need a Checker's approval first, and a rejected reply stays out.";
 
 /** "RET 115", or "RET (no numeric code yet)" while the code is unknown. */
 export function replyCode(flag: string, code: string | null | undefined): string {
@@ -76,13 +144,13 @@ export function replyCode(flag: string, code: string | null | undefined): string
 }
 
 /**
- * "4 case(s): Not submitted yet (open or in progress)" per reason, from the
+ * "4 case(s): Needs a Checker's approval first" per reason, from the
  * not-included list (its labels) and the server's counts.
  */
 export function notIncludedSummary(
   p: Pick<NpciFilePreview, 'not_included' | 'not_included_counts'>,
 ): string[] {
-  const label = new Map(p.not_included.map((n) => [n.reason, n.reason_label]));
+  const label = new Map(p.not_included.map((n) => [n.reason, reasonLabel(n)]));
   const known: readonly string[] = REASON_ORDER;
   const reasons = Object.keys(p.not_included_counts).sort((a, b) => {
     const ia = known.indexOf(a);
@@ -91,7 +159,7 @@ export function notIncludedSummary(
   });
   return reasons
     .filter((r) => (p.not_included_counts[r] ?? 0) > 0)
-    .map((r) => `${formatCount(p.not_included_counts[r])} case(s): ${label.get(r) ?? r}`);
+    .map((r) => `${formatCount(p.not_included_counts[r])} case(s): ${label.get(r) ?? REASON_LABEL[r] ?? r}`);
 }
 
 /** A 409 on generate that asks for the partial-file confirmation. */
@@ -181,7 +249,7 @@ export function NotIncludedTable({
               <Table.Td>{n.status}</Table.Td>
               <Table.Td>{replyCode(n.flag, n.code)}</Table.Td>
               <Table.Td className="wrap-anywhere">
-                {n.reason_label}
+                {reasonLabel(n)}
                 {n.detail && (
                   <Text size="xs" c="dimmed">
                     {n.detail}
@@ -196,7 +264,8 @@ export function NotIncludedTable({
   );
 }
 
-function PreviewRowsTable({
+/** The rows of the next file (preview, with the rule) or of a generated file (details, no rule). */
+function FileRowsTable({
   module,
   fileDate,
   rows,
@@ -204,15 +273,28 @@ function PreviewRowsTable({
 }: {
   module: string;
   fileDate: string;
-  rows: NpciPreviewLine[];
+  rows: (NpciFileLine & { rule_code?: string })[];
   label: string;
 }) {
+  const withRule = rows.some((r) => r.rule_code !== undefined);
+  const headers = [
+    'Line',
+    'Case',
+    'RRN',
+    ...(withRule ? ['Rule'] : []),
+    'Reply',
+    'Reply from',
+    'Shtdat',
+    'Amount',
+    'Account',
+    'Text',
+  ];
   return (
-    <Table.ScrollContainer minWidth={1000}>
+    <Table.ScrollContainer minWidth={1100}>
       <Table withTableBorder aria-label={label}>
         <Table.Thead>
           <Table.Tr>
-            {['Line', 'Case', 'RRN', 'Rule', 'Reply', 'Shtdat', 'Amount', 'Account', 'Text'].map((h) => (
+            {headers.map((h) => (
               <Table.Th key={h} scope="col">
                 {h}
               </Table.Th>
@@ -232,8 +314,9 @@ function PreviewRowsTable({
                 )}
               </Table.Td>
               <Table.Td>{r.rrn}</Table.Td>
-              <Table.Td>{r.rule_code || '-'}</Table.Td>
+              {withRule && <Table.Td>{r.rule_code || '-'}</Table.Td>}
               <Table.Td>{replyCode(r.flag, r.code)}</Table.Td>
+              <Table.Td>{replySourceLabel(r.reply_source)}</Table.Td>
               <Table.Td>{formatDate(r.shtdat)}</Table.Td>
               {/* As written in the file ("140.5"), not reformatted. */}
               <Table.Td ff="monospace">{r.amount}</Table.Td>
@@ -266,6 +349,11 @@ function NpciFileDrawer({
     enabled: file !== null,
   });
   const f = query.data;
+  // The id of the file whose rows are unfolded, so another file opens folded.
+  const [rowsShownFor, setRowsShownFor] = useState<number | null>(null);
+  const showRows = f !== undefined && rowsShownFor === f.id;
+  const toggleRows = () => setRowsShownFor(showRows || !f ? null : f.id);
+  const sources = f ? replySourcesSummary(countReplySources(f.rows)) : null;
   return (
     <Drawer opened={file !== null} onClose={onClose} position="right" size="xl" title={file?.file_name ?? ''}>
       {query.isPending && file !== null && <Skeleton h={200} />}
@@ -281,12 +369,32 @@ function NpciFileDrawer({
             {f.generated_by || '-'} on {formatDateTime(f.generated_at)}.
             {f.partial ? ` Partial: ${formatCount(f.not_included_count)} case(s) were left out.` : ''}
           </Text>
+          {sources && <Text size="sm">Replies: {sources}.</Text>}
           {f.remarks && <Text size="sm">Remarks: {f.remarks}</Text>}
           <Text size="xs" ff="monospace" className="wrap-anywhere">
             SHA-256 {f.sha256}
           </Text>
           {f.counts.length > 0 && (
             <CountsTable counts={f.counts} label={`Rows per reply in ${f.file_name}`} />
+          )}
+          {f.rows.length > 0 && (
+            <Stack gap={4}>
+              <Group>
+                <Button size="xs" variant="subtle" onClick={toggleRows} aria-expanded={showRows}>
+                  {showRows
+                    ? 'Hide the rows'
+                    : `Show the ${formatCount(f.rows.length)} row(s) of ${f.file_name}`}
+                </Button>
+              </Group>
+              {showRows && (
+                <FileRowsTable
+                  module={module}
+                  fileDate={f.file_date}
+                  rows={f.rows}
+                  label={`Rows of ${f.file_name}`}
+                />
+              )}
+            </Stack>
           )}
           {f.warnings.length > 0 && (
             <Alert color="orange" title="Warnings when the file was generated">
@@ -532,9 +640,11 @@ function GenerateModal({
   const [serverAsked, setServerAsked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
-  const partial = preview.partial || serverAsked;
+  // Amendment 2: the confirmation is asked only when something is held back.
+  const partial = preview.partial || preview.not_included.length > 0 || serverAsked;
   const name = preview.next_file_name;
   const summary = notIncludedSummary(preview);
+  const sources = replySourcesSummary(preview.reply_sources);
 
   const close = () => {
     setRemarks('');
@@ -555,7 +665,7 @@ function GenerateModal({
       notifications.show({
         color: 'green',
         title: `${f.file_name} generated`,
-        message: `${formatCount(f.row_count)} row(s) included${f.partial ? ' (partial file)' : ''}. Download it, have it approved and upload it to the NPCI portal.`,
+        message: `${formatCount(f.row_count)} row(s) included${f.partial ? ' (partial file)' : ''}. Download it and upload it to the NPCI portal.`,
       });
       onGenerated();
       close();
@@ -579,9 +689,11 @@ function GenerateModal({
     <Modal opened={opened} onClose={close} title={`Generate ${name}?`} size="lg" centered>
       <Stack gap="sm">
         <Text size="sm">
-          {formatCount(preview.row_count)} Checker-approved repl{preview.row_count === 1 ? 'y' : 'ies'} will
-          be included in file {name}, total {formatRupees(preview.total_amount)}.
+          {formatCount(preview.row_count)} repl{preview.row_count === 1 ? 'y' : 'ies'} will be included in
+          file {name}, total {formatRupees(preview.total_amount)}.
         </Text>
+        {sources && <Text size="sm">Replies: {sources}.</Text>}
+        <Text size="sm">{CURRENT_REPLY_TEXT}</Text>
         {preview.next_sequence > 1 && (
           <Text size="sm">
             This is file number {preview.next_sequence} for {formatDate(preview.file_date)}: it holds only
@@ -589,8 +701,8 @@ function GenerateModal({
           </Text>
         )}
         <Text size="sm">
-          The app only saves the file. It does not send it anywhere: download it, have it approved and upload
-          it to the NPCI portal yourself.
+          The app only saves the file. It does not send it anywhere: download it and upload it to the NPCI
+          portal yourself.
         </Text>
         {preview.warnings.length > 0 && (
           <Alert color="orange" title="Warnings">
@@ -615,8 +727,9 @@ function GenerateModal({
                 </List>
               )}
               <Text size="sm">
-                Each is listed under "Not included" on this page. They can go into a later file for the date
-                once they are approved (or their numeric code is filled in).
+                Each is listed under "Not included" on this page with its reason. A case goes into a later
+                file for the date once its reason is resolved: a Checker's approval, a new reply from the
+                Maker, a cleared review or a filled-in numeric code.
               </Text>
               <Checkbox
                 label={`I confirm that ${name} is a partial file`}
@@ -677,6 +790,8 @@ function PreviewBody({
   const [showRows, setShowRows] = useState(false);
   const name = preview.next_file_name;
   const summary = notIncludedSummary(preview);
+  const sources = replySourcesSummary(preview.reply_sources);
+  const changed = preview.changed_since_included_count ?? 0;
 
   const generated = () => {
     void qc.invalidateQueries({ queryKey: ['npci-preview', module, businessDate] });
@@ -687,8 +802,8 @@ function PreviewBody({
   return (
     <Stack gap="sm">
       <Text size="sm" c="dimmed">
-        The app generates the NPCI reply file only. Download it, have it approved and upload it to the NPCI
-        portal yourself. Only Checker-approved replies are included; a case is included in one file only.
+        The app generates the NPCI reply file only. Download it and upload it to the NPCI portal yourself.{' '}
+        {CURRENT_REPLY_TEXT} A case is included in one file only.
       </Text>
 
       <Group gap="xs" wrap="wrap">
@@ -702,6 +817,7 @@ function PreviewBody({
           </Badge>
         )}
       </Group>
+      {sources && preview.row_count > 0 && <Text size="sm">Replies: {sources}.</Text>}
 
       {preview.already_sent_count > 0 && (
         <Text size="sm">
@@ -709,6 +825,16 @@ function PreviewBody({
           {preview.already_sent_files.length === 1 ? 'file' : 'files'} {preview.already_sent_files.join(', ')}
           . They are not included again.
         </Text>
+      )}
+
+      {changed > 0 && (
+        <div role="group" aria-label="Cases changed since included">
+          <Alert color="orange" title="Changed since included">
+            {formatCount(changed)} case(s) already included in a file of this date have changed since (flagged
+            for review, another reply chosen, or closed by a re-run). The file already generated does not
+            change and the case is not included again: any correction is made with NPCI outside the app.
+          </Alert>
+        </div>
       )}
 
       {preview.warnings.length > 0 && (
@@ -726,9 +852,7 @@ function PreviewBody({
       {preview.counts.length > 0 ? (
         <CountsTable counts={preview.counts} label={`Rows per reply in ${name}`} />
       ) : (
-        <Text size="sm">
-          No Checker-approved reply is waiting to be included in a file for {formatDate(businessDate)}.
-        </Text>
+        <Text size="sm">No reply is waiting to be included in a file for {formatDate(businessDate)}.</Text>
       )}
 
       {preview.rows.length > 0 && (
@@ -748,7 +872,7 @@ function PreviewBody({
               <Text size="xs" c="dimmed">
                 Account numbers show their last 4 characters only; the full values are in the downloaded file.
               </Text>
-              <PreviewRowsTable
+              <FileRowsTable
                 module={module}
                 fileDate={preview.file_date}
                 rows={preview.rows}
