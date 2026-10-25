@@ -6,6 +6,22 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-10-24 / 25
+
+- **Changed: NPCI file generated right after reconciliation** (owner
+  2026-10-24, Amendment 2; reverses "only Checker-approved"). Each case's
+  reply = Checker-approved, else the Maker's, else the rule's suggestion.
+  Held back until a Checker approves: R06b, any "RRC 501 without a new
+  credit", R07x, R04b, and rejected replies (owner confirmed 2026-10-25).
+  Partial-file confirmation only when something is held back. Each row
+  records its reply source (migration `npci_files/0002`). From OPEN cases:
+  14 Jul 301/301, 25 Sep 60/60, 26 Sep 20 + the R06b row in `_2`.
+- **Added: bank logo** (P8, owner 2026-10-24): icon in the header and
+  report print header, banner on the login page; full name "SUCO
+  Souharda Sahakari Bank".
+- Verified: 719/719 Django tests, Vitest 211/211, lint/type-check/build
+  clean.
+
 ## 2026-10-23 / 24
 
 - **Added: NPCI File Generation** (un-deferred by owner 2026-10-22).
