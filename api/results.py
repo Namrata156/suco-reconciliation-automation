@@ -18,8 +18,14 @@ roles. Thin views over data the Phase 2-4 services already wrote:
 
 Nothing here computes a rule, a G rule or a settlement figure; it only lists
 what is stored. About 70,000 groups per date: only one page is ever read.
+
+UI refinements U3 (docs/ui_refinements_api_contract.txt B3, B4): the
+settlement "summary" (the plain sentence's figures, "explained" by type)
+and the transactions kind "unexplained" (every entry no rule explains).
 """
 from __future__ import annotations
+
+from decimal import Decimal
 
 from django.db.models import Case, Count, Exists, F, FilteredRelation, OuterRef, Prefetch, Q, Value, When
 from django.db.models import IntegerField
@@ -27,7 +33,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 
-from api.base import ModuleMixin, V1APIView
+from api.base import ModuleMixin, V1APIView, module_slug
 from api.operations import _DateMixin, _bad_request
 from exception_management import api as legacy
 from exception_management.detail import date_overlay_rows, settlement_result_payload
@@ -36,7 +42,9 @@ from reconciliation.models import ProcessingStatus as GroupStatus
 from reconciliation.models import RegisterPresence, TransactionMatchGroup
 from reconciliation.presence import DEFAULT_OVERLAY_LEGS, DEFAULT_PRESENCE_LEGS
 from rule_engine.models import Priority, RuleEvaluationRun, RuleResult, StatusCategory
-from settlement.models import CheckStatus, NtslCycleCheck, SettlementResult, Side
+from exception_management.actions import ACTION_SPECS, DEFAULT_ACTION_BY_RULE
+from settlement import gap_rules
+from settlement.models import CheckStatus, NtslCycleCheck, ResultStatus, SettlementResult, Side
 
 CBS, NPCI = "CBS", "NPCI"
 
@@ -390,7 +398,23 @@ def _check_row(c: NtslCycleCheck) -> dict:
                              only categories that had lines
 
     The four net blocks carry {"ntsl", "computed", "difference"} as 2-decimal
-    strings or None."""
+    strings or None.
+
+    Fee GST check (settlement.fee_gst, owner 2026-11-06), WARNING ONLY -- it
+    never changes status / failures:
+      gst_warning     bool   some row below is not within
+      gst_check       None (not checked: MISSING cycle, or stored before the
+                      check existed) or {"rate": "0.18", "tolerance":
+                      "1.00" (flat, per pair and side), "rows": [
+                        {"fee_category": "SWITCHING_FEE", "gst_category":
+                         "SWITCHING_FEE_GST", "side": "DEBIT" | "CREDIT",
+                         "fee": "0.00", "fee_txn_count": int (information),
+                         "expected_gst": "0.00", "ntsl_gst": "0.00",
+                         "difference": "0.00" (expected - NTSL),
+                         "tolerance": "0.00", "within": bool,
+                         "note": None | "OUTSIDE_TOLERANCE" |
+                                 "GST_WITHOUT_FEE" | "FEE_WITHOUT_GST"}]}
+                      12 rows: 6 pairs x 2 sides, always in the same order."""
     return {"id": c.pk, "cycle": c.settlement_cycle.cycle_code, "status": c.status, "failures": c.failures,
             "map_version": c.map_version.version, "line_count": c.line_count, "unmapped_count": c.unmapped_count,
             "unmapped_lines": c.unmapped_lines, "category_totals": c.category_totals,
@@ -402,6 +426,7 @@ def _check_row(c: NtslCycleCheck) -> dict:
                                "difference": _m(c.settlement_diff)},
             "final_net": {"ntsl": _m(c.ntsl_final_net), "computed": _m(c.computed_final_net),
                           "difference": _m(c.final_diff)},
+            "gst_warning": c.gst_warning, "gst_check": c.gst_check or None,
             "checked_at": c.checked_at, "source": c.source}
 
 
@@ -412,6 +437,8 @@ def self_check_payload(module, d) -> dict:
     counts = {s: sum(1 for c in checks if c.status == s) for s in CheckStatus.values}
     return {"cycles": len(checks), **{s.lower(): n for s, n in counts.items()},
             "all_pass": bool(checks) and counts[CheckStatus.PASS] == len(checks),
+            # Fee GST check, warning only: number of cycles with a gst_warning (not part of all_pass).
+            "gst_warnings": sum(1 for c in checks if c.gst_warning),
             "results": [_check_row(c) for c in checks]}
 
 
@@ -425,6 +452,161 @@ TRANSACTION_KINDS = {
 }
 _FORMAT_KEY = {"npci": ("contributing_format",), "adjustments": ("g09", "row_format"), "z": ("z", "item_format")}
 TRANSACTION_FILTERS = ("rrn", "rule", "g_rule", "cycle", "side")
+# UI refinements 5.3: one merged list of every entry no rule explains (contract B4).
+UNEXPLAINED_KIND = "unexplained"
+UNEXPLAINED_FIELDS = ["source", "source_label", "rrn", "rule", "g_rule", "cycle", "side", "amount", "detail"]
+UNEXPLAINED_SOURCES = {
+    "NPCI_NOT_ATTRIBUTED": "NTSL-settled NPCI row no rule explains",
+    "NPCI_NO_DIRECTION": "NTSL-settled NPCI row with no debit / credit",
+    "ADJUSTMENT_NOT_SIGNED": "Adjustment row not in the G09 sign table",
+    "ADJUSTMENT_NOT_ASSIGNED": "Adjustment row not assigned to DC1 / DC2",
+    "NTSL_LINE_NOT_COVERED": "NTSL line no G rule covers",
+}
+_CONTRIBUTING_FORMAT = ["rrn", "g_rule", "rule", "cycle", "side", "amount", "npci_code", "role"]
+_G09_FORMAT = ["rrn", "adjtype", "remitter", "beneficiary", "amount", "raised_at"]
+
+
+def _u(source, *, rrn=None, rule=None, g_rule=None, cycle=None, side=None, amount=None, detail="") -> dict:
+    return {"source": source, "source_label": UNEXPLAINED_SOURCES[source], "rrn": rrn or None, "rule": rule or None,
+            "g_rule": g_rule or None, "cycle": cycle, "side": side, "amount": amount, "detail": detail}
+
+
+def unexplained_entries(snapshot: dict) -> list[dict]:
+    """Every entry of a settlement result that no rule explains, from its
+    snapshot (settlement.reconcile), in one shape. Never recomputed."""
+    out = []
+    fmt = snapshot.get("contributing_format") or _CONTRIBUTING_FORMAT
+    for raw in snapshot.get("contributing") or []:
+        r = dict(zip(fmt, raw))
+        if r.get("g_rule") == gap_rules.UNATTRIBUTED:
+            out.append(_u("NPCI_NOT_ATTRIBUTED", rrn=r.get("rrn"), rule=r.get("rule"), g_rule=r.get("g_rule"),
+                          cycle=r.get("cycle"), side=r.get("side"), amount=r.get("amount"),
+                          detail=f"NTSL settled this NPCI row (code {r.get('npci_code') or '-'}); "
+                                 f"rule {r.get('rule') or 'none'} is not explained by any G rule."))
+    for raw in snapshot.get("not_placed") or []:
+        r = dict(zip(fmt, raw))
+        out.append(_u("NPCI_NO_DIRECTION", rrn=r.get("rrn"), rule=r.get("rule"), g_rule=r.get("g_rule"),
+                      cycle=r.get("cycle"), amount=r.get("amount"),
+                      detail="The NPCI row has no debit / credit direction, so it has no side."))
+    g09 = snapshot.get("g09") or {}
+    for raw in g09.get("not_in_sign_table") or []:
+        r = dict(zip(_G09_FORMAT, raw))
+        out.append(_u("ADJUSTMENT_NOT_SIGNED", rrn=r.get("rrn"), g_rule=gap_rules.G09, side=Side.ADJUSTMENT,
+                      amount=r.get("amount"),
+                      detail=f"Adjustment type '{r.get('adjtype')}' (remitter {r.get('remitter')}, beneficiary "
+                             f"{r.get('beneficiary')}) is not in the G09 sign table, or SSK is on both / neither side."))
+    for raw in g09.get("unassigned") or []:
+        r = dict(zip(_G09_FORMAT + ["signed"], raw))
+        out.append(_u("ADJUSTMENT_NOT_ASSIGNED", rrn=r.get("rrn"), g_rule=gap_rules.G09, side=Side.ADJUSTMENT,
+                      amount=r.get("signed") or r.get("amount"),
+                      detail=f"Adjustment '{r.get('adjtype')}' raised at {r.get('raised_at') or 'an unknown time'}: "
+                             "not on this business date, so not in DC1 / DC2."))
+    for row in snapshot.get("cycles") or []:
+        if row.get("side") != Side.UNCOVERED:
+            continue
+        for line in (row.get("detail") or {}).get("lines") or []:
+            amount = Decimal(str(line.get("credit") or 0)) - Decimal(str(line.get("debit") or 0))
+            out.append(_u("NTSL_LINE_NOT_COVERED", cycle=row.get("cycle"), side=Side.UNCOVERED,
+                          amount=f"{amount:.2f}",
+                          detail=f"NTSL line '{line.get('description')}' ({line.get('category')})."))
+    return out
+
+
+# -- "explained" by type (contract B3) -------------------------------------------
+EXPLAINED_TYPES = {
+    "DRC": "DRC (debited, not reversed)",
+    "TCC": "TCC",
+    "RET": "RET (timeout, not credited)",
+    "RRC": "RRC (adjustment already reversed in CBS)",
+    "LATE_ADJUSTMENTS": "Adjustments in the dispute cycles (DC1 / DC2)",
+    "OTHER": "Other explained items",
+}
+
+
+# Owner Q3 (2026-10-27, waiting on ops): the G09 dispute-cycle Adjustment rows
+# are shown as the "late adjustments" type of the breakdown. If ops' tally sheet
+# says otherwise, set this to False: they then leave explained_by_type and are
+# returned as summary["notes"]["late_adjustments"] instead (same figures).
+LATE_ADJUSTMENTS_IN_BREAKDOWN = True
+
+
+def _explained_type(rule: str) -> str:
+    action = DEFAULT_ACTION_BY_RULE.get(rule)
+    flag = ACTION_SPECS[action].code_flag if action in ACTION_SPECS else None
+    return flag if flag in ("DRC", "TCC", "RET", "RRC") else "OTHER"
+
+
+def explained_by_type(snapshot: dict) -> list[dict]:
+    """SOP check items (G04-G08) grouped by the rule's reply flag, plus the
+    G09 dispute-cycle Adjustment rows (in_sop_check false)."""
+    buckets: dict[str, dict] = {}
+
+    def add(type_, rule, g_rule, amount, in_sop):
+        b = buckets.setdefault(type_, {"type": type_, "label": EXPLAINED_TYPES[type_], "count": 0,
+                                       "amount": Decimal("0"), "in_sop_check": in_sop, "rules": {}})
+        r = b["rules"].setdefault((rule, g_rule), {"rule": rule, "g_rule": g_rule,
+                                                   "g_label": gap_rules.G_LABELS.get(g_rule, ""), "count": 0,
+                                                   "amount": Decimal("0")})
+        for x in (b, r):
+            x["count"] += 1
+            x["amount"] += amount
+
+    for rrn, rule, g_rule, amount in ((snapshot.get("sop") or {}).get("items") or []):
+        add(_explained_type(rule), rule, g_rule, Decimal(str(amount)), True)
+    if LATE_ADJUSTMENTS_IN_BREAKDOWN:
+        for amount in _late_adjustment_amounts(snapshot):
+            add("LATE_ADJUSTMENTS", None, gap_rules.G09, amount, False)
+    out = []
+    for type_ in EXPLAINED_TYPES:
+        b = buckets.get(type_)
+        if b is None:
+            continue
+        rules = [{**r, "amount": f"{r['amount']:.2f}"} for r in b["rules"].values()]
+        out.append({**b, "amount": f"{b['amount']:.2f}", "rules": rules})
+    return out
+
+
+def _late_adjustment_amounts(snapshot: dict) -> list[Decimal]:
+    """Signed amounts of the G09 Adjustment rows assigned to DC1 / DC2."""
+    g09 = snapshot.get("g09") or {}
+    fmt = g09.get("row_format") or (_G09_FORMAT + ["cycle", "signed"])
+    return [Decimal(str(dict(zip(fmt, raw)).get("signed") or 0)) for raw in g09.get("rows") or []]
+
+
+def _notes(snapshot: dict) -> dict:
+    if LATE_ADJUSTMENTS_IN_BREAKDOWN:
+        return {}
+    amounts = _late_adjustment_amounts(snapshot)
+    return {"late_adjustments": {"label": EXPLAINED_TYPES["LATE_ADJUSTMENTS"], "count": len(amounts),
+                                 "amount": f"{sum(amounts, Decimal('0')):.2f}"}} if amounts else {}
+
+
+def settlement_summary(module, result: SettlementResult | None, checks: dict, link) -> dict | None:
+    """The figures of the plain sentence on top of the settlement page
+    (contract B3). Read from the stored result; nothing is recomputed."""
+    if result is None:
+        return None
+    snapshot = result.snapshot or {}
+    sop = snapshot.get("sop") or {}
+    by_type = explained_by_type(snapshot) if result.status != ResultStatus.NOT_READY else []
+    invalid = sop.get("cbs_rows_without_valid_rrn") or {}
+    return {
+        "status": result.status, "status_label": ResultStatus(result.status).label,
+        "tallied": result.status == ResultStatus.TALLIED, "reasons": result.reasons,
+        "cbs_net": _m(result.sop_cbs_net), "ntsl_net": _m(result.sop_ntsl_net),
+        "difference": _m(result.sop_difference), "explained": _m(result.sop_explained),
+        "unexplained": _m(result.sop_unexplained),
+        "cycles_unexplained_amount": _m(result.unexplained_amount),
+        "cycles_unexplained_count": result.unexplained_count,
+        "unexplained_entries": len(unexplained_entries(snapshot)),
+        "explained_by_type": by_type,
+        "notes": _notes(snapshot) if result.status != ResultStatus.NOT_READY else {},
+        "cbs_rows_without_valid_rrn": ({"count": invalid.get("count", 0), "amount": invalid.get("amount")}
+                                       if invalid else None),
+        "self_check_failed": bool(checks["cycles"]) and not checks["all_pass"],
+        "settlement_case": None if link is None else {
+            "id": link.pk, "status": link.status, "link": f"/{module_slug(module)}/cases/{link.pk}"},
+    }
 
 
 def _dig(snapshot: dict, path: tuple):
@@ -439,16 +621,23 @@ def settlement_transactions(view, request, result: SettlementResult | None) -> R
     4.15), one kind at a time, filtered and paginated."""
     p, errors = request.query_params, {}
     kind = p.get("kind") or "npci"
-    if kind not in TRANSACTION_KINDS:
-        errors["kind"] = [f"Allowed: {', '.join(TRANSACTION_KINDS)}"]
+    if kind not in TRANSACTION_KINDS and kind != UNEXPLAINED_KIND:
+        errors["kind"] = [f"Allowed: {', '.join([*TRANSACTION_KINDS, UNEXPLAINED_KIND])}"]
     if p.get("side") and p["side"] not in Side.values:
         errors["side"] = [f"Allowed: {', '.join(Side.values)}"]
+    only_unexplained = _bool_param(p, "unexplained", errors)
     if errors:
         return _bad_request("Invalid input", errors)
     snapshot = result.snapshot if result is not None else {}
-    _label, path, fields = TRANSACTION_KINDS[kind]
-    fields = fields or _dig(snapshot, _FORMAT_KEY[kind]) or []
-    rows = [dict(zip(fields, r)) for r in (_dig(snapshot, path) or [])]
+    if kind == UNEXPLAINED_KIND:
+        fields = UNEXPLAINED_FIELDS
+        rows = unexplained_entries(snapshot)
+    else:
+        _label, path, fields = TRANSACTION_KINDS[kind]
+        fields = fields or _dig(snapshot, _FORMAT_KEY[kind]) or []
+        rows = [dict(zip(fields, r)) for r in (_dig(snapshot, path) or [])]
+        if only_unexplained and kind == "npci":  # UI refinements 5.3
+            rows = [r for r in rows if r.get("g_rule") == gap_rules.UNATTRIBUTED]
     for name in TRANSACTION_FILTERS:
         if p.get(name) and (not fields or name in fields):
             wanted = set(_csv(p[name]))
@@ -461,6 +650,7 @@ def settlement_transactions(view, request, result: SettlementResult | None) -> R
     response.data["result_id"] = result.pk if result else None
     response.data["result_status"] = result.status if result else None
     response.data["counts"] = {k: len(_dig(snapshot, v[1]) or []) for k, v in TRANSACTION_KINDS.items()}
+    response.data["counts"][UNEXPLAINED_KIND] = len(unexplained_entries(snapshot))
     return response
 
 
@@ -492,11 +682,13 @@ class SettlementView(ResultsView):
             })
         link = (ExceptionCase.objects.filter(payment_module=self.module, business_date=d,
                                              case_type=CaseType.SETTLEMENT).select_related("assigned_to").first())
+        summary = settlement_summary(self.module, result, checks, link)
         earlier = (SettlementResult.objects.filter(payment_module=self.module, business_date=d, is_current=False)
                    .order_by("-computed_at", "-id").values("id", "status", "computed_at", "superseded_at",
                                                            "unexplained_amount")[:20])
         return Response({
             "business_date": d,
+            "summary": summary,
             "result": body,
             "self_check": checks,
             "case": None if link is None else {

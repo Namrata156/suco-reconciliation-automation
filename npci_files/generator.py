@@ -268,6 +268,54 @@ def approval_required(case: ExceptionCase, reply: Reply) -> str | None:
     return None
 
 
+def load_actions(case_ids) -> tuple[dict[tuple, ProposedAction], dict[int, ProposedAction]]:
+    """({(case id, APPROVED|PENDING): the latest such action}, {case id: the
+    newest submission}) for _reply / hold_reason, in one query."""
+    actions: dict[tuple, ProposedAction] = {}
+    latest: dict[int, ProposedAction] = {}
+    for action in (ProposedAction.objects.filter(case_id__in=list(case_ids)).select_related("response_code")
+                   .order_by("submitted_at", "pk")):
+        latest[action.case_id] = action  # the newest submission
+        if action.decision in (Decision.APPROVED, Decision.PENDING):
+            actions[(action.case_id, action.decision)] = action  # the latest approved one wins
+    return actions, latest
+
+
+def current_reply(case: ExceptionCase, actions: dict) -> Reply:
+    """The reply the case's row would carry now (Amendment 2); `actions` from load_actions."""
+    return _reply(case, actions, False)
+
+
+def hold_reason(case: ExceptionCase, reply: Reply, latest: dict) -> tuple[str, str] | None:
+    """(Reason, detail) when the case's reply waits for a person before it may
+    go into a file (a)-(c) of the module docstring, else None."""
+    if case.needs_review:
+        return Reason.NEEDS_REVIEW, case.needs_review_reason or ""
+    if _rejected(case, latest):
+        return Reason.REJECTED, latest[case.pk].decision_remarks or ""
+    if case.status not in DECIDED and (why := approval_required(case, reply)):
+        return Reason.NEEDS_APPROVAL, why
+    return None
+
+
+def build_line(file_format, case: ExceptionCase, flag: str, code: str, rc: ResponseCode, fact: TransactionFact,
+               raw: dict) -> FileLine:
+    """The file line for a case's reply (design section 2). Raises FormatError
+    when a value cannot be written."""
+    if flag == "RRC":
+        txn_text = _clean_cell(raw.get(ADJUSTMENT_TXN_DATE_CELL))
+        try:
+            shtdat = datetime.strptime(txn_text, ADJUSTMENT_TXN_DATE_FORMAT).date()
+        except ValueError as exc:
+            raise FormatError(f"Adjustment Txndate {txn_text!r} is not dd-mm-yyyy") from exc
+    else:
+        shtdat = case.business_date
+    line = FileLine(rrn=case.rrn, flag=flag, code=code, shtdat=shtdat, amount=fact.amount,
+                    account=_clean_cell(raw.get(ACCOUNT_CELL_BY_LEG[LEG_BY_FLAG[flag]])), text=rc.description)
+    file_format.check_line(line)
+    return line
+
+
 def _candidates(module: PaymentModule, file_date: date):
     adjustment_groups = RegisterPresence.objects.filter(
         leg=LEG_BY_FLAG["RRC"], present=True, match_group__payment_module=module,
@@ -289,14 +337,7 @@ def plan_file(module: PaymentModule, file_date: date, *, rule_defaults: bool = F
     cases = list(_candidates(module, file_date))
     case_ids = [c.pk for c in cases]
 
-    actions: dict[tuple, ProposedAction] = {}
-    latest: dict[int, ProposedAction] = {}
-    if not rule_defaults:
-        for action in (ProposedAction.objects.filter(case_id__in=case_ids).select_related("response_code")
-                       .order_by("submitted_at", "pk")):
-            latest[action.case_id] = action  # the newest submission
-            if action.decision in (Decision.APPROVED, Decision.PENDING):
-                actions[(action.case_id, action.decision)] = action  # the latest approved one wins
+    actions, latest = ({}, {}) if rule_defaults else load_actions(case_ids)
     presences: dict[tuple, RegisterPresence] = {}
     for p in (RegisterPresence.objects.filter(match_group_id__in={c.match_group_id for c in cases},
                                               leg__in=set(LEG_BY_FLAG.values()), present=True,
@@ -337,15 +378,9 @@ def plan_file(module: PaymentModule, file_date: date, *, rule_defaults: bool = F
     for case, reply, flag, fact in placed:
         rc, code = reply.response_code, reply.code
         if not rule_defaults:
-            held = None
-            if case.needs_review:
-                held = (Reason.NEEDS_REVIEW, case.needs_review_reason)
-            elif _rejected(case, latest):
-                held = (Reason.REJECTED, latest[case.pk].decision_remarks)
-            elif case.status not in DECIDED and (why := approval_required(case, reply)):
-                held = (Reason.NEEDS_APPROVAL, why)
+            held = hold_reason(case, reply, latest)
             if held:
-                plan.excluded.append(Excluded(case, flag, code, held[0], held[1] or ""))
+                plan.excluded.append(Excluded(case, flag, code, held[0], held[1]))
                 continue
         if rc is None or code is None:
             label = f"{flag} {rc.description}" if rc is not None else flag
@@ -355,20 +390,8 @@ def plan_file(module: PaymentModule, file_date: date, *, rule_defaults: bool = F
             plan.excluded.append(Excluded(case, flag, code, Reason.NO_NPCI_ROW,
                                           f"No NPCI {LEG_BY_FLAG[flag]} row is attached to this case"))
             continue
-        leg = LEG_BY_FLAG[flag]
-        raw = cells.get(fact.pk, {})
         try:
-            if flag == "RRC":
-                txn_text = _clean_cell(raw.get(ADJUSTMENT_TXN_DATE_CELL))
-                try:
-                    shtdat = datetime.strptime(txn_text, ADJUSTMENT_TXN_DATE_FORMAT).date()
-                except ValueError as exc:
-                    raise FormatError(f"Adjustment Txndate {txn_text!r} is not dd-mm-yyyy") from exc
-            else:
-                shtdat = case.business_date
-            line = FileLine(rrn=case.rrn, flag=flag, code=code, shtdat=shtdat, amount=fact.amount,
-                            account=_clean_cell(raw.get(ACCOUNT_CELL_BY_LEG[leg])), text=rc.description)
-            plan.file_format.check_line(line)
+            line = build_line(plan.file_format, case, flag, code, rc, fact, cells.get(fact.pk, {}))
         except FormatError as exc:
             plan.excluded.append(Excluded(case, flag, code, Reason.BAD_SOURCE_DATA, str(exc)))
             continue

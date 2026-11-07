@@ -4,7 +4,7 @@
 """
 from django.urls import path
 
-from api import alerts, audit, auth, npci_files, operations, results, settings_views, views
+from api import alerts, audit, auth, dashboard, lookup, npci_files, operations, reports, results, settings_views, views
 
 urlpatterns = [
     path("auth/csrf/", auth.CsrfView.as_view(), name="v1-auth-csrf"),
@@ -23,6 +23,7 @@ urlpatterns = [
     path("audit/settings-events/", audit.SettingsEventAuditView.as_view(), name="v1-audit-settings-events"),
     path("audit/user-activity/", audit.UserActivityAuditView.as_view(), name="v1-audit-user-activity"),
     path("audit/operations/", audit.OperationAuditView.as_view(), name="v1-audit-operations"),
+    path("audit/everything/", audit.EverythingAuditView.as_view(), name="v1-audit-everything"),
     path("users-and-roles/", audit.UsersAndRolesView.as_view(), name="v1-users-and-roles"),
     # per module
     path("<slug:module>/meta/", views.MetaView.as_view(), name="v1-meta"),
@@ -38,6 +39,7 @@ urlpatterns = [
     path("<slug:module>/files/<int:pk>/", operations.FileDetailView.as_view(), name="v1-file-detail"),
     path("<slug:module>/files/<int:pk>/exceptions/", operations.FileExceptionsView.as_view(),
          name="v1-file-exceptions"),
+    path("<slug:module>/files/<int:pk>/original/", operations.FileOriginalView.as_view(), name="v1-file-original"),
     path("<slug:module>/files/<int:pk>/select-date/", operations.FileSelectDateView.as_view(),
          name="v1-file-select-date"),
     path("<slug:module>/dates/", operations.DateListView.as_view(), name="v1-date-list"),
@@ -82,6 +84,11 @@ urlpatterns = [
          name="v1-settings-tolerance-version"),
     path("<slug:module>/settings/tolerance/<int:pk>/<str:decision>/", settings_views.ToleranceDecisionView.as_view(),
          name="v1-settings-tolerance-decision"),
+    # UI refinements U3: Find an RRN (docs/ui_refinements_api_contract.txt B1)
+    path("<slug:module>/rrn/<str:rrn>/", lookup.RrnLookupView.as_view(), name="v1-rrn-lookup"),
+    # UI refinements U5: NPCI files report, dashboard (docs/ui_refinements_api_contract_u4u5.txt F1, F2)
+    path("<slug:module>/reports/npci-files/", reports.NpciFilesReportView.as_view(), name="v1-report-npci-files"),
+    path("<slug:module>/dashboard/", dashboard.DashboardView.as_view(), name="v1-dashboard"),
     # NPCI file generation (docs/npci_file_design_draft_v1.txt Amendment 1, A7 API contract)
     path("<slug:module>/dates/<str:business_date>/npci-file/", npci_files.NpciGenerateView.as_view(),
          name="v1-npci-file-generate"),

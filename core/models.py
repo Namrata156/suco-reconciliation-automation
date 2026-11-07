@@ -236,6 +236,8 @@ class OperationType(models.TextChoices):
     # NPCI file generation (docs/npci_file_design_draft_v1.txt section 4 + Amendment 1)
     NPCI_FILE_GENERATED = "NPCI_FILE_GENERATED", "NPCI file generated"
     NPCI_FILE_DOWNLOADED = "NPCI_FILE_DOWNLOADED", "NPCI file downloaded"
+    # UI refinements 4.6 (owner 2026-10-27): "Download original" of an uploaded file
+    ORIGINAL_FILE_DOWNLOADED = "ORIGINAL_FILE_DOWNLOADED", "Original file downloaded"
 
 
 class OperationLog(AppendOnlyModel):

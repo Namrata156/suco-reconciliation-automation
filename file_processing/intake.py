@@ -316,7 +316,41 @@ def _detect_one(item: DetectInput, configs: list[FileTypeConfig], module: Paymen
             "warnings": warnings}
 
 
-def detect_files(user, module: PaymentModule, items: Iterable[DetectInput]) -> dict:
+def batch_checklist(module: PaymentModule, d: date, files: list[dict]) -> dict:
+    """The upload review step (UI refinements 2.1; docs/ui_refinements_api_contract_u4u5.txt
+    E1): every expected slot of date d, grouped ALREADY_PRESENT / IN_BATCH /
+    MISSING, from the date's checklist now and the batch's proposals. A batch
+    file fills a slot when its proposal has the slot's type and cycle and its
+    name date is d or none (CBS). Reads only; nothing saved."""
+    checklist = date_checklists(module, [d])[d]
+    batch: dict[tuple, list[int]] = {}
+    outside: list[int] = []
+    for f in files:
+        p = f["proposal"]
+        if p and p["business_date"] in (None, d):
+            batch.setdefault((p["file_type_config_id"], p["cycle"]), []).append(f["index"])
+        else:
+            outside.append(f["index"])
+    present_states = ("LOADED", "PROCESSING", "AWAITING_DATE_SELECTION")
+    slots, counts = [], Counter()
+    for s in checklist["slots"]:
+        indexes = batch.pop((s["file_type_config_id"], s["cycle"]), [])
+        group = "ALREADY_PRESENT" if s["state"] in present_states else "IN_BATCH" if indexes else "MISSING"
+        counts[group] += 1
+        slots.append({"file_type_config_id": s["file_type_config_id"], "file_type_code": s["file_type_code"],
+                      "label": s["label"], "cycle": s["cycle"], "state": s["state"], "group": group,
+                      "batch_files": indexes, "existing_files": s["files"]})
+    outside += [i for indexes in batch.values() for i in indexes]  # proposals that fill no expected slot
+    return {"business_date": d,
+            "summary": {"expected": len(slots), "already_present": counts["ALREADY_PRESENT"],
+                        "in_batch": counts["IN_BATCH"], "missing_after_batch": counts["MISSING"],
+                        "outside_checklist": len(outside)},
+            "slots": slots, "outside_checklist": sorted(outside)}
+
+
+def detect_files(user, module: PaymentModule, items: Iterable[DetectInput], business_date: date | None = None) -> dict:
+    """`business_date`: the date chosen on the review step; None = the date
+    proposed from the file names. It is what the checklist is built for."""
     require_operations_user(user)
     configs = list(active_configs(module))
     files = [{"index": i, **_detect_one(item, configs, module)} for i, item in enumerate(items)]
@@ -342,7 +376,9 @@ def detect_files(user, module: PaymentModule, items: Iterable[DetectInput]) -> d
                         f["warnings"].append(slot_conflict_message(existing))
         if date_is_archived(module, proposed):
             warnings.append(ARCHIVED_MESSAGE.format(d=proposed.isoformat()))
+    checklist_date = business_date or proposed
     return {
+        "checklist": batch_checklist(module, checklist_date, files) if checklist_date else None,
         "business_date": proposed,
         "business_dates_found": sorted(dates),
         "warnings": warnings,

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from datetime import date
 
+from django.db import models
 from django.db.models import Count, Max, Q
+from django.db.models.functions import Coalesce
 
 from core.models import PaymentModule
 from file_processing.intake import date_checklists
 from file_processing.models import UploadedFile
-from reconciliation.models import ACTIVE_RUN_STATUSES, ReconciliationRun, TransactionMatchGroup
+from reconciliation.models import ACTIVE_RUN_STATUSES, ReconciliationRun, RunStatus, TransactionMatchGroup
 from reconciliation.runs import blockers_from, run_payload
 
 
@@ -37,6 +39,50 @@ def _latest_per_date(qs, dates) -> dict:
     return out
 
 
+class DateStatus(models.TextChoices):
+    """One plain status per business date (UI refinements 3.4; contract
+    docs/ui_refinements_api_contract.txt A0). First match wins, in this order.
+    date_status() decides up to CASES_OPEN / DONE; FILE_PENDING (owner Q2,
+    2026-10-27) is decided after it by npci_files.replies.finish_date_statuses,
+    which needs the SSKUPI file state."""
+
+    RUNNING = "RUNNING", "Running"
+    WAITING_FOR_FILES = "WAITING_FOR_FILES", "Waiting for files"
+    READY_TO_RUN = "READY_TO_RUN", "Ready to run"
+    CASES_OPEN = "CASES_OPEN", "Cases open"
+    FILE_PENDING = "FILE_PENDING", "SSKUPI file to generate / download"
+    DONE = "DONE", "Done"
+
+
+def date_status(summary: dict, evaluation, last_run, active_cases: int, latest_upload) -> tuple[str, str]:
+    """(DateStatus, one plain sentence) from what the overview already read.
+    Reconciled = a rule evaluation exists; files uploaded after its start
+    make the date need a run again."""
+    if last_run is not None and last_run.status in ACTIVE_RUN_STATUSES:
+        return DateStatus.RUNNING, f"Run #{last_run.pk} is {last_run.get_status_display().lower()}."
+    stale = evaluation is not None and latest_upload is not None and latest_upload > evaluation.started_at
+    if evaluation is None or stale:
+        not_loaded = summary["expected"] - summary["loaded"]
+        if not_loaded > 0:
+            return DateStatus.WAITING_FOR_FILES, f"{not_loaded} expected file(s) are not loaded yet."
+        if stale:
+            return DateStatus.READY_TO_RUN, "Files changed since the last run; run again."
+        if last_run is not None and last_run.status == RunStatus.FAILED:
+            return DateStatus.READY_TO_RUN, f"The last run failed: {last_run.error}".strip()
+        return DateStatus.READY_TO_RUN, "All expected files are loaded."
+    failed = (f" The last run failed: {last_run.error}".rstrip()
+              if last_run is not None and last_run.status == RunStatus.FAILED else "")
+    if active_cases:
+        return DateStatus.CASES_OPEN, f"{active_cases} case(s) open.{failed}"
+    return DateStatus.DONE, f"No case open.{failed}"
+
+
+def _latest_uploads(module: PaymentModule, dates: list[date]) -> dict:
+    return dict(UploadedFile.objects.filter(payment_module=module, is_current=True).order_by()
+                .annotate(d=Coalesce("business_date", "batch_business_date")).filter(d__in=dates)
+                .values("d").annotate(m=Max("uploaded_at")).values_list("d", "m"))
+
+
 def date_overviews(module: PaymentModule, dates: list[date]) -> dict[date, dict]:
     from exception_management.models import ACTIVE_STATUSES, ExceptionCase
     from rule_engine.models import RuleEvaluationRun
@@ -55,14 +101,17 @@ def date_overviews(module: PaymentModule, dates: list[date]) -> dict[date, dict]
                                    .order_by("-computed_at", "-id"), dates)
     runs = _latest_per_date(ReconciliationRun.objects.filter(payment_module=module)
                             .order_by("-requested_at", "-id"), dates)
+    uploads = _latest_uploads(module, dates)
 
     out = {}
     for d in dates:
         cl = checklists[d]
         m, ev, c, st, run = matrix.get(d), evaluations.get(d), cases.get(d), settlements.get(d), runs.get(d)
         active = run if run is not None and run.status in ACTIVE_RUN_STATUSES else None
+        status, detail = date_status(cl["summary"], ev, run, c["active"] if c else 0, uploads.get(d))
         out[d] = {
             "business_date": d,
+            "status": str(status), "status_label": DateStatus(status).label, "status_detail": detail,
             "files": cl["summary"],
             "missing": [{"file_type_config_id": s["file_type_config_id"], "label": s["label"], "cycle": s["cycle"]}
                         for s in cl["slots"] if s["state"] == "MISSING"],
@@ -78,5 +127,6 @@ def date_overviews(module: PaymentModule, dates: list[date]) -> dict[date, dict]
             "last_run": run_payload(run),
             "run_blockers": blockers_from(cl["summary"], active),
             "_checklist": cl,
+            "_evaluation": ev,
         }
     return out

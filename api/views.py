@@ -10,6 +10,10 @@ audit CaseEvent), same serializers. v1 adds only:
   - payment_module and self_approval on each case,
   - an "ordering" parameter (listed fields only) and a due_date filter,
   - 400 for a malformed date filter (the old queue answers 500),
+  - UI refinements U2 (docs/ui_refinements_api_contract.txt A1, A3, A4): the
+    home "day" block, and per case the amount, the rule's plain name, the
+    NPCI reply (npci_files.replies) and, on the detail, "what happened";
+    the reply_type filter and reply_type_counts on the list,
   - 401 for "not logged in",
   - the self-approval confirmation (design 4.6 / Phase 3 P4): approving an
     action you submitted yourself needs "confirm_self_approval": true, else
@@ -21,7 +25,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
-from django.db.models import Exists, F, OuterRef, Q
+from django.db.models import Count, Exists, F, OuterRef, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, status
 from rest_framework.response import Response
@@ -49,9 +53,14 @@ from exception_management.services import BULK_PRIORITIES
 from file_processing.intake import _file_state as file_state
 from file_processing.intake import date_checklists, file_type_options
 from file_processing.models import FileTypeConfig, ProcessingStatus, UploadedFile
+from npci_files import replies as npci_replies
+from npci_files.formats import LEG_BY_FLAG
 from reconciliation.models import ProcessingStatus as GroupStatus
-from rule_engine.models import AgeingBucket, CodeFlag, Priority, RuleSet, RuleSetStatus, StatusCategory
+from reconciliation.models import RegisterPresence, RunStatus
+from reconciliation.overview import date_overviews
+from rule_engine.models import AgeingBucket, CodeFlag, Priority, RuleResult, RuleSet, RuleSetStatus, StatusCategory
 from settlement.categories import NtslCategory
+from settlement.gap_rules import MATCHED_RULE, SETTLED_CODES
 from settlement.models import (
     CheckStatus,
     MapStatus,
@@ -273,6 +282,7 @@ class SummaryView(ModuleView):
             }
         if everything or Role.OPERATIONS_USER in roles:
             body["operations"] = self._operations()
+        body["day"] = day_block(self.module, body["business_date"], request.user)  # every role (U2 1.1)
         return Response(body)
 
     def _operations(self) -> dict:
@@ -295,6 +305,124 @@ class SummaryView(ModuleView):
             "awaiting_date_selection": files.filter(processing_status=ProcessingStatus.AWAITING_DATE_SELECTION).count(),
             "settlement_status": result.status if result else None,
         }
+
+
+_RUN_STATES = {RunStatus.QUEUED: "RUNNING", RunStatus.RUNNING: "RUNNING", RunStatus.SUCCEEDED: "DONE",
+               RunStatus.FAILED: "FAILED"}
+
+
+def day_block(module, d: date, user) -> dict:
+    """The steps of one business date for the home page's "Today's job"
+    (contract A1): files, run, results, settlement, cases, SSKUPI file."""
+    ov = date_overviews(module, [d])[d]
+    npci_replies.finish_date_statuses(module, {d: ov}, npci_replies.date_file_summaries(module, [d]))  # owner Q2
+    f, ev, run = ov["files"], ov["_evaluation"], ov["last_run"]
+    if run is None:
+        run_block = {"state": "DONE" if ev else "NOT_RUN", "run_id": None, "requested_by": None,
+                     "finished_at": ev.finished_at if ev else None, "error": ""}
+    else:
+        run_block = {"state": _RUN_STATES.get(run["status"], run["status"]), "run_id": run["id"],
+                     "requested_by": run["requested_by"] or None, "finished_at": run["finished_at"],
+                     "error": run["error"]}
+    results = None
+    if ev is not None:
+        results = {"reconciled_at": ev.finished_at, "rule_set": ev.rule_set.version_label,
+                   "transactions": ov["matrix"]["match_groups"],
+                   "matched": (ev.rule_counts or {}).get(MATCHED_RULE, 0),
+                   "exceptions": ExceptionCase.objects.filter(payment_module=module, business_date=d,
+                                                              case_type=CaseType.TRANSACTION).count()}
+    st = ov["settlement"]
+    return {
+        "business_date": d, "status": ov["status"], "status_label": ov["status_label"],
+        "status_detail": ov["status_detail"],
+        "files": {"expected": f["expected"], "present": f["expected"] - f["missing"], "missing": f["missing"],
+                  "loaded": f["loaded"], "processing": f["processing"], "failed": f["failed"],
+                  "awaiting_date_selection": f["awaiting_date_selection"]},
+        "run": run_block,
+        "results": results,
+        "settlement": None if st is None else {
+            "status": st["status"], "status_label": ResultStatus(st["status"]).label,
+            "unexplained_amount": st["unexplained_amount"]},
+        "cases": {"open": ov["cases"]["active"], "total": ov["cases"]["total"]},
+        "sskupi": npci_replies.date_file_detail(module, d, user),
+        "link": f"/{module_slug(module)}/dates/{d.isoformat()}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# amount, rule name and reply per case (UI refinements 6.2 / 6.3, contract A3 / A4)
+# ---------------------------------------------------------------------------
+def _m(v) -> str | None:
+    return None if v is None else f"{v:.2f}"
+
+
+def _presences(cases) -> dict[int, dict[str, RegisterPresence]]:
+    ids = {c.match_group_id for c in cases if c.match_group_id}
+    out: dict[int, dict[str, RegisterPresence]] = {}
+    for p in RegisterPresence.objects.filter(match_group_id__in=ids, present=True).only(
+            "id", "match_group_id", "leg", "present", "amount", "direction", "response_code"):
+        out.setdefault(p.match_group_id, {})[p.leg] = p
+    return out
+
+
+def _amount(case, reply, legs: dict, settlement_amounts: dict) -> tuple[str | None, str | None]:
+    """(amount, which row it came from): the reply's dispute row, NPCI, CBS,
+    any dispute row; a settlement case's current unexplained amount."""
+    if case.case_type == CaseType.SETTLEMENT:
+        v = settlement_amounts.get(case.pk)
+        return (_m(v), "SETTLEMENT") if v is not None else (None, None)
+    order = ([LEG_BY_FLAG[reply.flag]] if reply.flag in LEG_BY_FLAG else []) + ["NPCI", "CBS", *LEG_BY_FLAG.values()]
+    for leg in order:
+        p = legs.get(leg)
+        if p is not None and p.amount is not None:
+            return _m(p.amount), leg
+    return None, None
+
+
+def _settlement_amounts(cases) -> dict[int, object]:
+    from settlement.models import SettlementCase
+
+    ids = [c.pk for c in cases if c.case_type == CaseType.SETTLEMENT]
+    if not ids:
+        return {}
+    return dict(SettlementCase.objects.filter(case_id__in=ids).values_list("case_id", "result__unexplained_amount"))
+
+
+def _rule_names(cases) -> dict[int, str]:
+    ids = {c.rule_result_id for c in cases if c.rule_result_id}
+    return dict(RuleResult.objects.filter(pk__in=ids).values_list("pk", "rule__name")) if ids else {}
+
+
+def case_extras(cases) -> dict[int, dict]:
+    """{case id: {amount, amount_source, rule_name, reply, npci_file}} for a
+    page of cases, in a fixed number of queries."""
+    from npci_files.models import NpciFileRow
+
+    cases = list(cases)
+    if not cases:
+        return {}
+    reps = npci_replies.replies_for(cases)
+    legs, names, amounts = _presences(cases), _rule_names(cases), _settlement_amounts(cases)
+    files = {case_id: {"id": fid, "file_name": name} for case_id, fid, name in NpciFileRow.objects.filter(
+        case_id__in=[c.pk for c in cases]).values_list("case_id", "npci_file_id", "npci_file__file_name")}
+    out = {}
+    for c in cases:
+        reply = reps[c.pk]
+        amount, source = _amount(c, reply, legs.get(c.match_group_id, {}), amounts)
+        out[c.pk] = {"amount": amount, "amount_source": source, "rule_name": names.get(c.rule_result_id, ""),
+                     "reply": npci_replies.reply_payload(c, reply), "npci_file": files.get(c.pk),
+                     "_reply": reply, "_legs": legs.get(c.match_group_id, {})}
+    return out
+
+
+def _leg_block(p, *, npci=False) -> dict:
+    body = {"present": p is not None, "amount": _m(p.amount) if p else None,
+            "direction": (p.direction or None) if p else None}
+    if npci:
+        code = (p.response_code or None) if p else None
+        body.update({"response_code": code,
+                     "status": None if code is None else ("APPROVED" if code in SETTLED_CODES else "DECLINED")})
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +473,28 @@ class _SelfApprovalField:
         return bool(own)
 
 
-class V1CaseListSerializer(_SelfApprovalField, legacy.CaseListSerializer):
+_EXTRA_FIELDS = ("amount", "amount_source", "rule_name", "reply")
+
+
+class _ExtrasMixin:
+    """Adds the case_extras() fields. A list page passes them in the context
+    as one batch ("extras"); a single case reads its own."""
+
+    def to_representation(self, obj):
+        body = super().to_representation(obj)
+        extras = self.context.get("extras")
+        e = extras.get(obj.pk) if extras else None
+        if e is None:
+            e = case_extras([obj])[obj.pk]
+        body.update({k: e[k] for k in _EXTRA_FIELDS})
+        self.add_extras(obj, body, e)
+        return body
+
+    def add_extras(self, obj, body, e) -> None:
+        body["npci_file"] = e["npci_file"]
+
+
+class V1CaseListSerializer(_ExtrasMixin, _SelfApprovalField, legacy.CaseListSerializer):
     payment_module = serializers.SlugRelatedField(slug_field="code", read_only=True)
     self_approval = serializers.SerializerMethodField()
 
@@ -353,7 +502,7 @@ class V1CaseListSerializer(_SelfApprovalField, legacy.CaseListSerializer):
         fields = ("payment_module",) + legacy.CaseListSerializer.Meta.fields + ("self_approval",)
 
 
-class V1CaseDetailSerializer(_SelfApprovalField, legacy.CaseDetailSerializer):
+class V1CaseDetailSerializer(_ExtrasMixin, _SelfApprovalField, legacy.CaseDetailSerializer):
     payment_module = serializers.SlugRelatedField(slug_field="code", read_only=True)
     self_approval = serializers.SerializerMethodField()
     npci_file = serializers.SerializerMethodField()
@@ -366,6 +515,18 @@ class V1CaseDetailSerializer(_SelfApprovalField, legacy.CaseDetailSerializer):
         from api.npci_files import case_npci_file
 
         return case_npci_file(obj)
+
+    def add_extras(self, obj, body, e) -> None:
+        """What happened (contract A4): CBS vs NPCI, the reply, the SSKUPI
+        status. null for a settlement case (its page keeps "settlement")."""
+        if obj.case_type == CaseType.SETTLEMENT:
+            body["what_happened"] = None
+            return
+        legs = e["_legs"]
+        body["what_happened"] = {
+            "cbs": _leg_block(legs.get("CBS")), "npci": _leg_block(legs.get("NPCI"), npci=True),
+            "reply": e["reply"], "sskupi": npci_replies.case_file_status(obj, e["_reply"]),
+        }
 
 
 class CaseMixin(ModuleMixin):
@@ -395,6 +556,13 @@ class CaseListView(CaseMixin, legacy.CaseListView):
         order, order_error = _ordering(request.query_params.get("ordering"))
         if order_error:
             errors["ordering"] = [order_error]
+        reply_types = None
+        if request.query_params.get("reply_type"):
+            reply_types = [v.strip() for v in request.query_params["reply_type"].split(",") if v.strip()]
+            bad = [v for v in reply_types if v not in npci_replies.ReplyType.values]
+            if bad:
+                errors["reply_type"] = [f"Unknown {', '.join(bad)}; allowed: "
+                                        f"{', '.join(npci_replies.ReplyType.values)}"]
         if errors:
             return _bad_request("Invalid input", errors)
         qs, error = legacy.filter_queue(self.scope(legacy._annotated()), request)
@@ -402,11 +570,18 @@ class CaseListView(CaseMixin, legacy.CaseListView):
             return error
         if due is not None:
             qs = qs.filter(due_date=due)
+        qs = npci_replies.annotate_reply_type(qs.select_related("default_response_code"))
+        # Tab counts for every other filter of the request (contract A3), one query.
+        counts = qs.order_by().aggregate(**{t: Count("id", filter=Q(reply_type=t))
+                                            for t in npci_replies.ReplyType.values})
+        if reply_types:
+            qs = qs.filter(reply_type__in=reply_types)
         paginator = legacy.QueuePagination()
         page = paginator.paginate_queryset(qs.order_by(*order), request, view=self)
-        return paginator.get_paginated_response(
-            V1CaseListSerializer(page, many=True, context={"request": request}).data
-        )
+        context = {"request": request, "extras": case_extras(page)}
+        response = paginator.get_paginated_response(V1CaseListSerializer(page, many=True, context=context).data)
+        response.data["reply_type_counts"] = counts
+        return response
 
 
 class CaseDetailView(CaseMixin, legacy.CaseDetailView):

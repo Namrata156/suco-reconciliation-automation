@@ -161,7 +161,8 @@ class AuthTests(V1TestBase):
             Role.CHECKER: {"cases.approve", "settings.approve", "npci_files.generate", "npci_files.download"},
             Role.AUDITOR: {"audit.view", "users.view"},  # users.view: owner decision 2026-10-22
         }
-        everyone = {"cases.view", "files.view", "results.view", "settings.view", "alerts.view", "npci_files.view"}
+        everyone = {"cases.view", "files.view", "results.view", "settings.view", "alerts.view", "npci_files.view",
+                    "reports.view"}
         for role, extra in expected_true.items():
             with self.subTest(role=role):
                 perms = self.as_(role).get(f"{V1}/me/").json()["permissions"]
@@ -273,7 +274,8 @@ class CaseReadTests(V1TestBase):
     def test_list_matrix_and_shape(self):
         self.assert_read_matrix(CASES)
         body = self.as_(Role.AUDITOR).get(CASES).json()
-        self.assertEqual(set(body), {"count", "next", "previous", "results"})
+        # reply_type_counts: the queue tabs (UI refinements U2, docs/ui_refinements_api_contract.txt A3)
+        self.assertEqual(set(body), {"count", "next", "previous", "results", "reply_type_counts"})
         self.assertEqual(body["count"], 3)  # the IMPS case is not in the UPI queue
         self.assertEqual(body["results"][0]["rrn"], "100000000002")  # queue order: HIGH first
         row = body["results"][0]

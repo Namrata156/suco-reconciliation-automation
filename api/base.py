@@ -87,6 +87,9 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
     "npci_files.view": _ALL,
     "npci_files.generate": (Role.CHECKER,),
     "npci_files.download": (Role.MAKER, Role.CHECKER, Role.OPERATIONS_USER),
+    # Phase 6 contract C1 (docs/phase6_api_contract.txt); first used by the NPCI files report
+    # (docs/ui_refinements_api_contract_u4u5.txt F1).
+    "reports.view": _ALL,
 }
 
 

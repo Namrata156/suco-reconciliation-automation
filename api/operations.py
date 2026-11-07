@@ -15,13 +15,19 @@ every write), the status, and write core.OperationLog.
   GET  /dates/                     business-date overview (paginated)
   GET  /dates/<date>/              one date: checklist, runs, operations history
   POST /dates/<date>/run/          queue the run chain (202)
+
+UI refinements U2 / U3 (docs/ui_refinements_api_contract.txt A2, B2):
+  GET  /files/<id>/original/       the stored upload, byte for byte (all five roles; logged)
+  dates list / detail: plain "status" and a compact SSKUPI file block per date
 """
 from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 
 from django.db.models import Count, Q
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import status
@@ -29,11 +35,12 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from api.base import ModuleMixin, V1APIView
-from core.models import OperationLog
-from core.operations import OperationError, RoleRequired, WrongState
+from core.models import OperationLog, OperationType
+from core.operations import OperationError, RoleRequired, WrongState, log_operation
 from exception_management import api as legacy
 from file_processing import intake
 from file_processing.models import FileValidationException, ProcessingStatus, UploadedFile, ValidationSeverity
+from npci_files.replies import date_file_summaries, finish_date_statuses
 from reconciliation.models import ReconciliationRun
 from reconciliation.overview import business_dates, date_overviews
 from reconciliation.runs import run_payload, start_run
@@ -143,11 +150,16 @@ class FileDetectView(OpsView):
         if not files:
             return _bad_request("Invalid input", {"files": ["Choose at least one file."]})
         hashes = request.data.getlist("sha256") if hasattr(request.data, "getlist") else []
+        chosen = None
+        if request.data.get("business_date"):  # UI refinements 2.1: the date chosen on the review step
+            chosen = _iso_date(request.data.get("business_date"))
+            if chosen is None:
+                return _bad_request("Invalid input", {"business_date": ["Enter a date as YYYY-MM-DD."]})
         items = [intake.DetectInput(name=f.name, head=f.read(intake.DETECT_HEAD_BYTES),
                                     sha256=hashes[i] if i < len(hashes) else "")
                  for i, f in enumerate(files)]
         try:
-            body = intake.detect_files(request.user, self.module, items)
+            body = intake.detect_files(request.user, self.module, items, business_date=chosen)
         except OperationError as exc:
             return _error(exc)
         return Response(body)
@@ -163,6 +175,12 @@ class FileListView(OpsView):
                 errors["business_date"] = ["Enter a date as YYYY-MM-DD."]
             else:
                 qs = qs.filter(Q(business_date=d) | Q(business_date__isnull=True, batch_business_date=d))
+        if p.get("ids"):  # UI refinements 2.2: poll the files of one upload
+            ids = [i.strip() for i in p["ids"].split(",") if i.strip()]
+            if not ids or not all(i.isdigit() for i in ids):
+                errors["ids"] = ["A comma list of file ids."]
+            else:
+                qs = qs.filter(pk__in=ids)
         if p.get("file_type"):
             qs = qs.filter(file_type_config__file_type_code__in=p["file_type"].split(","))
         if p.get("file_type_config"):
@@ -233,9 +251,77 @@ class FileListView(OpsView):
 def _file_detail(module, pk) -> dict:
     f = get_object_or_404(_files(module), pk=pk)
     body = file_row(f)
-    body["history"] = _history(OperationLog.objects.filter(payment_module=module, uploaded_file_id=f.pk)
-                               .order_by("created_at", "id"))
+    history = list(OperationLog.objects.filter(payment_module=module, uploaded_file_id=f.pk).order_by("created_at", "id"))
+    body["history"] = _history(history)
+    # UI refinements 4.6: the original's availability and who downloaded it, newest first.
+    _path, reason, message = original_path(f)
+    body["original"] = {"available": reason is None, "reason": reason, "message": message,
+                        "download_url": (f"/api/v1/{module.code.lower()}/files/{f.pk}/original/"
+                                         if reason is None else None)}
+    downloads = [{"by": e.username or None, "at": e.created_at} for e in reversed(history)
+                 if e.operation == OperationType.ORIGINAL_FILE_DOWNLOADED]
+    body["downloads"] = downloads
+    body["download_count"] = len(downloads)
     return body
+
+
+# ---------------------------------------------------------------------------
+# the stored original (UI refinements 4.6, contract B2)
+# ---------------------------------------------------------------------------
+NOT_STORED, MISSING, CHANGED = "NOT_STORED", "MISSING", "CHANGED"
+ORIGINAL_MESSAGES = {
+    NOT_STORED: "The original of this file is not stored by the app (it was loaded outside the upload page).",
+    MISSING: "The stored original of this file is missing on the server.",
+    CHANGED: "The stored original of this file has changed since it was uploaded (size differs); it is not served.",
+}
+
+
+# A fixed table, not mimetypes: on Windows mimetypes reads the registry, which may
+# map .csv to an Excel type.
+CONTENT_TYPES = {".csv": "text/csv", ".txt": "text/plain", ".xls": "application/vnd.ms-excel",
+                 ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 ".zip": "application/zip", ".xml": "application/xml"}
+
+
+def original_path(f: UploadedFile) -> tuple[Path | None, str | None, str]:
+    """(path, None, "") when the stored upload may be served, else (None,
+    reason, message). Path safety: only a file whose resolved path (symlinks
+    followed) lies inside FILE_PROCESSING_WORK_DIR/uploads/ is ever served."""
+    root = intake.upload_root()
+    try:
+        path = Path(f.path).resolve() if f.path else None
+    except (OSError, ValueError):
+        path = None
+    if path is None or not path.is_relative_to(root) or path == root:
+        return None, NOT_STORED, ORIGINAL_MESSAGES[NOT_STORED]
+    if not path.is_file():
+        return None, MISSING, ORIGINAL_MESSAGES[MISSING]
+    if f.size_bytes and path.stat().st_size != f.size_bytes:
+        return None, CHANGED, ORIGINAL_MESSAGES[CHANGED]
+    return path, None, ""
+
+
+class FileOriginalView(OpsView):
+    """GET: the stored upload exactly as uploaded. All five roles; every
+    download is written to core.OperationLog (ORIGINAL_FILE_DOWNLOADED)."""
+
+    def get(self, request, module, pk):
+        f = UploadedFile.objects.filter(payment_module=self.module, pk=pk).first()
+        if f is None:
+            return Response({"detail": "No such file."}, status=status.HTTP_404_NOT_FOUND)
+        path, reason, message = original_path(f)
+        if reason is not None:
+            code = status.HTTP_404_NOT_FOUND if reason == NOT_STORED else status.HTTP_410_GONE
+            return Response({"detail": message, "reason": reason}, status=code)
+        handle = open(path, "rb")  # noqa: SIM115 - FileResponse closes it
+        log_operation(OperationType.ORIGINAL_FILE_DOWNLOADED, user=request.user, payment_module=self.module,
+                      business_date=f.business_date or f.batch_business_date, uploaded_file_id=f.pk, source="api",
+                      details={"filename": f.filename, "sha256": f.sha256_hash, "size_bytes": f.size_bytes})
+        content_type = CONTENT_TYPES.get(Path(f.filename).suffix.lower(), "application/octet-stream")
+        response = FileResponse(handle, as_attachment=True, filename=f.filename, content_type=content_type)
+        response["X-Content-SHA256"] = f.sha256_hash
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class FileDetailView(OpsView):
@@ -314,7 +400,10 @@ class DateListView(OpsView):
         paginator = legacy.QueuePagination()
         page = paginator.paginate_queryset(dates, request, view=self)
         overviews = date_overviews(self.module, list(page))
-        return paginator.get_paginated_response([_date_row(overviews[d]) for d in page])
+        files = date_file_summaries(self.module, list(page))
+        rows = {d: {**_date_row(overviews[d]), "sskupi": files[d]} for d in page}
+        finish_date_statuses(self.module, rows, files)  # DONE -> FILE_PENDING (owner Q2)
+        return paginator.get_paginated_response([rows[d] for d in page])
 
 
 class _DateMixin:
@@ -334,6 +423,9 @@ class DateDetailView(_DateMixin, OpsView):
             return Response({"detail": "No files or runs for this date."}, status=status.HTTP_404_NOT_FOUND)
         overview = date_overviews(self.module, [d])[d]
         body = _date_row(overview)
+        files = date_file_summaries(self.module, [d])
+        body["sskupi"] = files[d]
+        finish_date_statuses(self.module, {d: body}, files)  # DONE -> FILE_PENDING (owner Q2)
         body["checklist"] = overview["_checklist"]["slots"]
         body["unexpected_files"] = overview["_checklist"]["unexpected"]
         body["archived"] = intake.date_is_archived(self.module, d)

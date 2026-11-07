@@ -39,6 +39,7 @@ user runs each date again from its overview.
 """
 from __future__ import annotations
 
+from django.db.models import Case, Count, IntegerField, Value, When
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
@@ -58,6 +59,8 @@ from exception_management.models import (
     ResponseCodeChangeRequest,
 )
 from exception_management.roles import Role, has_role
+from npci_files.formats import SSKUPI, FormatError, _plain
+from npci_files.replies import REPLY_FLAGS
 from rule_engine.models import CodeFlag, ResponseCode, RuleSet, RuleSetStatus
 from settlement import tolerance as tolerance_service
 from settlement.categories import NtslCategory
@@ -190,11 +193,39 @@ def _editable_fields(code: ResponseCode, locked: bool) -> list[str]:
     return (["code"] if code.code is None else []) + ["description"]
 
 
+# UI refinements 7.2 (contract A6): codes grouped by reply type, in SSKUPI file order.
+REPLY_TYPE_ORDER = (*SSKUPI.flag_order, "OTHER")
+_REPLY_TYPE_LABELS = {**dict(CodeFlag.choices), "OTHER": "Other NPCI codes (not in the SSKUPI file)"}
+_REPLY_TYPE_RANK = Case(*(When(flag=f, then=Value(i)) for i, f in enumerate(SSKUPI.flag_order)),
+                        default=Value(len(SSKUPI.flag_order)), output_field=IntegerField())
+
+
+def _reply_type(flag: str) -> str:
+    return flag if flag in REPLY_FLAGS else "OTHER"
+
+
+def sskupi_fields(c: ResponseCode) -> dict:
+    """The exact SSKUPI "specifyother" text a reply under this code is
+    written with (the description, as the generator writes it), and whether
+    the file can hold it."""
+    in_file = c.flag in REPLY_FLAGS
+    problem = None
+    if in_file:
+        try:  # the same check the generator's check_line makes on the column
+            _plain(c.description, "specifyother (description)")
+        except FormatError as exc:
+            problem = str(exc)
+    return {"reply_type": _reply_type(c.flag), "in_sskupi_file": in_file,
+            "sskupi_text": c.description if in_file else None,
+            "sskupi_ready": in_file and c.code is not None and problem is None, "sskupi_problem": problem}
+
+
 class ResponseCodeListView(SettingsView):
-    """?flag=DRC,RET  ?known=true|false. Each code: whether the active rule
-    set uses it (locked: only its description may change and an unknown
-    numeric code be filled in; editable_fields lists what a proposal may
-    change) and any pending change request."""
+    """?flag=DRC,RET  ?known=true|false  ?ordering=reply_type. Each code:
+    whether the active rule set uses it (locked: only its description may
+    change and an unknown numeric code be filled in; editable_fields lists
+    what a proposal may change), any pending change request, and its SSKUPI
+    text (UI refinements 7.2)."""
 
     def get(self, request, module):
         p, errors = request.query_params, {}
@@ -206,8 +237,17 @@ class ResponseCodeListView(SettingsView):
             qs = qs.filter(code__isnull=p["known"] == "false")
         elif p.get("known"):
             errors["known"] = ["Allowed: true, false"]
+        ordering = p.get("ordering")
+        if ordering == "reply_type":
+            qs = qs.annotate(reply_rank=_REPLY_TYPE_RANK).order_by("reply_rank", "flag", "code", "description", "pk")
+        elif ordering:
+            errors["ordering"] = ["Allowed: reply_type"]
         if errors:
             return _bad_request("Invalid input", errors)
+        by_flag = dict(qs.order_by().values_list("flag").annotate(n=Count("id")))
+        reply_types = {}
+        for flag, n in by_flag.items():
+            reply_types[_reply_type(flag)] = reply_types.get(_reply_type(flag), 0) + n
         paginator, page = _paginate(self, request, qs)
         locked = set(ResponseCode.objects.filter(pk__in=[c.pk for c in page]).locked().values_list("pk", flat=True))
         pending = dict(ResponseCodeChangeRequest.objects.filter(
@@ -218,8 +258,11 @@ class ResponseCodeListView(SettingsView):
                  "description": c.description, "source": c.source, "notes": c.notes, "label": str(c),
                  "locked": c.pk in locked, "editable_fields": _editable_fields(c, c.pk in locked),
                  "used_by": c.used_by(rule_set) if rule_set else [],
-                 "pending_request_id": pending.get(c.pk), "created_at": c.created_at} for c in page]
+                 "pending_request_id": pending.get(c.pk), "created_at": c.created_at, **sskupi_fields(c)}
+                for c in page]
         response = paginator.get_paginated_response(rows)
+        response.data["reply_types"] = [{"value": t, "label": _REPLY_TYPE_LABELS[t], "count": reply_types[t]}
+                                        for t in REPLY_TYPE_ORDER if t in reply_types]
         response.data["rule_set"] = rule_set.version_label if rule_set else None
         response.data["can_propose"] = has_role(request.user, Role.MAKER)
         response.data["can_decide"] = has_role(request.user, Role.CHECKER)
