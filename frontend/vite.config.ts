@@ -38,6 +38,15 @@ export default defineConfig({
           // CSS stays with its importer (main.tsx), so importing a library's
           // styles does not make the entry preload that library's JS.
           if (id.endsWith('.css')) return undefined;
+          // Charts (Dashboard only, U5 8.3): @mantine/charts, recharts and the
+          // packages only recharts uses, in their own chunk so that the lazy
+          // Dashboard route alone loads them (the entry preloads "vendor" and
+          // "vendor-mantine"). clsx stays out: Mantine core shares it. react-is is
+          // here because only recharts uses it (check again if another package
+          // starts to: the entry would then preload this chunk).
+          const CHARTS =
+            /[\\/]node_modules[\\/](@mantine[\\/]charts|recharts|@reduxjs|react-redux|redux|redux-thunk|immer|reselect|es-toolkit|victory-vendor|d3-[a-z-]+|internmap|decimal\.js-light|eventemitter3|tiny-invariant|use-sync-external-store|react-is)[\\/]/;
+          if (CHARTS.test(id)) return 'vendor-charts';
           if (/[\\/]node_modules[\\/](@mantine[\\/]dates|dayjs)[\\/]/.test(id)) return 'vendor-dates';
           if (/[\\/]node_modules[\\/]@mantine[\\/]/.test(id)) return 'vendor-mantine';
           if (/[\\/]node_modules[\\/](zod|react-hook-form|@hookform)[\\/]/.test(id)) return 'vendor-forms';

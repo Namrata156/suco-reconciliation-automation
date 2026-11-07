@@ -163,10 +163,13 @@ const EMPTY = 'No business dates in this range. Try "Last month" or wider dates.
 // ---------------------------------------------------------------------------
 // Results (all dates) = daily reconciliation report (design 2.1)
 // ---------------------------------------------------------------------------
-/** Where a row opens: the date's results when there are any, else the date's overview. */
+/**
+ * Where a row opens: the date page, at its results step when there are
+ * results (the per-date results list is gone, UI refinements U3 4.5).
+ */
 export const resultsHref = (module: string, o: BusinessDateOverview) =>
   o.matrix.built || o.rule_evaluation
-    ? `/${module}/dates/${o.business_date}/results`
+    ? `/${module}/dates/${o.business_date}#step-results`
     : `/${module}/dates/${o.business_date}`;
 
 export function ResultsAllDatesPage() {
@@ -191,7 +194,7 @@ export function ResultsAllDatesPage() {
                 <Table.Th scope="col">Business date</Table.Th>
                 <Table.Th scope="col">Expected files present</Table.Th>
                 <Table.Th scope="col">Missing files</Table.Th>
-                <Table.Th scope="col">Match groups</Table.Th>
+                <Table.Th scope="col">Transactions</Table.Th>
                 <Table.Th scope="col">Rule evaluation</Table.Th>
                 <Table.Th scope="col">Cases created</Table.Th>
                 <Table.Th scope="col">Cases open</Table.Th>

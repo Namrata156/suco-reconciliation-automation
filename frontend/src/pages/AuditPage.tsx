@@ -1,7 +1,9 @@
 /**
- * Audit trail (design 4.19 / 3.6, Slice 4): four read-only lists, each its
- * own address (/audit/case-events | settings-events | user-activity |
- * operations) so a link or bookmark opens one with its filters. Not
+ * Audit trail (design 4.19 / 3.6, Slice 4): read-only lists, each its own
+ * address (/audit/everything | case-events | settings-events | user-activity
+ * | operations) so a link or bookmark opens one with its filters.
+ * "Everything" (one timeline, UI refinements U3 9.1) is the first tab and
+ * /audit opens it; the other four stay as filters by kind. Not
  * module-scoped (contract B: module is a filter). Administrator and Auditor
  * only (/me "audit.view"; the server answers 403 to anyone else).
  *
@@ -16,12 +18,14 @@ import { can } from '../lib/roles';
 
 export {
   AuditCaseEvents,
+  AuditEverything,
   AuditOperations,
   AuditSettingsEvents,
   AuditUserActivity,
 } from '../features/audit/AuditLists';
 
 export const AUDIT_TABS = [
+  { value: 'everything', label: 'Everything' },
   { value: 'case-events', label: 'Case events' },
   { value: 'settings-events', label: 'Settings events' },
   { value: 'user-activity', label: 'Login log' },
@@ -32,7 +36,7 @@ export function AuditPage() {
   const me = useMe();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const current = AUDIT_TABS.find((t) => pathname.split('/').includes(t.value))?.value ?? 'case-events';
+  const current = AUDIT_TABS.find((t) => pathname.split('/').includes(t.value))?.value ?? 'everything';
 
   if (!can(me.permissions, 'audit.view')) {
     return (

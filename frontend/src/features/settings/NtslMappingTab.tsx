@@ -39,6 +39,7 @@ import {
 } from '../../api/client';
 import type { Choice, MapEntry, MapEntryFields, MappingProposal, MapVersion } from '../../api/types';
 import { SelfApprovedBadge, VersionStatusBadge } from '../../components/Badges';
+import { DetailsSection } from '../../components/DetailsSection';
 import { ListPager } from '../../components/ListPager';
 import { labelOf, useMeta, useModuleCode } from '../../hooks/module';
 import { formatCount, formatDateTime } from '../../lib/format';
@@ -53,6 +54,10 @@ import { SettingsEvents } from './SettingsEvents';
  * the one value with its own behaviour (patterns sent verbatim).
  */
 const REGEX = 'REGEX';
+
+/** What the tab is about, in ops' words (UI refinements 2026-10-27, 7.4). */
+export const NTSL_MAPPING_INTRO =
+  "How each line of NPCI's settlement (NTSL) file is sorted into a category such as DRC or TCC, so the settlement can be tallied.";
 const DEFAULT_PRIORITY = 100; // settlement.mapping_changes _clean_entry
 
 const ENTRY_PAGE_SIZE = 50;
@@ -472,6 +477,7 @@ export function NtslMappingTab() {
 
   return (
     <Stack>
+      <Text size="sm">{NTSL_MAPPING_INTRO}</Text>
       <Card withBorder padding="sm" component="section" aria-labelledby="mapping-active-title">
         <Title order={2} size="h4" id="mapping-active-title">
           {s.active ? `Active NTSL mapping v${s.active.version}` : 'No active NTSL mapping'}
@@ -615,10 +621,10 @@ export function NtslMappingTab() {
         <ListPager total={entryBounds.pages} value={entryPage} onChange={setEntryPage} label="Entries" />
       </Stack>
 
-      <Stack gap="xs" component="section" aria-labelledby="mapping-versions-title">
-        <Title order={2} size="h4" id="mapping-versions-title">
-          Mapping history
-        </Title>
+      <DetailsSection
+        title={`Mapping history${versions.data ? ` (${formatCount(versions.data.count)})` : ''}`}
+        id="mapping-versions-title"
+      >
         <Table.ScrollContainer minWidth={1000}>
           <Table withTableBorder aria-label="NTSL mapping versions">
             <Table.Thead>
@@ -681,7 +687,7 @@ export function NtslMappingTab() {
           onChange={setVersionPage}
           label="Versions"
         />
-      </Stack>
+      </DetailsSection>
 
       <Modal
         opened={proposing}

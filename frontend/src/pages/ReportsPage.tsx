@@ -1,10 +1,10 @@
 /**
  * Reports page (Phase 6 design 5.2): one card per report the user's role may
  * open (R2 matrix, lib/reports.ts), with a line on what it shows. Reports
- * whose screen comes in a later slice are listed as "not available yet", so
- * the user sees the whole set the spec names.
+ * whose screen comes in a later slice are hidden until it is built (UI
+ * refinements 2026-10-27, 8.2; lib/reports.ts still lists them).
  */
-import { Anchor, Badge, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import { Anchor, Card, SimpleGrid, Stack, Text, Title } from '@mantine/core';
 import { Link } from 'react-router';
 
 import { useMe } from '../auth/auth';
@@ -14,7 +14,7 @@ import { reportsFor } from '../lib/reports';
 export function ReportsPage() {
   const me = useMe();
   const module = useModuleCode();
-  const reports = reportsFor(me, module);
+  const reports = reportsFor(me, module).filter((r) => r.available);
 
   return (
     <Stack gap="sm">
@@ -33,28 +33,12 @@ export function ReportsPage() {
       >
         {reports.map((r) => (
           <Card key={r.key} withBorder component="li" aria-label={r.title}>
-            <Group justify="space-between" align="flex-start" wrap="nowrap">
-              {r.available ? (
-                <Anchor component={Link} to={r.href} fw={600}>
-                  {r.title}
-                </Anchor>
-              ) : (
-                <Text fw={600}>{r.title}</Text>
-              )}
-              {!r.available && (
-                <Badge color="gray" variant="light">
-                  Not available yet
-                </Badge>
-              )}
-            </Group>
+            <Anchor component={Link} to={r.href} fw={600}>
+              {r.title}
+            </Anchor>
             <Text size="sm" mt={4}>
               {r.description}
             </Text>
-            {!r.available && (
-              <Text size="xs" c="dimmed" mt={4}>
-                Comes with Phase 6 slice {r.slice} (needs the server side).
-              </Text>
-            )}
           </Card>
         ))}
       </SimpleGrid>

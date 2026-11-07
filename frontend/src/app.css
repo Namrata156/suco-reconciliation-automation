@@ -20,6 +20,39 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * Collapsed sections (components/DetailsSection.tsx): the heading sits in the
+ * summary line with a chevron that turns when the section is open.
+ */
+.details-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  width: fit-content;
+}
+.details-section > summary::-webkit-details-marker {
+  display: none;
+}
+.details-section > summary::before {
+  content: '';
+  width: 0.45em;
+  height: 0.45em;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms;
+  flex-shrink: 0;
+}
+.details-section[open] > summary::before {
+  transform: rotate(45deg);
+}
+.details-section > summary:focus-visible {
+  outline: 2px solid #1c3f8c;
+  outline-offset: 2px;
+}
+
 /* Bulk bar stays visible while scrolling a long page. */
 .bulk-bar {
   position: sticky;

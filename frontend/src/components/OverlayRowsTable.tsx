@@ -1,6 +1,7 @@
 /**
  * DRC / Timeout / Adjustment rows for one RRN (design 4.5 case detail and
- * 4.13 match group detail; exception_management/detail.py _row).
+ * 4.13 match group detail; exception_management/detail.py _row), shown as
+ * "Adjustments" (UI refinements 2026-10-27, 4.4).
  */
 import { Table, Text } from '@mantine/core';
 
@@ -19,7 +20,7 @@ const HEADERS = [
   'Note',
 ];
 
-export function OverlayRowsTable({ rows, label = 'Dispute rows' }: { rows: OverlayRow[]; label?: string }) {
+export function OverlayRowsTable({ rows, label = 'Adjustments' }: { rows: OverlayRow[]; label?: string }) {
   if (rows.length === 0) return <Text size="sm">None.</Text>;
   return (
     <Table.ScrollContainer minWidth={900}>

@@ -2,6 +2,14 @@
  * Exception case queue (design 4.4). Paged on the server (50 per page); the
  * filters live in the address, so home-page counts, bookmarks and alert links
  * open the same list.
+ *
+ * UI refinements U2 (6.1 / 6.2; contract A3): tabs by NPCI reply type with
+ * their counts (DRC | TCC | RET | RRC | Needs review | Settlement; one
+ * "Needs review" tab, owner Q1); only Whose cases, Business date and RRN are
+ * in view, the other filters under "More filters" (open by itself while one
+ * of them is set). Columns add the amount and the NPCI reply, and show the
+ * plain rule name. "Awaiting my approval" is the Approvals inbox now
+ * (7.1): ?mine=approval opens it.
  */
 import {
   Alert,
@@ -15,6 +23,7 @@ import {
   Select,
   Stack,
   Table,
+  Tabs,
   Text,
   TextInput,
   Title,
@@ -30,22 +39,20 @@ import {
   type RowSelectionState,
 } from '@tanstack/react-table';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { Link, Navigate, useSearchParams } from 'react-router';
 
 import { listCases } from '../api/client';
-import type { CaseFilters, CaseListItem, ModuleMeta } from '../api/types';
+import type { CaseFilters, CaseListItem, ModuleMeta, ReplyType } from '../api/types';
 import { useMe } from '../auth/auth';
-import { FlagBadges, PriorityBadge, StatusBadge } from '../components/Badges';
+import { FlagBadges, StatusBadge } from '../components/Badges';
 import { BulkBar } from '../features/cases/BulkBar';
 import { useMeta, useModuleCode } from '../hooks/module';
-import { formatCount, formatDate } from '../lib/format';
-import { can } from '../lib/roles';
+import { formatCount, formatDate, formatRupees } from '../lib/format';
 
 export const PAGE_SIZE = 50;
 const FILTER_KEYS = [
   'business_date',
   'status',
-  'priority',
   'rule_code',
   'case_type',
   'overdue',
@@ -54,8 +61,30 @@ const FILTER_KEYS = [
   'rrn',
   'due_date',
   'ordering',
+  'reply_type',
 ] as const;
 type FilterKey = (typeof FILTER_KEYS)[number];
+
+/** The queue tabs (contract A3 "Reply types"), in this order. */
+export const REPLY_TABS: { value: ReplyType; label: string }[] = [
+  { value: 'DRC', label: 'DRC' },
+  { value: 'TCC', label: 'TCC' },
+  { value: 'RET', label: 'RET' },
+  { value: 'RRC', label: 'RRC' },
+  { value: 'NEEDS_REVIEW', label: 'Needs review' },
+  { value: 'SETTLEMENT', label: 'Settlement' },
+];
+
+/** The filters under "More filters"; set ones open it. */
+export const MORE_FILTER_KEYS = [
+  'due_date',
+  'status',
+  'rule_code',
+  'case_type',
+  'overdue',
+  'flag',
+  'ordering',
+] as const satisfies readonly FilterKey[];
 
 export function filtersFromParams(params: URLSearchParams): CaseFilters {
   const f: CaseFilters = {};
@@ -70,7 +99,6 @@ export function filtersFromParams(params: URLSearchParams): CaseFilters {
 }
 
 const ORDERING_LABELS: Record<string, [string, string]> = {
-  priority: ['Priority (HIGH first)', 'Priority (LOW first)'],
   business_date: ['Business date (oldest first)', 'Business date (newest first)'],
   due_date: ['Due date (earliest first)', 'Due date (latest first)'],
   age: ['Age (youngest first)', 'Age (oldest first)'],
@@ -81,9 +109,12 @@ const ORDERING_LABELS: Record<string, [string, string]> = {
   updated_at: ['Updated (oldest first)', 'Updated (newest first)'],
 };
 
-/** Sort choices from meta.case_orderings (field names; "-" reverses). */
+/**
+ * Sort choices from meta.case_orderings (field names; "-" reverses). The
+ * case priority is not shown anywhere, so it is not offered as a sort.
+ */
 export function orderingChoices(fields: readonly string[] | undefined) {
-  return (fields ?? []).flatMap((f) => {
+  return (fields ?? []).filter((f) => f !== 'priority').flatMap((f) => {
     const [asc, desc] = ORDERING_LABELS[f] ?? [`${f} (ascending)`, `${f} (descending)`];
     return [
       { value: f, label: asc },
@@ -130,11 +161,42 @@ function columns(module: string, meta: ModuleMeta | undefined): ColumnDef<CaseLi
       header: 'Business date',
       cell: ({ row }) => formatDate(row.original.business_date),
     },
-    { id: 'rule', header: 'Rule', cell: ({ row }) => row.original.rule_code || '-' },
     {
-      id: 'priority',
-      header: 'Priority',
-      cell: ({ row }) => <PriorityBadge value={row.original.priority} choices={meta?.priorities} />,
+      id: 'amount',
+      header: 'Amount',
+      cell: ({ row }) => (row.original.amount ? formatRupees(row.original.amount) : '-'),
+    },
+    {
+      id: 'reply',
+      header: 'NPCI reply',
+      cell: ({ row }) => {
+        const r = row.original.reply;
+        if (!r?.label) return '-';
+        return (
+          <>
+            {r.label}
+            <Text size="xs" c="dimmed">
+              {r.source_label}
+            </Text>
+          </>
+        );
+      },
+    },
+    {
+      id: 'rule',
+      header: 'Rule',
+      cell: ({ row }) => {
+        const c = row.original;
+        if (!c.rule_name) return c.rule_code || '-';
+        return (
+          <>
+            {c.rule_name}{' '}
+            <Text size="xs" c="dimmed" span>
+              {c.rule_code}
+            </Text>
+          </>
+        );
+      },
     },
     {
       id: 'status',
@@ -232,7 +294,6 @@ export function CaseQueuePage() {
   const first = count === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const last = Math.min(count, page * PAGE_SIZE);
 
-  const checker = can(me.permissions, 'cases.approve');
   const statusData = [
     { value: '', label: 'Active (default)' },
     { value: 'all', label: 'All statuses' },
@@ -252,12 +313,39 @@ export function CaseQueuePage() {
     { value: '', label: 'Any' },
     ...(list ?? []),
   ];
+  const tabCounts = query.data?.reply_type_counts;
+  const tabCount = (v: ReplyType) => (tabCounts ? ` (${formatCount(tabCounts[v] ?? 0)})` : '');
+  const allCount = tabCounts ? Object.values(tabCounts).reduce((t, n) => t + (n ?? 0), 0) : undefined;
+  const moreSet = MORE_FILTER_KEYS.filter((k) => filters[k]).length;
+
+  // "Awaiting my approval" is the Approvals inbox (7.1); old links and alerts still work.
+  if (filters.mine === 'approval') return <Navigate to={`/${module}/approvals`} replace />;
 
   return (
     <Stack gap="sm">
       <Title order={1} size="h3">
         Exception cases
       </Title>
+
+      <Tabs
+        value={filters.reply_type ?? 'ALL'}
+        onChange={(v) => setFilter('reply_type', v === 'ALL' ? null : v)}
+        keepMounted={false}
+      >
+        <Tabs.List aria-label="Cases by NPCI reply">
+          <Tabs.Tab value="ALL">All{allCount === undefined ? '' : ` (${formatCount(allCount)})`}</Tabs.Tab>
+          {REPLY_TABS.map((t) => (
+            <Tabs.Tab key={t.value} value={t.value}>
+              {t.label}
+              {tabCount(t.value)}
+            </Tabs.Tab>
+          ))}
+          {/* A reply_type from a link that is not one tab (a csv) stays visible. */}
+          {filters.reply_type && !REPLY_TABS.some((t) => t.value === filters.reply_type) && (
+            <Tabs.Tab value={filters.reply_type}>{filters.reply_type}</Tabs.Tab>
+          )}
+        </Tabs.List>
+      </Tabs>
 
       <Box component="section" aria-label="Filters">
         <Group gap="xs" align="flex-end" wrap="wrap">
@@ -268,7 +356,6 @@ export function CaseQueuePage() {
             data={[
               { value: '', label: 'All cases' },
               { value: 'assigned', label: 'Assigned to me' },
-              ...(checker ? [{ value: 'approval', label: 'Awaiting my approval' }] : []),
             ]}
           />
           <DateInput
@@ -279,88 +366,11 @@ export function CaseQueuePage() {
             clearable
             w={150}
           />
-          <DateInput
-            label="Due date"
-            valueFormat="DD-MMM-YYYY"
-            value={filters.due_date ?? null}
-            onChange={(v) => setFilter('due_date', v)}
-            clearable
-            w={150}
-          />
-          <Select
-            label="Status"
-            data={statusData}
-            value={filters.status ?? ''}
-            onChange={(v) => setFilter('status', v)}
-            w={170}
-            allowDeselect={false}
-          />
-          <Select
-            label="Priority"
-            data={opt(meta?.priorities)}
-            value={filters.priority ?? ''}
-            onChange={(v) => setFilter('priority', v)}
-            w={110}
-            allowDeselect={false}
-          />
-          <Select
-            label="Rule"
-            data={opt(meta?.rules.map((r) => ({ value: r.code, label: r.code })))}
-            value={filters.rule_code ?? ''}
-            onChange={(v) => setFilter('rule_code', v)}
-            w={110}
-            searchable
-            allowDeselect={false}
-          />
-          <Select
-            label="Case type"
-            data={opt(meta?.case_types)}
-            value={filters.case_type ?? ''}
-            onChange={(v) => setFilter('case_type', v)}
-            w={150}
-            allowDeselect={false}
-          />
-          <Select
-            label="Overdue"
-            data={[
-              { value: '', label: 'Any' },
-              { value: 'true', label: 'Overdue' },
-              { value: 'false', label: 'Not overdue' },
-            ]}
-            value={filters.overdue ?? ''}
-            onChange={(v) => setFilter('overdue', v)}
-            w={120}
-            allowDeselect={false}
-          />
-          <Select
-            label="Flag"
-            data={opt(meta?.flags)}
-            value={filters.flag ?? ''}
-            onChange={(v) => setFilter('flag', v)}
-            w={170}
-            allowDeselect={false}
-          />
           <TextInput
             label="RRN (exact)"
             value={rrnInput}
             onChange={(e) => setRrnInput(e.currentTarget.value)}
             w={160}
-          />
-          <Select
-            label="Sort"
-            data={[
-              { value: '', label: 'Queue order (default)' },
-              ...orderingChoices(meta?.case_orderings),
-              // Keep a value from a link visible even if it is not a single field.
-              ...(filters.ordering &&
-              !orderingChoices(meta?.case_orderings).some((o) => o.value === filters.ordering)
-                ? [{ value: filters.ordering, label: filters.ordering }]
-                : []),
-            ]}
-            value={filters.ordering ?? ''}
-            onChange={(v) => setFilter('ordering', v)}
-            w={200}
-            allowDeselect={false}
           />
           <Button
             variant="subtle"
@@ -372,6 +382,84 @@ export function CaseQueuePage() {
             Reset filters
           </Button>
         </Group>
+        <details className="details-section" open={moreSet > 0 || undefined}>
+          <summary>
+            <Text size="sm" fw={600} span>
+              More filters{moreSet ? ` (${moreSet} set)` : ''}
+            </Text>
+          </summary>
+          <Group gap="xs" align="flex-end" wrap="wrap" mt="xs">
+            <DateInput
+              label="Due date"
+              valueFormat="DD-MMM-YYYY"
+              value={filters.due_date ?? null}
+              onChange={(v) => setFilter('due_date', v)}
+              clearable
+              w={150}
+            />
+            <Select
+              label="Status"
+              data={statusData}
+              value={filters.status ?? ''}
+              onChange={(v) => setFilter('status', v)}
+              w={170}
+              allowDeselect={false}
+            />
+            <Select
+              label="Rule"
+              data={opt(meta?.rules.map((r) => ({ value: r.code, label: r.code })))}
+              value={filters.rule_code ?? ''}
+              onChange={(v) => setFilter('rule_code', v)}
+              w={110}
+              searchable
+              allowDeselect={false}
+            />
+            <Select
+              label="Case type"
+              data={opt(meta?.case_types)}
+              value={filters.case_type ?? ''}
+              onChange={(v) => setFilter('case_type', v)}
+              w={150}
+              allowDeselect={false}
+            />
+            <Select
+              label="Overdue"
+              data={[
+                { value: '', label: 'Any' },
+                { value: 'true', label: 'Overdue' },
+                { value: 'false', label: 'Not overdue' },
+              ]}
+              value={filters.overdue ?? ''}
+              onChange={(v) => setFilter('overdue', v)}
+              w={120}
+              allowDeselect={false}
+            />
+            <Select
+              label="Flag"
+              data={opt(meta?.flags)}
+              value={filters.flag ?? ''}
+              onChange={(v) => setFilter('flag', v)}
+              w={170}
+              allowDeselect={false}
+            />
+            <Select
+              label="Sort"
+              data={[
+                { value: '', label: 'Queue order (default)' },
+                ...orderingChoices(meta?.case_orderings),
+                // Keep a value from a link visible even if it is not a single field.
+                ...(filters.ordering &&
+                !orderingChoices(meta?.case_orderings).some((o) => o.value === filters.ordering)
+                  ? [{ value: filters.ordering, label: filters.ordering }]
+                  : []),
+              ]}
+              value={filters.ordering ?? ''}
+              onChange={(v) => setFilter('ordering', v)}
+              w={200}
+              allowDeselect={false}
+            />
+          </Group>
+        </details>
       </Box>
 
       {query.error && (

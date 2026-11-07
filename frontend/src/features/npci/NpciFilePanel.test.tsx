@@ -294,9 +294,11 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     expect(within(left).getByRole('link', { name: '#302' }).getAttribute('href')).toBe('/upi/cases/302');
     expect(screen.getByText(`Not included in ${NAME}: 2 case(s)`)).toBeTruthy();
     expect(
-      within(screen.getByRole('group', { name: 'NPCI file warnings' })).getByText(/no numeric NPCI code yet/),
+      within(screen.getByRole('group', { name: 'SSKUPI file warnings' })).getByText(
+        /no numeric NPCI code yet/,
+      ),
     ).toBeTruthy();
-    expect(screen.getByText('No file generated for this date yet.')).toBeTruthy();
+    expect(await screen.findByText('No file generated for this date yet.')).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: `Generate ${NAME}` }));
     const dialog = await screen.findByRole('dialog', { name: `Generate ${NAME}?` });
@@ -316,7 +318,7 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     expect(await screen.findByText(`${NAME} generated`)).toBeTruthy();
     // The list and the preview reload: the next file would be _2.
     expect(await screen.findByText('Next file: SSKUPI14072026_2.csv')).toBeTruthy();
-    const files = await screen.findByRole('table', { name: 'NPCI files generated for 14-Jul-2026' });
+    const files = await screen.findByRole('table', { name: 'SSKUPI files generated for 14-Jul-2026' });
     expect(within(files).getByText('Partial: 2 left out')).toBeTruthy();
     expect(screen.queryByText(/sent to NPCI/i)).toBeNull();
   });
@@ -413,7 +415,8 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
       within(changed).getByText(/2 case\(s\) already included in a file of this date have changed/),
     ).toBeTruthy();
     expect(within(changed).getByText(/correction is made with NPCI outside the app/)).toBeTruthy();
-    expect(screen.getByText('No reply is waiting to be included in a file for 14-Jul-2026.')).toBeTruthy();
+    // Nothing new: the plain reason (owner 2026-10-27).
+    expect(screen.getByText('All cases are already in SSKUPI14072026.csv.')).toBeTruthy();
     expect(screen.queryByText(/^Replies:/)).toBeNull();
   });
 
@@ -510,7 +513,7 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     renderDate(['Operations User']);
 
-    const files = await screen.findByRole('table', { name: 'NPCI files generated for 14-Jul-2026' });
+    const files = await screen.findByRole('table', { name: 'SSKUPI files generated for 14-Jul-2026' });
     const rows = within(files).getAllByRole('row').slice(1);
     // In sequence order: the first file, then _2.
     expect(within(rows[0]!).getByText(NAME)).toBeTruthy();
@@ -532,7 +535,11 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
 
     // Found at click time: the table can re-render after `rows` was read, and a click on the old button is lost.
     await userEvent.click(screen.getByRole('button', { name: `All downloads of ${NAME}` }));
-    const list = await screen.findByRole('list', { name: `Downloads of ${NAME}` });
+    const list = await screen.findByRole(
+      'list',
+      { name: `Downloads of ${NAME}`, hidden: true },
+      { timeout: 3000 },
+    );
     expect(within(list).getByText('maker1, 15-Jul-2026 12:00 IST')).toBeTruthy();
 
     await userEvent.click(within(rows[1]!).getByRole('button', { name: 'Download SSKUPI14072026_2.csv' }));
@@ -542,7 +549,7 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     // The list is read again and shows the new download.
     await waitFor(() =>
       expect(
-        within(screen.getByRole('table', { name: 'NPCI files generated for 14-Jul-2026' })).getByText(
+        within(screen.getByRole('table', { name: 'SSKUPI files generated for 14-Jul-2026' })).getByText(
           'Downloaded once',
         ),
       ).toBeTruthy(),
@@ -596,7 +603,7 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
       }),
     );
     renderDate(['Auditor']);
-    const files = await screen.findByRole('table', { name: 'NPCI files generated for 14-Jul-2026' });
+    const files = await screen.findByRole('table', { name: 'SSKUPI files generated for 14-Jul-2026' });
     expect(screen.getByText(/Your role sees the list only/)).toBeTruthy();
     expect(within(files).queryByRole('button', { name: /Download/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Generate/ })).toBeNull();

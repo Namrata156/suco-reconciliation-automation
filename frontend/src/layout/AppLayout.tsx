@@ -16,23 +16,31 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 import { logout } from '../api/client';
 import { useMe, useResetSession } from '../auth/auth';
 import { AlertsBell } from '../components/AlertsBell';
+import { RrnSearchBox } from '../components/RrnSearchBox';
 import { SessionWatcher } from '../auth/SessionWatcher';
 import { BRAND } from '../config';
 import { useModuleCode } from '../hooks/module';
-import { can, menuFor, menuHref } from '../lib/roles';
+import { can, menuFor, menuHref, type MenuItem } from '../lib/roles';
 import { NotFoundPage } from '../pages/NotFoundPage';
 
 /**
  * True when the menu href matches the current address (path + mine filter);
- * with matchPrefix also for the addresses below it (the settings tabs).
+ * with matchPrefix also for the addresses below it (the settings tabs), and
+ * with alsoMine also for those "mine" values ("Assigned to me").
  */
-export function isActive(href: string, pathname: string, search: string, matchPrefix = false): boolean {
+export function isActive(
+  href: string,
+  pathname: string,
+  search: string,
+  matchPrefix = false,
+  alsoMine: readonly string[] = [],
+): boolean {
   const [path = '', query = ''] = href.split('?');
   const here = pathname.replace(/\/$/, '');
   if (path !== here && !(matchPrefix && here.startsWith(`${path}/`))) return false;
   const want = new URLSearchParams(query).get('mine') ?? '';
   const have = new URLSearchParams(search).get('mine') ?? '';
-  return want === have;
+  return want === have || alsoMine.includes(have);
 }
 
 /**
@@ -43,7 +51,7 @@ export function isActive(href: string, pathname: string, search: string, matchPr
 export function switchModuleHref(pathname: string, search: string, slug: string): string {
   const rest = pathname.split('/').slice(2);
   const first = rest[0] ?? '';
-  if (['results', 'settlement', 'reports'].includes(first)) {
+  if (['results', 'settlement', 'reports', 'dashboard'].includes(first)) {
     const path = first === 'reports' ? rest.join('/') : first;
     return `/${slug}/${path}${search}`;
   }
@@ -85,6 +93,24 @@ export function AppLayout({ global = false }: { global?: boolean }) {
   }
 
   const items = menuFor(me);
+  const mainItems = items.filter((i) => i.section !== 'admin');
+  const adminItems = items.filter((i) => i.section === 'admin');
+  const link = (item: MenuItem) => {
+    const href = menuHref(item, current.slug);
+    if (item.external) {
+      return <NavLink key={item.key} label={item.label} href={href} component="a" />;
+    }
+    return (
+      <NavLink
+        key={item.key}
+        label={item.label}
+        component={Link}
+        to={href}
+        onClick={close}
+        active={isActive(href, location.pathname, location.search, item.matchPrefix, item.alsoMine)}
+      />
+    );
+  };
 
   const switchModule = (code: string | null) => {
     if (!code) return;
@@ -141,6 +167,11 @@ export function AppLayout({ global = false }: { global?: boolean }) {
                 {current.code}
               </Text>
             )}
+            {can(me.permissions, 'results.view') && (
+              <div className="no-print">
+                <RrnSearchBox moduleSlug={current.slug} />
+              </div>
+            )}
             {can(me.permissions, 'alerts.view') && <AlertsBell />}
             <Menu position="bottom-end" withinPortal>
               <Menu.Target>
@@ -163,22 +194,16 @@ export function AppLayout({ global = false }: { global?: boolean }) {
       </AppShell.Header>
 
       <AppShell.Navbar p="xs" component="nav" aria-label="Main menu">
-        {items.map((item) => {
-          const href = menuHref(item, current.slug);
-          if (item.external) {
-            return <NavLink key={item.key} label={item.label} href={href} component="a" />;
-          }
-          return (
-            <NavLink
-              key={item.key}
-              label={item.label}
-              component={Link}
-              to={href}
-              onClick={close}
-              active={isActive(href, location.pathname, location.search, item.matchPrefix)}
-            />
-          );
-        })}
+        {mainItems.map(link)}
+        {/* Audit trail and user screens under a small heading (UI refinements 9.4). */}
+        {adminItems.length > 0 && (
+          <div role="group" aria-labelledby="nav-admin-title">
+            <Text id="nav-admin-title" size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" mt="md" mb={4}>
+              Admin &amp; audit
+            </Text>
+            {adminItems.map(link)}
+          </div>
+        )}
       </AppShell.Navbar>
 
       <AppShell.Main id="main" tabIndex={-1} style={{ outline: 'none' }}>

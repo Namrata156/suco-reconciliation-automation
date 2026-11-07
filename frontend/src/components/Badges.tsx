@@ -1,5 +1,5 @@
 /**
- * Status / priority / flag badges. Design 7.4: never colour alone - every
+ * Status / flag badges. Design 7.4: never colour alone - every
  * badge carries its text, the colour only repeats it.
  */
 import { Badge, Group } from '@mantine/core';
@@ -7,7 +7,6 @@ import { Badge, Group } from '@mantine/core';
 import type { CaseFlags, Choice, SlotState } from '../api/types';
 import { labelOf } from '../hooks/module';
 
-const PRIORITY_COLOR: Record<string, string> = { HIGH: 'red', MEDIUM: 'orange', LOW: 'blue', NONE: 'gray' };
 const STATUS_COLOR: Record<string, string> = {
   OPEN: 'gray',
   IN_PROGRESS: 'blue',
@@ -42,14 +41,6 @@ const FLAG_COLOR: Partial<Record<keyof CaseFlags, string>> = {
   multiple_adjustment_rows: 'orange',
   settlement: 'grape',
 };
-
-export function PriorityBadge({ value, choices }: { value: string; choices?: Choice[] }) {
-  return (
-    <Badge color={PRIORITY_COLOR[value] ?? 'gray'} variant="filled" aria-label={`Priority ${value}`}>
-      {labelOf(choices, value)}
-    </Badge>
-  );
-}
 
 export function StatusBadge({ value, choices }: { value: string; choices?: Choice[] }) {
   return (

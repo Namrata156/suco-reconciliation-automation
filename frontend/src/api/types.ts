@@ -198,6 +198,95 @@ export interface SummaryCount {
   query: Record<string, string> | null;
 }
 
+// ---------------------------------------------------------------------------
+// UI refinements U2 / U3 (docs/ui_refinements_api_contract.txt, 2026-10-27).
+// Every field is an addition; optional here so an older server (or a test
+// fixture) without it still type-checks and the screen falls back.
+// ---------------------------------------------------------------------------
+/** A0: one plain status per business date. Values may grow (FILE_PENDING): show the server's label. */
+export type DateStatus =
+  | 'RUNNING'
+  | 'WAITING_FOR_FILES'
+  | 'READY_TO_RUN'
+  | 'CASES_OPEN'
+  | 'FILE_PENDING'
+  | 'DONE'
+  | (string & {});
+
+/** One SSKUPI file of a date (A1a / A2). */
+export interface SskupiFileBrief {
+  id: number;
+  file_name: string;
+  sequence: number;
+  row_count: number;
+  generated_at: string;
+  generated_by: string;
+  download_count: number;
+  last_download: { by: string; at: string } | null;
+}
+
+/** NONE | GENERATED | DOWNLOADED (of the date's latest file). */
+export type SskupiState = 'NONE' | 'GENERATED' | 'DOWNLOADED' | (string & {});
+
+/** A2: compact SSKUPI block per date row (null: module without an NPCI format). */
+export interface SskupiCompact {
+  state: SskupiState;
+  state_label: string;
+  file_count: number;
+  latest: SskupiFileBrief | null;
+  /** Files of the date never downloaded (any sequence); FILE_PENDING until they are. */
+  not_downloaded?: string[];
+}
+
+/** A1a: the full SSKUPI block of one date (home page). */
+export interface SskupiFull extends SskupiCompact {
+  files: SskupiFileBrief[];
+  /** Rows the NEXT file would hold now. */
+  waiting_rows: number;
+  next_file_name: string;
+  /** Left out until a Checker acts (NEEDS_APPROVAL + NEEDS_REVIEW). */
+  held_for_checker: number;
+  left_out: number;
+  changed_since_included: number;
+  can_generate: boolean;
+}
+
+/** A1: the home page's "Today's job" for the summary's business date (all five roles). */
+export interface DayBlock {
+  business_date: string;
+  status: DateStatus;
+  status_label: string;
+  status_detail: string;
+  files: {
+    expected: number;
+    present: number;
+    missing: number;
+    loaded: number;
+    processing: number;
+    failed: number;
+    awaiting_date_selection: number;
+  };
+  run: {
+    state: 'NOT_RUN' | 'RUNNING' | 'DONE' | 'FAILED' | (string & {});
+    run_id: number | null;
+    requested_by: string | null;
+    finished_at: string | null;
+    error: string;
+  };
+  results: {
+    reconciled_at: string | null;
+    rule_set: string;
+    transactions: number;
+    matched: number;
+    exceptions: number;
+  } | null;
+  settlement: { status: string; status_label: string; unexplained_amount: string | null } | null;
+  cases: { open: number; total: number };
+  sskupi: SskupiFull | null;
+  /** SPA address of the date page. */
+  link: string;
+}
+
 export interface ModuleSummary {
   /** ISO date (IST): today's calendar date, when the counts were taken. Not the business date. */
   business_date_today: string;
@@ -238,6 +327,8 @@ export interface ModuleSummary {
     awaiting_date_selection: number;
     settlement_status: string | null;
   };
+  /** U2 1.1 / 1.2: the summary business date's day, to every role. */
+  day?: DayBlock;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +343,24 @@ export interface CaseFlags {
   rrc_already_sent: boolean;
   no_deadline: boolean;
   previous_day_r12: boolean;
+}
+
+/** The six queue tabs (A3); every case is in exactly one. */
+export type ReplyType = 'DRC' | 'TCC' | 'RET' | 'RRC' | 'NEEDS_REVIEW' | 'SETTLEMENT';
+
+/** The NPCI reply a case carries now (contract "reply" object, generator precedence). */
+export interface CaseReply {
+  reply_type: ReplyType | (string & {});
+  reply_type_label: string;
+  action_type: string;
+  action_type_label: string;
+  flag: string | null;
+  code: string | null;
+  text: string | null;
+  /** Ready-made button / column text ("DRC 102 - Online Reversal"); null when nothing is chosen. */
+  label: string | null;
+  source: 'RULE' | 'SUBMITTED' | 'APPROVED' | (string & {});
+  source_label: string;
 }
 
 export interface CaseListItem {
@@ -278,6 +387,20 @@ export interface CaseListItem {
   default_action_type: string;
   flags: CaseFlags;
   rrc_already_sent_on: string | null;
+  // --- U2 (A3) -------------------------------------------------------------
+  amount?: string | null;
+  /** Which row the amount came from (DRC / TIMEOUT / ADJUSTMENT / NPCI / CBS / SETTLEMENT). */
+  amount_source?: string | null;
+  /** "" for a settlement case. */
+  rule_name?: string;
+  reply?: CaseReply | null;
+  /** The SSKUPI file the case is already in. */
+  npci_file?: { id: number; file_name: string } | null;
+}
+
+/** GET /cases/: the page plus the reply-type tab counts (A3, without the reply_type filter). */
+export interface CaseListPage extends Paginated<CaseListItem> {
+  reply_type_counts?: Partial<Record<ReplyType, number>>;
 }
 
 export interface Paginated<T> {
@@ -407,6 +530,43 @@ export interface CaseDetail extends CaseListItem {
   actions: ProposedActionInfo[];
   events: CaseEventInfo[];
   available_transitions: TransitionName[];
+  /** A4: null for a settlement case. */
+  what_happened?: WhatHappened | null;
+}
+
+/** A4: CBS vs NPCI, the reply and where the case stands for the SSKUPI file. */
+export interface WhatHappened {
+  cbs: { present: boolean; amount: string | null; direction: string | null };
+  npci: {
+    present: boolean;
+    amount: string | null;
+    direction: string | null;
+    response_code: string | null;
+    /** APPROVED (code 00 / RB) | DECLINED | null. */
+    status: string | null;
+  };
+  reply: CaseReply | null;
+  sskupi: {
+    /** IN_FILE | NOT_YET_IN_FILE | HELD_FOR_CHECKER | LEFT_OUT | NO_FILE_REPLY (show the label). */
+    status: string;
+    status_label: string;
+    reason: string | null;
+    reason_label: string | null;
+    detail: string;
+    file_date: string | null;
+    file: {
+      id: number;
+      file_name: string;
+      file_date: string;
+      line: number;
+      generated_at: string;
+      generated_by: string;
+      flag: string;
+      code: string;
+      reply_source: string;
+    } | null;
+    changed_since_included: boolean;
+  };
 }
 
 /** Queue filters, as query parameters (design 4.4 / api.py CaseListView). */
@@ -419,6 +579,8 @@ export interface CaseFilters {
   case_type?: string;
   overdue?: '' | 'true' | 'false';
   mine?: '' | 'assigned' | 'approval';
+  /** csv of ReplyType (A3). */
+  reply_type?: string;
   flag?: string;
   rrn?: string;
   /** ISO date (v1 addition). */
@@ -560,6 +722,36 @@ export interface DetectFile {
   warnings: string[];
 }
 
+/** U4 E1: one expected file type x cycle of the date, against this batch. */
+export interface DetectChecklistSlot {
+  file_type_config_id: number;
+  file_type_code: string;
+  label: string;
+  cycle: string | null;
+  /** The slot's state now (date overview states). */
+  state: SlotState;
+  /** ALREADY_PRESENT | IN_BATCH | MISSING (still missing after this batch). */
+  group: 'ALREADY_PRESENT' | 'IN_BATCH' | 'MISSING' | (string & {});
+  /** Indexes of this batch's files proposed for the slot (on ALREADY_PRESENT: they will be refused). */
+  batch_files: number[];
+  existing_files: { id: number; filename: string; processing_status: ProcessingStatus }[];
+}
+
+/** U4 E1: expected vs. in this batch vs. still missing, for the chosen date. */
+export interface DetectChecklist {
+  business_date: string;
+  summary: {
+    expected: number;
+    already_present: number;
+    in_batch: number;
+    missing_after_batch: number;
+    outside_checklist: number;
+  };
+  slots: DetectChecklistSlot[];
+  /** Indexes of batch files that fill no slot of the date. */
+  outside_checklist: number[];
+}
+
 /** POST /files/detect/ (dry run, nothing saved). */
 export interface DetectResult {
   /** The date most file names carry: the proposed business date of the upload. */
@@ -571,6 +763,8 @@ export interface DetectResult {
   file_types: FileTypeOption[];
   max_file_bytes: number;
   detect_head_bytes: number;
+  /** U4 2.1 (E1): null when there is no date (none given, none in the names). */
+  checklist?: DetectChecklist | null;
 }
 
 /** What the CBS date picker shows (intake.date_selection); null unless AWAITING_DATE_SELECTION. */
@@ -626,6 +820,16 @@ export interface OperationLogEntry {
 export interface UploadedFileDetail extends UploadedFileRow {
   /** Oldest first. */
   history: OperationLogEntry[];
+  /** B2: whether the stored original can be downloaded, and why not. */
+  original?: {
+    available: boolean;
+    reason: 'NOT_STORED' | 'MISSING' | 'CHANGED' | (string & {}) | null;
+    message: string;
+    download_url: string | null;
+  };
+  /** Newest first. */
+  downloads?: { by: string; at: string }[];
+  download_count?: number;
 }
 
 /** GET /files/: paginated, plus how many files of the module are still being processed. */
@@ -644,6 +848,8 @@ export interface FileFilters {
   /** Comma list of ProcessingStatus. */
   status?: string;
   current?: '' | 'true' | 'false';
+  /** csv of file ids (U4 E2: the upload page polls the files it just sent). */
+  ids?: string;
   /** uploaded_at, business_date, filename, processing_status, file_type; "-" reverses. */
   ordering?: string;
   page?: number;
@@ -748,6 +954,11 @@ export interface BusinessDateOverview {
   } | null;
   last_run: ReconciliationRunInfo | null;
   run_blockers: RunBlocker[];
+  // --- U2 (A0 / A2) ----------------------------------------------------------
+  status?: DateStatus;
+  status_label?: string;
+  status_detail?: string;
+  sskupi?: SskupiCompact | null;
 }
 
 export interface ChecklistSlot {
@@ -1000,8 +1211,38 @@ export interface SelfCheckRow {
   subtotal_credit: CheckFigure;
   settlement_net: CheckFigure;
   final_net: CheckFigure;
+  /** Fee GST check (settlement.fee_gst, owner 2026-11-06): warning only, never changes status. */
+  gst_warning: boolean;
+  /** null: not checked (stored before the check existed); {}: MISSING cycle. */
+  gst_check: GstCheck | Record<string, never> | null;
   checked_at: string;
   source: string;
+}
+
+export type GstCheckNote = 'OUTSIDE_TOLERANCE' | 'GST_WITHOUT_FEE' | 'FEE_WITHOUT_GST';
+
+/** One fee / GST pair on one side (results._check_row; amounts are 2-decimal strings). */
+export interface GstCheckRow {
+  fee_category: string;
+  gst_category: string;
+  side: 'DEBIT' | 'CREDIT';
+  fee: string;
+  /** Information only (both sides together). */
+  fee_txn_count: number;
+  expected_gst: string;
+  ntsl_gst: string;
+  /** expected - NTSL. */
+  difference: string;
+  tolerance: string;
+  within: boolean;
+  note: GstCheckNote | null;
+}
+
+/** The fee GST check of one cycle: always 12 rows (6 pairs x DEBIT / CREDIT). */
+export interface GstCheck {
+  rate: string;
+  tolerance: string;
+  rows: GstCheckRow[];
 }
 
 export interface SelfCheck {
@@ -1010,10 +1251,12 @@ export interface SelfCheck {
   fail: number;
   missing: number;
   all_pass: boolean;
+  /** Cycles with a GST warning; NOT part of all_pass. */
+  gst_warnings: number;
   results: SelfCheckRow[];
 }
 
-export type SettlementTransactionKind = 'npci' | 'sop' | 'adjustments' | 'z';
+export type SettlementTransactionKind = 'npci' | 'sop' | 'adjustments' | 'z' | 'unexplained';
 
 /** The current result on GET /dates/<date>/settlement/. */
 export interface SettlementDateResult extends SettlementResultBody {
@@ -1023,7 +1266,7 @@ export interface SettlementDateResult extends SettlementResultBody {
   source: string;
   unexplained_amount: string | null;
   unexplained_count: number | null;
-  transaction_counts: Record<SettlementTransactionKind, number>;
+  transaction_counts: Partial<Record<SettlementTransactionKind, number>>;
 }
 
 /** GET /dates/<date>/settlement/ (404 when neither a result nor a self-check exists). */
@@ -1046,6 +1289,44 @@ export interface SettlementDate {
     superseded_at: string | null;
     unexplained_amount: string | null;
   }[];
+  /** B3: the plain summary (null when there is no settlement result). */
+  summary?: SettlementSummary | null;
+}
+
+/** One type of the "explained" breakdown (B3). */
+export interface ExplainedType {
+  type: string;
+  label: string;
+  count: number;
+  amount: string | null;
+  /** False for the late adjustments (they explain NTSL's net adjusted amount, not the SOP difference). */
+  in_sop_check: boolean;
+  rules: { rule: string; g_rule: string; g_label: string; count: number; amount: string | null }[];
+}
+
+/** B3 GET /dates/<date>/settlement/ "summary". */
+export interface SettlementSummary {
+  status: string;
+  status_label: string;
+  tallied: boolean;
+  reasons: string[];
+  cbs_net: string | null;
+  ntsl_net: string | null;
+  difference: string | null;
+  explained: string | null;
+  unexplained: string | null;
+  cycles_unexplained_amount: string | null;
+  cycles_unexplained_count: number | null;
+  unexplained_entries: number;
+  explained_by_type: ExplainedType[];
+  cbs_rows_without_valid_rrn: { count: number; amount: string | null } | null;
+  self_check_failed: boolean;
+  settlement_case: { id: number; status: string; link: string } | null;
+  /**
+   * Notes shown next to the tally ({} today; owner Q3 may move the late
+   * adjustments here as {"late_adjustments": {label, count, amount}}).
+   */
+  notes?: Record<string, unknown>;
 }
 
 export interface SettlementTransactionFilters {
@@ -1065,7 +1346,7 @@ export interface SettlementTransactionsPage extends Paginated<Record<string, unk
   fields: string[];
   result_id: number | null;
   result_status: string | null;
-  counts: Record<SettlementTransactionKind, number>;
+  counts: Partial<Record<SettlementTransactionKind, number>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1122,18 +1403,32 @@ export interface ResponseCodeRow {
   used_by: string[];
   pending_request_id: number | null;
   created_at: string;
+  // --- U2 7.2 (A6) ---------------------------------------------------------
+  /** DRC | TCC | RET | RRC | OTHER (NPCI response codes). */
+  reply_type?: string;
+  in_sskupi_file?: boolean;
+  /** The exact SSKUPI "specifyother" text; null when not an SSKUPI reply. */
+  sskupi_text?: string | null;
+  /** In the SSKUPI file and the numeric code is known. */
+  sskupi_ready?: boolean;
+  /** Why a reply with this text would be left out of the file, or null. */
+  sskupi_problem?: string | null;
 }
 
 export interface ResponseCodeListPage extends Paginated<ResponseCodeRow> {
   rule_set: string | null;
   can_propose: boolean;
   can_decide: boolean;
+  /** A6: the groups in SSKUPI file order (DRC, RRC, TCC, RET, then OTHER), whole table. */
+  reply_types?: (Choice & { count: number })[];
 }
 
 export interface ResponseCodeFilters {
   /** Comma list of meta.code_flags. */
   flag?: string;
   known?: string;
+  /** "reply_type": SSKUPI file order, then code (A6). */
+  ordering?: string;
   page?: number;
   page_size?: number;
 }
@@ -1426,6 +1721,8 @@ export interface AuditFilters {
   rrn?: string;
   /** settings-events only, csv */
   kind?: string;
+  /** everything only (B5), csv of case_event / settings_event / user_activity / operation. */
+  source?: string;
 }
 
 /** B1 GET /audit/case-events/. */
@@ -1509,6 +1806,129 @@ export interface AuditMeta {
   user_activity_types: Choice[];
   operation_types: Choice[];
   orderings: string[];
+  /** B5: the "Everything" source filter choices. */
+  everything_sources?: Choice[];
+}
+
+/** U5 F1: one row of GET /reports/npci-files/ (the NPCI file row plus its date and links). */
+export interface NpciFilesReportRow extends NpciFileRow {
+  business_date: string;
+  links: { file: string; date: string };
+}
+
+export interface NpciFilesReportFilters {
+  date_from?: string;
+  date_to?: string;
+  /** "true" | "false"; omit = all. */
+  downloaded?: string;
+  /** "-business_date" (default) | "business_date". */
+  ordering?: string;
+  page?: number;
+  page_size?: number;
+}
+
+/** U5 F1 GET /reports/npci-files/. */
+export interface NpciFilesReport extends Paginated<NpciFilesReportRow> {
+  /** The whole range, not the page. */
+  totals: { files: number; rows: number; amount: string; downloaded: number; not_downloaded: number };
+  report: {
+    key: string;
+    title: string;
+    module: string;
+    filters: { date_from: string; date_to: string; downloaded: boolean | null; ordering: string };
+    generated_at: string;
+    generated_by: string;
+  };
+  /** Excel / CSV comes with the shared Phase 6 export; null until then. */
+  export: unknown;
+}
+
+/** U5 F2 GET /dashboard/: one business date. */
+export interface DashboardDate {
+  business_date: string;
+  status: DateStatus;
+  status_label: string;
+  volume: {
+    transactions: number;
+    npci: { count: number; amount: string | null };
+    cbs: { count: number; amount: string | null };
+  };
+  exceptions: Partial<Record<ReplyType, number>> & { total: number };
+  open_cases: number;
+  settlement: { status: string; tallied: boolean; unexplained_amount: string | null } | null;
+  sskupi: { state: string; file_count: number; not_downloaded: number; pending: boolean } | null;
+  link: string;
+}
+
+/** U5 F2 GET /dashboard/ (plain numbers per date, oldest first; charts come later). */
+export interface Dashboard {
+  range: { date_from: string; date_to: string; dates: number };
+  reply_types: Choice[];
+  dates: DashboardDate[];
+  open_cases_by_age: {
+    buckets: { label: string; min_days: number; max_days: number | null; count: number; overdue: number }[];
+    total: number;
+    overdue: number;
+  };
+  generated_at: string;
+}
+
+/** B5 GET /audit/everything/: one row of the merged timeline. */
+export interface AuditEverythingRow {
+  /** Unique across sources ("case_event:9876", "settings_event:<kind>:<id>"). */
+  id: string;
+  source: 'case_event' | 'settings_event' | 'user_activity' | 'operation' | (string & {});
+  source_label: string;
+  event_id: number;
+  created_at: string;
+  module: string | null;
+  /** null = the system. */
+  username: string | null;
+  event_type: string;
+  event_type_label: string;
+  /** One plain sentence, made by the server. */
+  summary: string;
+  link: string | null;
+  /** The row exactly as the source's own list returns it. */
+  details: Record<string, unknown>;
+}
+
+/** B1 GET /<module>/rrn/<rrn>/ (200 even when nothing is found). */
+export interface RrnLookup {
+  rrn: string;
+  found: boolean;
+  transactions: {
+    id: number;
+    business_date: string;
+    is_superseded: boolean;
+    processing_status: string;
+    rule_code: string | null;
+    rule_name: string | null;
+    cbs: { present: boolean; amount: string | null; direction: string | null };
+    npci: { present: boolean; amount: string | null; direction: string | null; response_code: string | null };
+    link: string;
+  }[];
+  cases: {
+    id: number;
+    business_date: string;
+    case_type: string;
+    status: string;
+    rule_code: string;
+    rule_name: string;
+    reply_label: string | null;
+    link: string;
+  }[];
+  file_rows: {
+    register_type: string;
+    business_date: string;
+    uploaded_file_id: number;
+    filename: string;
+    amount: string | null;
+    direction: string | null;
+    link: string;
+  }[];
+  /** Replaced transactions not listed (include_replaced=false). */
+  replaced_count: number;
 }
 
 /** C1 GET /users-and-roles/ row. */

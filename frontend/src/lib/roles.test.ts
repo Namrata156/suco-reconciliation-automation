@@ -7,51 +7,40 @@ import { menuFor, menuHref, MENU } from './roles';
 const keys = (roles: RoleName[], builtSlice?: number) =>
   menuFor(makeMe(roles), builtSlice ? { builtSlice } : undefined).map((i) => i.key);
 
-describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
-  it('Maker: home, cases, my cases, files, business dates, settings, pending approvals, alerts', () => {
+describe('role menus (design 4.2 / 3.5, from /me permissions; 11 items since U1 9.4)', () => {
+  it('Maker: home, business dates, cases, pending approvals, reports, settings', () => {
     expect(keys(['Maker'])).toEqual([
       'home',
-      'cases',
-      'my-cases',
-      'files',
+      'dashboard',
       'dates',
-      'results-all',
-      'settlement-all',
+      'cases',
+      'approvals',
       'reports',
       'settings',
-      'pending-approvals',
-      'alerts',
     ]);
   });
 
-  it('Checker: home, cases, awaiting my approval, files, business dates, settings, pending approvals', () => {
+  it('Checker: the same menu; approving happens in Approvals (U2 7.1)', () => {
     expect(keys(['Checker'])).toEqual([
       'home',
-      'cases',
-      'awaiting-approval',
-      'files',
+      'dashboard',
       'dates',
-      'results-all',
-      'settlement-all',
+      'cases',
+      'approvals',
       'reports',
       'settings',
-      'pending-approvals',
-      'alerts',
     ]);
   });
 
-  it('Administrator: the Django admin link, no maker/checker items, no upload (P10b)', () => {
+  it('Administrator: the admin & audit items, no maker/checker items, no upload (P10b)', () => {
     expect(keys(['Administrator'])).toEqual([
       'home',
-      'cases',
-      'files',
+      'dashboard',
       'dates',
-      'results-all',
-      'settlement-all',
+      'cases',
+      'approvals',
       'reports',
       'settings',
-      'pending-approvals',
-      'alerts',
       'audit',
       'users',
       'django-admin',
@@ -63,36 +52,45 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(items).not.toContain('django-admin');
   });
 
-  it('Operations User: upload, files and business dates (Slice 2), settings read-only (Slice 3)', () => {
+  it('Operations User: upload files', () => {
     expect(keys(['Operations User'])).toEqual([
       'home',
-      'cases',
+      'dashboard',
       'upload',
-      'files',
       'dates',
-      'results-all',
-      'settlement-all',
+      'cases',
+      'approvals',
       'reports',
       'settings',
-      'pending-approvals',
-      'alerts',
     ]);
   });
 
-  it('Auditor: read-only screens, alerts, the audit trail and the users list; no upload, no admin link', () => {
+  it('Auditor: read-only screens, the audit trail and the users list; no upload, no admin link', () => {
     expect(keys(['Auditor'])).toEqual([
       'home',
-      'cases',
-      'files',
+      'dashboard',
       'dates',
-      'results-all',
-      'settlement-all',
+      'cases',
+      'approvals',
       'reports',
       'settings',
-      'pending-approvals',
-      'alerts',
       'audit',
       'users',
+    ]);
+  });
+
+  it('removed from the menu in U1 (routes stay): my cases, files, all-dates results / settlement, alerts', () => {
+    const all = MENU.map((i) => i.key);
+    for (const key of ['my-cases', 'files', 'results-all', 'settlement-all', 'alerts']) {
+      expect(all).not.toContain(key);
+    }
+  });
+
+  it('audit trail, users and the Django admin link sit under "Admin & audit"; nothing else does', () => {
+    expect(MENU.filter((i) => i.section === 'admin').map((i) => i.key)).toEqual([
+      'audit',
+      'users',
+      'django-admin',
     ]);
   });
 
@@ -108,20 +106,19 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     }
   });
 
-  it('Slice 3 build: no alerts, audit or users screens', () => {
+  it('Slice 3 build: no audit or users screens', () => {
     expect(keys(['Administrator'], 3)).toEqual([
       'home',
-      'cases',
-      'files',
       'dates',
+      'cases',
+      'approvals',
       'settings',
-      'pending-approvals',
       'django-admin',
     ]);
   });
 
-  it('module-less items (alerts, audit, users) keep their own address in every module', () => {
-    for (const key of ['alerts', 'audit', 'users']) {
+  it('module-less items (audit, users) keep their own address in every module', () => {
+    for (const key of ['audit', 'users']) {
       const item = MENU.find((i) => i.key === key)!;
       expect(item.scoped).toBe(false);
       expect(menuHref(item, 'upi')).toBe(`/${key}`);
@@ -133,20 +130,15 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(keys(['Operations User'], 1)).toEqual(['home', 'cases']);
   });
 
-  it('a user holding Maker and Checker sees both work lists', () => {
+  it('a user holding Maker and Checker: one Approvals item', () => {
     expect(keys(['Maker', 'Checker'])).toEqual([
       'home',
-      'cases',
-      'my-cases',
-      'awaiting-approval',
-      'files',
+      'dashboard',
       'dates',
-      'results-all',
-      'settlement-all',
+      'cases',
+      'approvals',
       'reports',
       'settings',
-      'pending-approvals',
-      'alerts',
     ]);
   });
 
@@ -160,18 +152,21 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
     expect(keys(['Administrator'], 4)).not.toContain('upload');
     expect(keys(['Auditor'], 4)).toContain('audit');
     expect(keys(['Maker'], 4)).not.toContain('audit');
-    expect(keys(['Checker'], 4)).toContain('pending-approvals');
+    expect(keys(['Checker'], 4)).toContain('approvals');
   });
 
   it('Slice 2 build: no settings screens', () => {
-    expect(keys(['Checker'], 2)).toEqual(['home', 'cases', 'awaiting-approval', 'files', 'dates']);
+    expect(keys(['Checker'], 2)).toEqual(['home', 'dates', 'cases']);
   });
 
-  it('pending approvals: all five roles read it (owner 2026-10-20); no per-date results menu item', () => {
+  it('Approvals: all five roles read it (owner 2026-10-20); replaces both approval items (U2 7.1)', () => {
     for (const role of ['Administrator', 'Operations User', 'Maker', 'Checker', 'Auditor'] as RoleName[]) {
-      expect(keys([role])).toContain('pending-approvals');
+      expect(keys([role])).toContain('approvals');
     }
     expect(MENU.map((i) => i.key)).not.toContain('results');
+    expect(MENU.map((i) => i.key)).not.toContain('awaiting-approval');
+    expect(MENU.map((i) => i.key)).not.toContain('pending-approvals');
+    expect(MENU.find((i) => i.key === 'approvals')?.label).toBe('Approvals');
     expect(MENU.find((i) => i.key === 'settings')?.matchPrefix).toBe(true);
   });
 
@@ -181,8 +176,8 @@ describe('role menus (design 4.2 / 3.5, from /me permissions)', () => {
   });
 
   it('builds module-scoped addresses', () => {
-    const cases = MENU.find((i) => i.key === 'my-cases')!;
-    expect(menuHref(cases, 'upi')).toBe('/upi/cases?mine=assigned');
+    const approvals = MENU.find((i) => i.key === 'approvals')!;
+    expect(menuHref(approvals, 'upi')).toBe('/upi/approvals');
     expect(
       menuHref(
         MENU.find((i) => i.key === 'home')!,

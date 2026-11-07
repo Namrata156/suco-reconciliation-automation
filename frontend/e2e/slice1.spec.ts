@@ -6,7 +6,8 @@
  *   3. A bulk refusal on R13 Pending Investigation.
  *
  * Prerequisites (seeded data set, not the full database):
- *   - at least 4 OPEN, LOW, R01 cases without warning flags in module E2E_MODULE
+ *   - at least 4 OPEN R01 cases (R01 is LOW in the rule set) without warning
+ *     flags in module E2E_MODULE
  *   - at least 1 R13 case
  *   - two users: E2E_MAKER_USER (Maker role only) and E2E_CHECKER_USER
  *     (Checker role only), so the approval is not a self-approval
@@ -48,7 +49,7 @@ const dialog = (page: Page) => page.getByRole('dialog');
 
 test('Maker takes an R01 case and submits DRC 102; Checker approves; history shows it', async ({ page }) => {
   await login(page, MAKER);
-  await queue(page, 'rule_code=R01&status=OPEN&priority=LOW');
+  await queue(page, 'rule_code=R01&status=OPEN');
   const firstCase = casesTable(page).getByRole('link').first();
   await expect(firstCase).toBeVisible();
   const rrn = (await firstCase.textContent())?.trim() ?? '';
@@ -59,12 +60,16 @@ test('Maker takes an R01 case and submits DRC 102; Checker approves; history sho
   // Take
   await page.getByRole('group', { name: 'Case actions' }).getByRole('button', { name: 'Take' }).click();
   await dialog(page).getByRole('button', { name: 'Take' }).click();
-  await expect(page.getByRole('button', { name: 'Submit action' })).toBeVisible();
+  // The main button names the reply (UI refinements U2 6.5): "Submit reply DRC 102 - ...".
+  const submit = page.getByRole('group', { name: 'Case actions' }).getByRole('button', { name: /^Submit/ });
+  await expect(submit).toBeVisible();
 
   // Submit DRC 102 (pre-filled from the rule)
-  await page.getByRole('button', { name: 'Submit action' }).click();
+  await submit.click();
   await expect(dialog(page).getByText('Sent as DRC 102 (filled in automatically).')).toBeVisible();
-  await dialog(page).getByRole('button', { name: 'Submit for approval' }).click();
+  await dialog(page)
+    .getByRole('button', { name: /^Submit reply DRC 102/ })
+    .click();
   await expect(dialog(page)).toBeHidden();
   await expect(page.getByText('Pending approval').first()).toBeVisible();
   await logout(page);
@@ -72,7 +77,10 @@ test('Maker takes an R01 case and submits DRC 102; Checker approves; history sho
   // Checker approves
   await login(page, CHECKER);
   await page.goto(caseUrl);
-  await page.getByRole('group', { name: 'Case actions' }).getByRole('button', { name: 'Approve' }).click();
+  await page
+    .getByRole('group', { name: 'Case actions' })
+    .getByRole('button', { name: /^Approve/ })
+    .click();
   await expect(dialog(page).getByText(/DRC reply 102/)).toBeVisible();
   await dialog(page)
     .getByRole('button', { name: /^Approve/ })
@@ -90,7 +98,7 @@ test('Maker takes an R01 case and submits DRC 102; Checker approves; history sho
 
 test('Maker bulk-submits a set of LOW R01 cases', async ({ page }) => {
   await login(page, MAKER);
-  await queue(page, 'rule_code=R01&status=OPEN&priority=LOW');
+  await queue(page, 'rule_code=R01&status=OPEN');
   const boxes = casesTable(page).getByRole('checkbox', { name: /^Select case / });
   await expect(boxes.nth(2)).toBeVisible();
   const labels: string[] = [];
@@ -104,7 +112,7 @@ test('Maker bulk-submits a set of LOW R01 cases', async ({ page }) => {
   await bar.getByRole('button', { name: 'Take selected' }).click();
   await expect(page.getByText('3 cases taken.')).toBeVisible();
 
-  await queue(page, 'rule_code=R01&status=IN_PROGRESS&priority=LOW&mine=assigned');
+  await queue(page, 'rule_code=R01&status=IN_PROGRESS&mine=assigned');
   for (const label of labels) {
     await casesTable(page).getByRole('checkbox', { name: label, exact: true }).check();
   }

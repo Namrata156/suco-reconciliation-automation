@@ -12,8 +12,18 @@
  * The business date can be at most yesterday (IST): on calendar day D ops
  * reconcile D-1, and the server refuses a date on or after today (owner
  * decision 2026-10-23); its field message is shown under the date.
- * CBS covers several dates: its date is confirmed after processing, on the
- * file's own screen (4.10). Operations User only (P10b); the server decides.
+ * CBS covers several dates: its date is confirmed after processing (4.10).
+ * Operations User only (P10b); the server decides.
+ *
+ * UI refinements U4 (2.1-2.4): the review step shows the date's expected
+ * files against the batch (already here / in this batch / still missing;
+ * features/files/BatchChecklist, read again when the date is changed); files
+ * can also be dropped (files or a whole
+ * folder) on a drop box, the two pickers stay as the fallback; after the
+ * upload each accepted file's status updates live (Processing -> Loaded /
+ * Failed), a CBS file's date is confirmed right here once it waits for it,
+ * and "Go to <date>" appears when every accepted file is loaded
+ * (features/files/UploadProgress).
  */
 import {
   Alert,
@@ -32,13 +42,15 @@ import {
 } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
 import { useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link } from 'react-router';
 
 import { ApiError, detectFiles } from '../api/client';
 import type { DetectResult, FileTypeOption } from '../api/types';
 import { useMe } from '../auth/auth';
-import { FileStateBadge } from '../components/Badges';
+import { BatchChecklist } from '../features/files/BatchChecklist';
+import { DropZone } from '../features/files/DropZone';
+import { UploadProgress } from '../features/files/UploadProgress';
 import { useModuleCode } from '../hooks/module';
 import { BUSINESS_DATE_TOO_LATE, formatBytes, formatDate, latestBusinessDateIst } from '../lib/format';
 import { can } from '../lib/roles';
@@ -212,67 +224,6 @@ function ReviewTable({
   );
 }
 
-function ResultsTable({ module, outcomes }: { module: string; outcomes: UploadOutcome[] }) {
-  return (
-    <Table.ScrollContainer minWidth={900}>
-      <Table aria-label="Upload results">
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th scope="col">File</Table.Th>
-            <Table.Th scope="col">Result</Table.Th>
-            <Table.Th scope="col">Details</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {outcomes.map((o) => (
-            <Table.Tr key={o.index}>
-              <Table.Td className="wrap-anywhere">
-                {o.accepted ? (
-                  <Anchor component={Link} to={`/${module}/files/${o.accepted.id}`}>
-                    {o.filename}
-                  </Anchor>
-                ) : (
-                  o.filename
-                )}
-              </Table.Td>
-              <Table.Td>
-                {o.accepted ? (
-                  <Badge color="green" variant="light">
-                    Accepted
-                  </Badge>
-                ) : (
-                  <Badge color="red" variant="filled">
-                    Refused
-                  </Badge>
-                )}
-              </Table.Td>
-              <Table.Td>
-                {o.accepted ? (
-                  <Group gap="xs">
-                    <Text size="sm">
-                      {o.accepted.file_type.label}
-                      {o.accepted.cycle ? ` ${o.accepted.cycle}` : ''}, file #{o.accepted.id}
-                    </Text>
-                    <FileStateBadge state={o.accepted.state} />
-                  </Group>
-                ) : (
-                  <List size="sm">
-                    {o.errors.map((e) => (
-                      <List.Item key={e} className="wrap-anywhere">
-                        {e}
-                      </List.Item>
-                    ))}
-                  </List>
-                )}
-              </Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </Table.ScrollContainer>
-  );
-}
-
 function Working({
   verb,
   progress,
@@ -304,6 +255,12 @@ export function UploadPage() {
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' });
   const [outcomes, setOutcomes] = useState<UploadOutcome[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // The files as sent to detect (head + SHA-256), to read the checklist again for another date.
+  const [hashed, setHashed] = useState<{ file: File; sha256: string }[]>([]);
+  const [checklistBusy, setChecklistBusy] = useState(false);
+  const filesInput = useRef<HTMLInputElement | null>(null);
+  // The date last asked for: an older answer that arrives later is dropped.
+  const askedDate = useRef<string | null>(null);
   // The server's refusal of the business date itself, shown under the date.
   const [dateError, setDateError] = useState<string | null>(null);
   // On calendar day D ops reconcile D-1; a date on or after today is refused.
@@ -336,6 +293,7 @@ export function UploadPage() {
     setOutcomes([]);
     setError(null);
     setDateError(null);
+    setHashed([]);
   };
 
   const check = async () => {
@@ -349,6 +307,7 @@ export function UploadPage() {
       }
       setProgress({ done: picked.length, total: picked.length, current: '' });
       const result = await detectFiles(module, hashed);
+      setHashed(hashed);
       setDetect(result);
       setRows(buildRows(hashed, result));
       setBusinessDate(result.business_date);
@@ -385,12 +344,25 @@ export function UploadPage() {
   const types = detect?.file_types ?? [];
   const totals = reviewTotals(rows, types);
   const accepted = outcomes.filter((o) => o.accepted);
-  // CBS (RANGE_CONTAINS) has no business date until it is confirmed.
-  const cbs = accepted.filter((o) => o.accepted?.business_date === null);
   const busy = phase === 'checking' || phase === 'uploading';
+  // 2.1: the checklist is for the chosen date; read it again (a dry run) when the date changes.
   const changeDate = (v: string | null) => {
     setBusinessDate(v);
     setDateError(null);
+    if (!v || !detect || v === detect.checklist?.business_date || v > latest) return;
+    askedDate.current = v;
+    setChecklistBusy(true);
+    detectFiles(module, hashed, v)
+      .then((r) => {
+        if (askedDate.current !== v) return;
+        setDetect((d) => (d ? { ...d, checklist: r.checklist ?? null } : d));
+      })
+      .catch((e: unknown) => {
+        if (isBusinessDateError(e)) setDateError(e.fieldErrors.business_date!.join(' '));
+      })
+      .finally(() => {
+        if (askedDate.current === v) setChecklistBusy(false);
+      });
   };
 
   return (
@@ -411,6 +383,7 @@ export function UploadPage() {
             Choose the day&apos;s files, or the whole folder. The system proposes each file&apos;s type, cycle
             and business date; you check them before anything is saved.
           </Text>
+          <DropZone disabled={busy} onFiles={setPicked} onChooseFiles={() => filesInput.current?.click()} />
           <Group gap="lg" align="flex-end">
             <div>
               <Text component="label" htmlFor="upload-files" size="sm" fw={500} display="block">
@@ -418,6 +391,7 @@ export function UploadPage() {
               </Text>
               <input
                 id="upload-files"
+                ref={filesInput}
                 type="file"
                 multiple
                 disabled={busy}
@@ -485,6 +459,13 @@ export function UploadPage() {
               </List>
             </Alert>
           )}
+          {detect.checklist && (
+            <BatchChecklist
+              checklist={detect.checklist}
+              fileName={(i) => rows.find((r) => r.index === i)?.file.name ?? `file ${i + 1}`}
+              busy={checklistBusy}
+            />
+          )}
           <ReviewTable
             rows={rows}
             types={types}
@@ -522,25 +503,20 @@ export function UploadPage() {
           </Text>
           {accepted.length > 0 && (
             <Text size="sm">
-              Accepted files are now being processed. Follow them on the{' '}
-              <Anchor component={Link} to={`/${module}/dates/${businessDate}`}>
-                business date {formatDate(businessDate)}
-              </Anchor>{' '}
-              or in the{' '}
+              Accepted files are now being processed; their status below updates by itself. A CBS file asks
+              for its business date here once it is read. Also on the{' '}
               <Anchor component={Link} to={`/${module}/files?business_date=${businessDate}`}>
                 files list
               </Anchor>
               .
             </Text>
           )}
-          {cbs.length > 0 && (
-            <Alert color="violet" title="CBS business date">
-              Once processed, {cbs.map((o) => o.filename).join(', ')} will wait for its business date: open
-              the file and confirm the date (pre-selected: {formatDate(businessDate)}, when it is in the
-              file).
-            </Alert>
-          )}
-          <ResultsTable module={module} outcomes={outcomes} />
+          <UploadProgress
+            module={module}
+            businessDate={businessDate}
+            outcomes={outcomes}
+            canSelectDate={can(me.permissions, 'files.upload')}
+          />
           <Group>
             <Button variant="default" onClick={startOver}>
               Upload more files

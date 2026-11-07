@@ -17,11 +17,17 @@ export function DateSelection({
   selection,
   canSelect,
   onSelect,
+  titleId = 'date-selection-title',
+  confirmLabel = () => 'Confirm business date',
 }: {
   selection: DateSelectionInfo;
   canSelect: boolean;
   /** Throws an ApiError when the server refuses; the refusal is shown here. */
   onSelect: (isoDate: string) => Promise<void>;
+  /** Unique when several CBS files wait on one screen (the upload page, U4 2.3). */
+  titleId?: string;
+  /** The button's text for the chosen date ("Confirm 14-Jul-2026" on the upload page). */
+  confirmLabel?: (isoDate: string) => string;
 }) {
   const [chosen, setChosen] = useState<string | null>(selection.preselected);
   const [busy, setBusy] = useState(false);
@@ -46,9 +52,9 @@ export function DateSelection({
   };
 
   return (
-    <Card withBorder padding="md" component="section" aria-labelledby="date-selection-title">
+    <Card withBorder padding="md" component="section" aria-labelledby={titleId}>
       <Stack gap="sm">
-        <Title order={2} size="h4" id="date-selection-title">
+        <Title order={2} size="h4" id={titleId}>
           Business date of this CBS file
         </Title>
         <Text size="sm">
@@ -79,7 +85,7 @@ export function DateSelection({
         {canSelect ? (
           <Group>
             <Button onClick={confirm} disabled={!chosen} loading={busy}>
-              Confirm business date
+              {chosen ? confirmLabel(chosen) : 'Confirm business date'}
             </Button>
           </Group>
         ) : (

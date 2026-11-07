@@ -4,8 +4,10 @@
  *   change anything.
  *
  * Steps:
- *   1. Sign in as the Auditor: the menu has Alerts and Audit trail, and no
- *      upload, users list or work lists; the header has the alerts bell.
+ *   1. Sign in as the Auditor: the menu has Audit trail and Users and roles
+ *      (under "Admin & audit") and no Alerts item (UI refinements U1: alerts
+ *      open from the bell), no upload or work lists; the header has the
+ *      alerts bell.
  *   2. Audit trail > Case events > "Today": the count on screen equals the
  *      API's count for today (the day may have no case events in the
  *      database copy; then the empty message is checked instead). With
@@ -104,21 +106,36 @@ test("Auditor: the day's case events and the login log, and nothing can be chang
 
   // 1. Menu and header for the Auditor.
   const nav = page.getByRole('navigation', { name: 'Main menu' });
-  await expect(nav.getByRole('link', { name: 'Audit trail' })).toBeVisible({ timeout: SHORT });
-  await expect(nav.getByRole('link', { name: 'Alerts', exact: true })).toBeVisible({ timeout: SHORT });
+  await expect(
+    nav.getByRole('group', { name: 'Admin & audit' }).getByRole('link', { name: 'Audit trail' }),
+  ).toBeVisible({ timeout: SHORT });
+  await expect(nav.getByRole('link', { name: 'Alerts', exact: true })).toHaveCount(0, { timeout: SHORT });
   await expect(nav.getByRole('link', { name: 'Upload files' })).toHaveCount(0, { timeout: SHORT });
-  await expect(nav.getByRole('link', { name: 'Users and roles', exact: true })).toHaveCount(0, {
-    timeout: SHORT,
-  });
+  // Auditors read the users list since 2026-10-22 (design 4.17, contract C1).
+  await expect(
+    nav
+      .getByRole('group', { name: 'Admin & audit' })
+      .getByRole('link', { name: 'Users and roles', exact: true }),
+  ).toBeVisible({ timeout: SHORT });
   await expect(nav.getByRole('link', { name: 'My cases' })).toHaveCount(0, { timeout: SHORT });
   await expect(nav.getByRole('link', { name: 'Awaiting my approval' })).toHaveCount(0, { timeout: SHORT });
-  await expect(page.getByRole('link', { name: /^Alerts(,|$)/ }).first()).toBeVisible({ timeout: LOAD });
+  // The bell opens a small menu with "See all alerts".
+  const bell = page.getByRole('button', { name: /^Alerts(,|$)/ });
+  await expect(bell).toBeVisible({ timeout: LOAD });
+  await bell.click({ timeout: SHORT });
+  await expect(page.getByRole('menuitem', { name: 'See all alerts' })).toHaveAttribute('href', '/alerts', {
+    timeout: SHORT,
+  });
+  await page.keyboard.press('Escape');
 
   // 2. The day's case events.
   await nav.getByRole('link', { name: 'Audit trail' }).click({ timeout: SHORT });
   await expect(page.getByRole('heading', { name: 'Audit trail', exact: true })).toBeVisible({
     timeout: LOAD,
   });
+  // /audit opens "Everything" (UI refinements U3 9.1); the case events are a tab of their own.
+  await expect(page.getByRole('tab', { name: 'Everything', selected: true })).toBeVisible({ timeout: LOAD });
+  await page.getByRole('tab', { name: 'Case events' }).click({ timeout: SHORT });
   await expect(page.getByRole('tab', { name: 'Case events', selected: true })).toBeVisible({ timeout: LOAD });
   await page.getByRole('button', { name: 'Today' }).click({ timeout: SHORT });
   await expect(page).toHaveURL(
@@ -195,8 +212,8 @@ test("Auditor: the day's case events and the login log, and nothing can be chang
     timeout: LOAD,
   });
   await expect(page.getByRole('button', { name: /^Propose/ })).toHaveCount(0, { timeout: SHORT });
-  await page.goto(`/${MODULE}/approvals`, { timeout: LOAD });
-  await expect(page.getByRole('heading', { name: 'Pending approvals', exact: true })).toBeVisible({
+  await page.goto(`/${MODULE}/approvals?tab=settings`, { timeout: LOAD });
+  await expect(page.getByRole('heading', { name: 'Approvals', exact: true })).toBeVisible({
     timeout: LOAD,
   });
   await expect(page.getByRole('button', { name: /^(Approve|Reject)/ })).toHaveCount(0, { timeout: LOAD });

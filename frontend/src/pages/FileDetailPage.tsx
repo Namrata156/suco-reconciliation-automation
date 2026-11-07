@@ -1,5 +1,8 @@
 /**
- * File detail (design 4.9 / 4.10): status, counts, the operations history,
+ * File detail (design 4.9 / 4.10): status, counts, the stored original with
+ * "Download original" and who downloaded it (UI refinements U3 4.6, contract
+ * B2; when the app holds no original, the server's sentence says why), the
+ * operations history,
  * the validation exceptions (paged on the server) and, for a CBS file paused
  * at AWAITING_DATE_SELECTION, the business-date selection. Refreshes itself
  * while the file is still being processed (lib/polling.ts).
@@ -7,7 +10,10 @@
 import {
   Alert,
   Anchor,
+  Button,
+  Card,
   Group,
+  List,
   Pagination,
   Select,
   SimpleGrid,
@@ -22,12 +28,13 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router';
 
-import { ApiError, getFile, getFileExceptions, selectFileDate } from '../api/client';
+import { ApiError, downloadBlob, getFile, getFileExceptions, selectFileDate } from '../api/client';
 import type { UploadedFileDetail } from '../api/types';
 import { useMe } from '../auth/auth';
 import { AutoRefresh } from '../components/AutoRefresh';
 import { FileStateBadge } from '../components/Badges';
 import { DateSelection } from '../features/files/DateSelection';
+import { saveBlob } from '../features/npci/NpciFilePanel';
 import { OperationHistory } from '../features/files/OperationHistory';
 import { useModuleCode } from '../hooks/module';
 import { formatBytes, formatCount, formatDate, formatDateTime } from '../lib/format';
@@ -130,6 +137,71 @@ function ValidationExceptions({ module, file }: { module: string; file: Uploaded
   );
 }
 
+/** "Download original" and its download history (B2). Every download is logged by the server. */
+function OriginalFile({ module, f }: { module: string; f: UploadedFileDetail }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const o = f.original;
+  if (!o) return null;
+  const downloads = f.downloads ?? [];
+  const n = f.download_count ?? downloads.length;
+
+  const download = async () => {
+    if (!o.download_url) return;
+    setBusy(true);
+    setRefusal(null);
+    try {
+      saveBlob(await downloadBlob(o.download_url), f.filename);
+    } catch (e) {
+      // 404 not stored / 410 missing or changed: the server's sentence, as it is.
+      setRefusal(e instanceof ApiError ? e.detail : 'The server could not be reached.');
+    } finally {
+      setBusy(false);
+      void qc.invalidateQueries({ queryKey: ['file', module, f.id] });
+    }
+  };
+
+  return (
+    <Card withBorder padding="sm" component="section" aria-labelledby="original-title">
+      <Title order={2} size="h4" id="original-title" mb="xs">
+        Original file
+      </Title>
+      <Stack gap="xs">
+        {o.available && o.download_url ? (
+          <Group gap="sm" wrap="wrap">
+            <Button onClick={() => void download()} loading={busy}>
+              Download original
+            </Button>
+            <Text size="sm" c="dimmed">
+              The stored file exactly as it was uploaded. Each download is recorded.
+            </Text>
+          </Group>
+        ) : (
+          <Text size="sm">{o.message || 'The original of this file cannot be downloaded.'}</Text>
+        )}
+        {refusal && (
+          <Alert color="red" role="alert" title="The original was not downloaded">
+            {refusal}
+          </Alert>
+        )}
+        <Text size="sm">
+          {n === 0 ? 'Not downloaded yet.' : `Downloaded ${n === 1 ? 'once' : `${formatCount(n)} times`}.`}
+        </Text>
+        {downloads.length > 0 && (
+          <List size="sm" aria-label="Downloads of the original">
+            {downloads.map((d, i) => (
+              <List.Item key={`${d.at}-${i}`}>
+                {d.by || '-'}, {formatDateTime(d.at)}
+              </List.Item>
+            ))}
+          </List>
+        )}
+      </Stack>
+    </Card>
+  );
+}
+
 export function FileDetailPage() {
   const me = useMe();
   const module = useModuleCode();
@@ -158,7 +230,8 @@ export function FileDetailPage() {
       });
     } catch (e) {
       // 409: no longer waiting (someone else chose) - show the file as it is now.
-      if (e instanceof ApiError && e.isConflict) void qc.invalidateQueries({ queryKey: ['file', module, id] });
+      if (e instanceof ApiError && e.isConflict)
+        void qc.invalidateQueries({ queryKey: ['file', module, id] });
       throw e;
     } finally {
       void qc.invalidateQueries({ queryKey: ['files', module] });
@@ -250,6 +323,8 @@ export function FileDetailPage() {
           </Anchor>
         </Text>
       )}
+
+      <OriginalFile module={module} f={f} />
 
       <ValidationExceptions module={module} file={f} />
 

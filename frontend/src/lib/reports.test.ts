@@ -29,7 +29,7 @@ describe('report gating by the R2 matrix', () => {
   it.each([false, true])(
     'the same reports per role with and without the server reports.* keys (%s)',
     (sent) => {
-      const common = ['reconciliation', 'settlement', 'volume', 'exceptions', 'ageing'];
+      const common = ['reconciliation', 'settlement', 'npci-files', 'volume', 'exceptions', 'ageing'];
       expect(reportKeys(['Administrator'], sent)).toEqual([...common, 'approvals', 'user-activity']);
       expect(reportKeys(['Auditor'], sent)).toEqual([...common, 'approvals', 'user-activity']);
       expect(reportKeys(['Checker'], sent)).toEqual([...common, 'approvals']);
@@ -43,14 +43,19 @@ describe('report gating by the R2 matrix', () => {
     expect(menuFor(makeMe([])).map((i) => i.key)).not.toContain('reports');
   });
 
-  it('only the two all-dates reports are available in slice 6.1; the rest are listed as later', () => {
+  it('the two all-dates reports and the NPCI files report (U5 8.1) are available; the rest are later', () => {
     const entries = reportsFor({ permissions: permissionsFor(ALL) }, 'UPI');
-    expect(entries.filter((r) => r.available).map((r) => r.key)).toEqual(['reconciliation', 'settlement']);
+    expect(entries.filter((r) => r.available).map((r) => r.key)).toEqual([
+      'reconciliation',
+      'settlement',
+      'npci-files',
+    ]);
+    expect(entries.find((r) => r.key === 'npci-files')?.href).toBe('/upi/reports/npci-files');
     expect(entries.find((r) => r.key === 'reconciliation')?.href).toBe('/upi/results');
     expect(entries.find((r) => r.key === 'settlement')?.href).toBe('/upi/settlement');
     // User activity is not module-scoped (logins are global; contract B7).
     expect(entries.find((r) => r.key === 'user-activity')?.href).toBe('/reports/user-activity');
-    expect(REPORTS).toHaveLength(7);
+    expect(REPORTS).toHaveLength(8);
   });
 
   it('a later build makes the other reports available', () => {
@@ -81,19 +86,23 @@ describe('allows(): fallback only while the server does not send the key', () =>
   });
 });
 
-describe('menu: the all-dates entries and Reports (R3)', () => {
-  it('every role gets Results (all dates), Settlement (all dates) and Reports after Business dates', () => {
+describe('menu: Reports, with the all-dates entries inside it (R3; U1 5.5)', () => {
+  it('every role gets Reports; the all-dates results and settlement are reached from it, not the menu', () => {
     for (const role of ALL) {
       const keys = menuFor(makeMe([role])).map((i) => i.key);
-      const at = keys.indexOf('dates');
-      expect(keys.slice(at, at + 4)).toEqual(['dates', 'results-all', 'settlement-all', 'reports']);
+      expect(keys).toContain('reports');
+      expect(keys).not.toContain('results-all');
+      expect(keys).not.toContain('settlement-all');
+      const hrefs = reportsFor(makeMe([role]), 'upi')
+        .filter((r) => r.available)
+        .map((r) => r.href);
+      expect(hrefs).toEqual(['/upi/results', '/upi/settlement', '/upi/reports/npci-files']);
     }
   });
 
-  it('a Phase 5 build (slice 4) has none of them', () => {
+  it('a Phase 5 build (slice 4) has no Reports item', () => {
     const keys = menuFor(makeMe(['Administrator']), { builtSlice: 4 }).map((i) => i.key);
     expect(keys).not.toContain('reports');
-    expect(keys).not.toContain('results-all');
   });
 });
 

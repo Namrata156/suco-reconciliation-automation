@@ -311,9 +311,7 @@ describe('Pending approvals (design 4.16)', () => {
     );
     renderAs(['Checker'], '/:module/approvals', '/upi/approvals', <PendingApprovalsPage />);
 
-    const cases = await screen.findByRole('link', { name: 'Cases awaiting approval: 3. Open the queue' });
-    expect(cases.getAttribute('href')).toBe('/upi/cases?status=PENDING_APPROVAL');
-    await userEvent.click(screen.getByRole('button', { name: 'Approve Tolerance v2: Rs 1.00 / 0 txn' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve Tolerance v2: Rs 1.00 / 0 txn' }));
     await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Approve' }));
     const stale = await screen.findByRole('table', { name: 'Dates to run again' });
     expect(within(stale).getByRole('link', { name: 'Open 14-Jul-2026 to run it again' })).toBeTruthy();
@@ -543,7 +541,7 @@ describe('Response codes (design 4.16 a)', () => {
     expect((within(dialog).getByRole('textbox', { name: 'Numeric code' }) as HTMLInputElement).disabled).toBe(true);
     expect((within(dialog).getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement).disabled).toBe(true);
     expect(within(dialog).getByText(/Rules R02 use this code\. Only its description \(wording\) may change/)).toBeTruthy();
-    expect(within(dialog).getByText(/reply text written into the NPCI file/)).toBeTruthy();
+    expect(within(dialog).getByText(/reply text written into the SSKUPI file/)).toBeTruthy();
 
     await userEvent.clear(description);
     await userEvent.type(description, 'Manually Credited');
@@ -561,7 +559,14 @@ describe('Response codes (design 4.16 a)', () => {
   it('Checker approves a pending request; the code is named from meta', async () => {
     const fetch = routeFetch({
       '/settings/response-codes/': page([code()], { rule_set: 'v3.2', can_propose: false, can_decide: true }),
-      '/settings/response-codes/requests/': page([request()]),
+      // Pending ones in view, decided ones in the collapsed history (U1 follow-up).
+      '/settings/response-codes/requests/': (_init: RequestInit | undefined, url: string) =>
+        json(
+          200,
+          url.includes('status=PENDING')
+            ? page([request()])
+            : page([request({ id: 4, status: 'APPROVED', decided_by: 'checker1' })]),
+        ),
       '/settings/response-codes/requests/5/approve/': () => json(200, request({ status: 'APPROVED' })),
       '/meta/': META,
     });
@@ -573,7 +578,13 @@ describe('Response codes (design 4.16 a)', () => {
       <ResponseCodesTab />,
     );
 
-    const table = await screen.findByRole('table', { name: 'Response code change requests' });
+    const table = await screen.findByRole('table', { name: 'Pending response code change requests' });
+    expect(await screen.findByRole('heading', { name: 'Pending change requests (1)' })).toBeTruthy();
+    expect(within(table).getAllByRole('row')).toHaveLength(2); // header + the pending one
+    // The decided ones: collapsed, with their count; the server is asked for both decided statuses.
+    const history = await screen.findByRole('heading', { name: 'Change requests (1)' });
+    expect(history.closest('details')!.open).toBe(false);
+    expect(fetch.mock.calls.some((c) => String(c[0]).includes('status=APPROVED%2CREJECTED'))).toBe(true);
     expect(await within(table).findByText('RET 115 - Beneficiary account closed')).toBeTruthy();
     expect(within(table).getByText('code: - -> 116')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Propose/ })).toBeNull();

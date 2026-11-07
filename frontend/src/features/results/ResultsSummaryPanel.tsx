@@ -1,18 +1,22 @@
 /**
  * Reconciliation results summary on the business-date overview (design
- * 4.12, first part): counts per rule, status category and priority from the
- * latest rule evaluation run, plus the match-group totals, each count a link
- * into the paged results list.
+ * 4.12, first part): counts per rule and outcome (status category) from the
+ * latest rule evaluation run, plus the transaction (match group) totals. The paged results list (~70,000 rows a date) is gone (UI
+ * refinements U3, 4.5): one transaction is found with "Find an RRN" in the
+ * header, so the counts here are plain numbers.
+ *
+ * UI refinements 2026-10-27 (3.5, 4.4): only the rules that occurred that
+ * day are listed, plain name first; ops' words ("Transactions", "Outcome",
+ * "Replaced by a later run"). The rule set and evaluation time are in the
+ * date page's collapsed "Details".
  */
-import { Alert, Anchor, Card, Group, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
+import { Alert, Card, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
 
 import { ApiError, getResultSummary } from '../../api/client';
 import type { ResultSummary } from '../../api/types';
-import { PriorityBadge } from '../../components/Badges';
 import { labelOf, useMeta } from '../../hooks/module';
-import { formatCount, formatDate, formatDateTime } from '../../lib/format';
+import { formatCount, formatDate } from '../../lib/format';
 
 /** The loaded summary; reads meta (labels) only once there is something to show. */
 function SummaryBody({
@@ -25,28 +29,19 @@ function SummaryBody({
   s: ResultSummary;
 }) {
   const { data: meta } = useMeta(module);
-  const list = `/${module}/dates/${businessDate}/results`;
+  // Only the rules that occurred that day (3.5); the rule document lists them all.
+  const rules = s.rules.filter((r) => r.count > 0);
   return (
     <Stack gap="xs">
-      <Group gap="md" wrap="wrap">
-        <Anchor component={Link} to={list} fw={600}>
-          Open the results list
-        </Anchor>
-        <Text size="sm">
-          {s.rule_evaluation
-            ? `Rule set ${s.rule_evaluation.rule_set}, evaluated ${formatDateTime(
-                s.rule_evaluation.finished_at ?? s.rule_evaluation.started_at,
-              )} by ${s.rule_evaluation.triggered_by || 'system'}`
-            : 'Rules not evaluated yet'}
-        </Text>
-      </Group>
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing="sm">
+      <SimpleGrid cols={{ base: 2, md: 3 }} spacing="sm">
         <Card withBorder padding="sm">
           <Text size="sm" c="dimmed">
-            Match groups
+            Transactions
           </Text>
           <Text fw={700}>{formatCount(s.match_groups.total)}</Text>
-          <Text size="xs">{formatCount(s.match_groups.superseded)} superseded (not counted)</Text>
+          <Text size="xs">
+            {formatCount(s.match_groups.superseded)} replaced by a later run (not counted)
+          </Text>
         </Card>
         <Card withBorder padding="sm">
           <Text size="sm" c="dimmed">
@@ -58,85 +53,57 @@ function SummaryBody({
         </Card>
         <Card withBorder padding="sm">
           <Text size="sm" c="dimmed">
-            By status category
+            By outcome
           </Text>
           {s.by_status_category.map((x) => (
             <Text size="xs" key={x.value}>
-              <Anchor
-                component={Link}
-                to={`${list}?status_category=${x.value}`}
-                aria-label={`${x.label}: ${formatCount(x.count)} results`}
-              >
-                {x.label}: {formatCount(x.count)}
-              </Anchor>
-            </Text>
-          ))}
-        </Card>
-        <Card withBorder padding="sm">
-          <Text size="sm" c="dimmed">
-            By priority
-          </Text>
-          {s.by_priority.map((x) => (
-            <Text size="xs" key={x.value}>
-              <Anchor
-                component={Link}
-                to={`${list}?priority=${x.value}`}
-                aria-label={`Priority ${x.label}: ${formatCount(x.count)} results`}
-              >
-                {x.label}: {formatCount(x.count)}
-              </Anchor>
+              {x.label}: {formatCount(x.count)}
             </Text>
           ))}
         </Card>
       </SimpleGrid>
-      <Table.ScrollContainer minWidth={700}>
-        <Table withTableBorder aria-label={`Results per rule for ${formatDate(businessDate)}`}>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th scope="col">Rule</Table.Th>
-              <Table.Th scope="col">Name</Table.Th>
-              <Table.Th scope="col">Status category</Table.Th>
-              <Table.Th scope="col">Priority</Table.Th>
-              <Table.Th scope="col" ta="right">
-                Results
-              </Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {s.rules.map((r) => (
-              <Table.Tr key={r.rule_code}>
-                <Table.Td>{r.rule_code}</Table.Td>
-                <Table.Td>{r.name || '-'}</Table.Td>
-                <Table.Td>{labelOf(meta?.status_categories, r.status_category)}</Table.Td>
-                <Table.Td>
-                  {r.priority ? <PriorityBadge value={r.priority} choices={meta?.priorities} /> : '-'}
+      {rules.length === 0 ? (
+        <Text size="sm">No rule applied to any transaction on this date.</Text>
+      ) : (
+        <Table.ScrollContainer minWidth={600}>
+          <Table withTableBorder aria-label={`Results per rule for ${formatDate(businessDate)}`}>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th scope="col">Rule</Table.Th>
+                <Table.Th scope="col">Outcome</Table.Th>
+                <Table.Th scope="col" ta="right">
+                  Results
+                </Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {rules.map((r) => (
+                <Table.Tr key={r.rule_code}>
+                  <Table.Td>
+                    {r.name || r.rule_code}
+                    {r.name && (
+                      <Text size="xs" c="dimmed" span>
+                        {' '}
+                        {r.rule_code}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>{labelOf(meta?.status_categories, r.status_category)}</Table.Td>
+                  <Table.Td ta="right">{formatCount(r.count)}</Table.Td>
+                </Table.Tr>
+              ))}
+              <Table.Tr>
+                <Table.Td colSpan={2} fw={700}>
+                  Total
                 </Table.Td>
-                <Table.Td ta="right">
-                  {r.count > 0 ? (
-                    <Anchor
-                      component={Link}
-                      to={`${list}?rule_code=${encodeURIComponent(r.rule_code)}`}
-                      aria-label={`${r.rule_code}: ${formatCount(r.count)} results`}
-                    >
-                      {formatCount(r.count)}
-                    </Anchor>
-                  ) : (
-                    '0'
-                  )}
+                <Table.Td ta="right" fw={700}>
+                  {formatCount(s.results_total)}
                 </Table.Td>
               </Table.Tr>
-            ))}
-            <Table.Tr>
-              <Table.Td colSpan={4} fw={700}>
-                Total
-              </Table.Td>
-              <Table.Td ta="right" fw={700}>
-                {formatCount(s.results_total)}
-              </Table.Td>
-            </Table.Tr>
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      )}
     </Stack>
   );
 }

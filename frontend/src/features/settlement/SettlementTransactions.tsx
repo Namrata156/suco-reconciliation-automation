@@ -1,5 +1,9 @@
 /**
- * The contributing transactions behind a settlement result (design 4.15):
+ * The contributing transactions behind a settlement result (design 4.15).
+ * Since UI refinements U3 (5.3; contract B4) the screens lead with the
+ * unexplained entries only (kind=unexplained); every other kind stays one
+ * click away under a collapsed "All contributing rows" (ContributingEntries).
+ *
  * one kind at a time (npci / sop / adjustments / z), filtered and paged on
  * the server. The row fields differ per kind; the server names them
  * ("fields"), so the table is built from that list.
@@ -13,6 +17,7 @@ import { useState, type FormEvent } from 'react';
 
 import { ApiError, listSettlementTransactions, type SettlementSource } from '../../api/client';
 import type { ModuleMeta, SettlementTransactionFilters, SettlementTransactionKind } from '../../api/types';
+import { DetailsSection } from '../../components/DetailsSection';
 import { ListPager } from '../../components/ListPager';
 import { displayValue, formatAmount, formatCount, isAmountString } from '../../lib/format';
 import { pageBounds } from '../../lib/urlFilters';
@@ -24,7 +29,12 @@ const KINDS: { value: SettlementTransactionKind; short: string }[] = [
   { value: 'sop', short: 'SOP check items' },
   { value: 'adjustments', short: 'Adjustments (G09)' },
   { value: 'z', short: 'No NTSL money (Z)' },
+  { value: 'unexplained', short: 'Unexplained entries' },
 ];
+const ALL_KINDS: SettlementTransactionKind[] = ['npci', 'sop', 'adjustments', 'z'];
+
+/** Fields not shown as a column (the source code repeats its label). */
+const HIDDEN_FIELDS = new Set(['source']);
 
 /** Text filters the server applies when the kind has that field. */
 const TEXT_FILTERS = [
@@ -51,18 +61,26 @@ const HEADER: Record<string, string> = {
   raised_at: 'Raised at',
   signed: 'Signed amount',
   legs: 'Legs',
+  source_label: 'What it is',
+  detail: 'Detail',
 };
 
 export function SettlementTransactions({
   module,
   source,
   meta,
+  kinds = ALL_KINDS,
+  label = 'Contributing transactions',
 }: {
   module: string;
   source: SettlementSource;
   meta: ModuleMeta | undefined;
+  /** The kinds offered (one kind: no switch). */
+  kinds?: SettlementTransactionKind[];
+  /** The table's name. */
+  label?: string;
 }) {
-  const [kind, setKind] = useState<SettlementTransactionKind>('npci');
+  const [kind, setKind] = useState<SettlementTransactionKind>(kinds[0] ?? 'npci');
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [applied, setApplied] = useState<Draft>(EMPTY);
   const [page, setPage] = useState(1);
@@ -80,7 +98,7 @@ export function SettlementTransactions({
   });
 
   const data = query.data;
-  const fields = data?.fields ?? [];
+  const fields = (data?.fields ?? []).filter((f) => !HIDDEN_FIELDS.has(f));
   const has = (name: string) => fields.length === 0 || fields.includes(name);
   const { pages, first, last } = pageBounds(data?.count ?? 0, page, TX_PAGE_SIZE);
   const kindLabel = meta?.settlement_transaction_kinds.find((k) => k.value === kind)?.label;
@@ -102,18 +120,20 @@ export function SettlementTransactions({
 
   return (
     <Stack gap="xs">
-      <SegmentedControl
-        aria-label="Kind of contributing transactions"
-        value={kind}
-        onChange={(v) => {
-          setKind(v as SettlementTransactionKind);
-          setPage(1);
-        }}
-        data={KINDS.map((k) => ({
-          value: k.value,
-          label: data ? `${k.short} (${formatCount(data.counts[k.value])})` : k.short,
-        }))}
-      />
+      {kinds.length > 1 && (
+        <SegmentedControl
+          aria-label="Kind of contributing transactions"
+          value={kind}
+          onChange={(v) => {
+            setKind(v as SettlementTransactionKind);
+            setPage(1);
+          }}
+          data={KINDS.filter((k) => kinds.includes(k.value)).map((k) => ({
+            value: k.value,
+            label: data ? `${k.short} (${formatCount(data.counts[k.value] ?? 0)})` : k.short,
+          }))}
+        />
+      )}
       {kindLabel && (
         <Text size="sm" c="dimmed">
           {kindLabel}
@@ -179,7 +199,7 @@ export function SettlementTransactions({
           : `Showing ${formatCount(first)}-${formatCount(last)} of ${formatCount(data?.count ?? 0)} transactions`}
       </Text>
       <Table.ScrollContainer minWidth={900}>
-        <Table withTableBorder aria-label="Contributing transactions" aria-busy={query.isFetching}>
+        <Table withTableBorder aria-label={label} aria-busy={query.isFetching}>
           <Table.Thead>
             <Table.Tr>
               {fields.map((f) => (
@@ -208,13 +228,50 @@ export function SettlementTransactions({
             ))}
             {!query.isPending && (data?.results.length ?? 0) === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={Math.max(1, fields.length)}>No transactions of this kind.</Table.Td>
+                <Table.Td colSpan={Math.max(1, fields.length)}>
+                  {kind === 'unexplained'
+                    ? 'No unexplained entry: every row is explained.'
+                    : 'No transactions of this kind.'}
+                </Table.Td>
               </Table.Tr>
             )}
           </Table.Tbody>
         </Table>
       </Table.ScrollContainer>
-      <ListPager total={pages} value={page} onChange={setPage} label="Transactions" />
+      <ListPager total={pages} value={page} onChange={setPage} label={label} />
+    </Stack>
+  );
+}
+
+/**
+ * 5.3: the unexplained entries first, then every contributing row under a
+ * collapsed section (loaded when opened). Used by the per-date settlement and
+ * the settlement case.
+ */
+export function ContributingEntries({
+  module,
+  source,
+  meta,
+  idPrefix,
+}: {
+  module: string;
+  source: SettlementSource;
+  meta: ModuleMeta | undefined;
+  /** Unique heading ids on the page. */
+  idPrefix: string;
+}) {
+  return (
+    <Stack gap="sm">
+      <SettlementTransactions
+        module={module}
+        source={source}
+        meta={meta}
+        kinds={['unexplained']}
+        label="Unexplained entries"
+      />
+      <DetailsSection title="All contributing rows" id={`${idPrefix}-all-rows-title`} order={3} lazy>
+        <SettlementTransactions module={module} source={source} meta={meta} />
+      </DetailsSection>
     </Stack>
   );
 }

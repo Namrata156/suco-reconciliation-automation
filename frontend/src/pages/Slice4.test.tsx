@@ -134,11 +134,17 @@ describe('alerts bell (design 4.2 / 4.18)', () => {
     expect(bellLabel(3)).toBe('Alerts, 3 unread');
   });
 
-  it('shows the unread count and links to the alerts list', async () => {
+  it('shows the unread count; its menu has "See all alerts" (no Alerts menu item, U1 9.3)', async () => {
     vi.stubGlobal('fetch', routeFetch({ '/notifications/unread-count/': { unread: 3, latest_id: 9 } }));
     renderBell();
-    const bell = await screen.findByRole('link', { name: 'Alerts, 3 unread' });
-    expect(bell.getAttribute('href')).toBe('/alerts');
+    const bell = await screen.findByRole('button', { name: 'Alerts, 3 unread' });
+    await userEvent.click(bell);
+    expect(await screen.findByText('3 unread alerts')).toBeTruthy();
+    // Mantine's menu transition does not finish in jsdom (as with the Select options above).
+    const all = await screen.findByRole('menuitem', { name: 'See all alerts', hidden: true });
+    expect(all.getAttribute('href')).toBe('/alerts');
+    await userEvent.click(all);
+    expect(await screen.findByText('Alerts screen')).toBeTruthy();
   });
 
   it('polls every 60 s while the user is active and stops when idle, so it never keeps the session open', async () => {
@@ -183,7 +189,7 @@ describe('new-alert notice (owner 2026-10-22)', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10);
     });
-    expect(screen.getByRole('link', { name: 'Alerts, 4 unread' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Alerts, 4 unread' })).toBeTruthy();
     expect(toasts()).toHaveLength(0);
   });
 
@@ -722,12 +728,16 @@ describe('routes and shell (Slice 4)', () => {
         '/audit/case-events/': page([caseEvent()]),
       }),
     );
-    renderWithProviders(<AppRoutes />, { route: '/audit' });
+    renderWithProviders(<AppRoutes />, { route: '/audit/case-events' });
     expect(await screen.findByRole('heading', { name: 'Audit trail' }, { timeout: 5000 })).toBeTruthy();
     expect(await screen.findByRole('table', { name: 'Case events' }, { timeout: 5000 })).toBeTruthy();
-    expect(await screen.findByRole('link', { name: 'Alerts, 2 unread' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Alerts, 2 unread' })).toBeTruthy();
     const nav = screen.getByRole('navigation', { name: 'Main menu' });
-    const audit = within(nav).getByRole('link', { name: 'Audit trail' });
+    // Audit and users under their own heading (U1 9.4); alerts only through the bell (9.3).
+    const admin = within(nav).getByRole('group', { name: 'Admin & audit' });
+    expect(within(admin).getByRole('link', { name: 'Users and roles' })).toBeTruthy();
+    expect(within(nav).queryByRole('link', { name: 'Alerts' })).toBeNull();
+    const audit = within(admin).getByRole('link', { name: 'Audit trail' });
     expect(audit.getAttribute('href')).toBe('/audit');
     expect(audit.hasAttribute('data-active')).toBe(true);
     expect(within(nav).getByRole('link', { name: 'Exception cases' }).getAttribute('href')).toBe(

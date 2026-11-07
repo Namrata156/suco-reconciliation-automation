@@ -15,6 +15,7 @@ import type {
   AlertListPage,
   ApiErrorBody,
   AuditCaseEvent,
+  AuditEverythingRow,
   AuditFilters,
   AuditMeta,
   AuditOperation,
@@ -28,7 +29,7 @@ import type {
   CaseDetail,
   CaseEventInfo,
   CaseFilters,
-  CaseListItem,
+  CaseListPage,
   CodeChangeProposal,
   CodeChangeRequest,
   CodeRequestFilters,
@@ -60,9 +61,11 @@ import type {
   ReconciliationRunInfo,
   ResponseCodeFilters,
   ResponseCodeListPage,
-  ResultFilters,
-  ResultRow,
   ResultSummary,
+  RrnLookup,
+  Dashboard,
+  NpciFilesReport,
+  NpciFilesReportFilters,
   SettingsApprovePayload,
   SettingsDecisionResults,
   SettingsKind,
@@ -320,8 +323,8 @@ export async function listUsers(role: string): Promise<UserRef[]> {
 // ---------------------------------------------------------------------------
 // cases (design 3.2 / 4.4-4.7)
 // ---------------------------------------------------------------------------
-export function listCases(module: string, filters: CaseFilters): Promise<Paginated<CaseListItem>> {
-  return request<Paginated<CaseListItem>>('GET', `${mod(module)}/cases/`, { query: { ...filters } });
+export function listCases(module: string, filters: CaseFilters): Promise<CaseListPage> {
+  return request<CaseListPage>('GET', `${mod(module)}/cases/`, { query: { ...filters } });
 }
 
 export function getCase(module: string, id: number): Promise<CaseDetail> {
@@ -368,12 +371,18 @@ export const DETECT_HEAD_BYTES = 64 * 1024;
  * SHA-256 ("" when not computed) so the server can name an earlier upload of
  * the same file. Nothing is saved.
  */
-export function detectFiles(module: string, files: { file: File; sha256: string }[]): Promise<DetectResult> {
+export function detectFiles(
+  module: string,
+  files: { file: File; sha256: string }[],
+  /** The date chosen on the review step (U4 E1): the checklist is for it; omit = the proposed date. */
+  businessDate?: string,
+): Promise<DetectResult> {
   const form = new FormData();
   for (const { file, sha256 } of files) {
     form.append('files', file.slice(0, DETECT_HEAD_BYTES), file.name);
     form.append('sha256', sha256);
   }
+  if (businessDate) form.append('business_date', businessDate);
   return request<DetectResult>('POST', `${mod(module)}/files/detect/`, { body: form });
 }
 
@@ -451,12 +460,14 @@ export function getResultSummary(module: string, businessDate: string): Promise<
   return request<ResultSummary>('GET', `${day(module, businessDate)}/results/summary/`);
 }
 
-export function listResults(
-  module: string,
-  businessDate: string,
-  filters: ResultFilters,
-): Promise<Paginated<ResultRow>> {
-  return request<Paginated<ResultRow>>('GET', `${day(module, businessDate)}/results/`, { query: { ...filters } });
+/**
+ * B1 "Find an RRN": the RRN's transactions, cases and file rows, exact match
+ * only (200 even when nothing is found; 400 errors.rrn for a malformed RRN).
+ */
+export function lookupRrn(module: string, rrn: string, includeReplaced = false): Promise<RrnLookup> {
+  return request<RrnLookup>('GET', `${mod(module)}/rrn/${encodeURIComponent(rrn)}/`, {
+    query: { include_replaced: includeReplaced ? 'true' : undefined },
+  });
 }
 
 export function getGroup(module: string, businessDate: string, id: number): Promise<GroupDetail> {
@@ -504,6 +515,16 @@ export function listNpciFiles(module: string, filters: NpciFileFilters): Promise
   return request<NpciFileListPage>('GET', `${mod(module)}/npci-files/`, { query: { ...filters } });
 }
 
+/** U5 F1: every SSKUPI file generated in a business-date range, with totals. */
+export function getNpciFilesReport(module: string, filters: NpciFilesReportFilters): Promise<NpciFilesReport> {
+  return request<NpciFilesReport>('GET', `${mod(module)}/reports/npci-files/`, { query: { ...filters } });
+}
+
+/** U5 F2: the dashboard's numbers per date (none given: the last 30 business dates). */
+export function getDashboard(module: string, range: { date_from?: string; date_to?: string }): Promise<Dashboard> {
+  return request<Dashboard>('GET', `${mod(module)}/dashboard/`, { query: { ...range } });
+}
+
 export function getNpciFile(module: string, id: number): Promise<NpciFileDetail> {
   return request<NpciFileDetail>('GET', `${mod(module)}/npci-files/${id}/`);
 }
@@ -513,7 +534,16 @@ export function getNpciFile(module: string, id: number): Promise<NpciFileDetail>
  * CRLF line endings stay). The server logs every download; awaiting it lets
  * the screen refresh the download history afterwards.
  */
-export async function downloadNpciFile(downloadUrl: string): Promise<Blob> {
+export function downloadNpciFile(downloadUrl: string): Promise<Blob> {
+  return downloadBlob(downloadUrl);
+}
+
+/**
+ * GET a server address as a Blob (an SSKUPI file, an uploaded file's stored
+ * original, B2). A refusal (404 not stored, 410 missing / changed) becomes an
+ * ApiError with the server's sentence as its detail.
+ */
+export async function downloadBlob(downloadUrl: string): Promise<Blob> {
   const res = await fetch(downloadUrl, { method: 'GET', credentials: 'same-origin' });
   if (res.status === 401) sessionClock.expire();
   else sessionClock.touch();
@@ -678,9 +708,10 @@ export function markAllAlertsRead(upToId?: number): Promise<MarkAllReadResult> {
 // audit (design 4.19 / 3.6, Slice 4 contract B): read-only, Administrator
 // and Auditor ("audit.view"); others 403. Module is a filter, not a path.
 // ---------------------------------------------------------------------------
-export type AuditList = 'case-events' | 'settings-events' | 'user-activity' | 'operations';
+export type AuditList = 'everything' | 'case-events' | 'settings-events' | 'user-activity' | 'operations';
 
 export interface AuditRows {
+  everything: AuditEverythingRow;
   'case-events': AuditCaseEvent;
   'settings-events': AuditSettingsEvent;
   'user-activity': AuditUserActivity;

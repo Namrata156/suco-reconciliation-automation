@@ -3,17 +3,30 @@
  * with its SOP check and cycle x side table, the NTSL self-check per cycle,
  * the linked settlement case, earlier results, and the contributing
  * transactions (4.15). TALLIED dates have no case but are shown the same way.
+ * The cycle x side table, the self-check, the versions used and the earlier
+ * results are under a collapsed "Details" (UI refinements 2026-10-27, 5.4); a
+ * failing self-check is also shown on top.
+ *
+ * UI refinements U3 (5.1-5.3; contract B3 / B4): the page leads with one plain
+ * sentence, the SOP row and the explained amount by type
+ * (features/settlement/SettlementSummaryView), and the contributing
+ * transactions show the unexplained entries only (every row stays one click
+ * away). The full result block (tolerance, fees, cycles) moves into
+ * "Details" when the server sends the summary.
  */
 import { Alert, Anchor, Card, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 
 import { ApiError, getSettlement } from '../api/client';
-import { PriorityBadge, SettlementStatusBadge, StatusBadge } from '../components/Badges';
-import { SelfCheckTable, selfCheckLine } from '../features/settlement/SelfCheckTable';
+import { SettlementStatusBadge, StatusBadge } from '../components/Badges';
+import { DetailsSection } from '../components/DetailsSection';
+import { gstWarningLine, SelfCheckTable, selfCheckLine } from '../features/settlement/SelfCheckTable';
 import { SettlementBlock } from '../features/settlement/SettlementBlock';
-import { SettlementTransactions } from '../features/settlement/SettlementTransactions';
+import { SettlementSummaryView } from '../features/settlement/SettlementSummaryView';
+import { ContributingEntries } from '../features/settlement/SettlementTransactions';
 import { useMeta, useModuleCode } from '../hooks/module';
+import { SHOW_GST_ON_FEES } from '../lib/featureFlags';
 import { formatCount, formatDate, formatDateTime, formatRupees } from '../lib/format';
 
 export function SettlementPage() {
@@ -55,6 +68,12 @@ export function SettlementPage() {
   }
 
   const r = s.result;
+  const summary = s.summary ?? null;
+  const selfCheckFailed = summary
+    ? summary.self_check_failed
+    : s.self_check.fail > 0 || s.self_check.missing > 0;
+  // GST on fees display hidden by owner 2026-11-06 (lib/featureFlags); backend check still runs.
+  const gstWarning = SHOW_GST_ON_FEES ? gstWarningLine(s.self_check) : null;
 
   return (
     <Stack>
@@ -63,40 +82,50 @@ export function SettlementPage() {
         Settlement {formatDate(s.business_date)}
       </Title>
 
-      <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="sm" role="group" aria-label="Settlement summary">
-        <Card withBorder padding="sm">
-          <Text size="sm" c="dimmed">
-            Status
-          </Text>
-          <SettlementStatusBadge value={r?.status} />
-        </Card>
-        <Card withBorder padding="sm">
-          <Text size="sm" c="dimmed">
-            NTSL self-check
-          </Text>
-          <Text fw={700}>Self-check: {selfCheckLine(s.self_check)}</Text>
-        </Card>
-        <Card withBorder padding="sm">
-          <Text size="sm" c="dimmed">
-            Unexplained difference
-          </Text>
-          <Text fw={700}>
-            {r
-              ? `Unexplained: ${formatRupees(r.unexplained_amount)} (${formatCount(r.unexplained_count)} transactions)`
-              : 'Unexplained: not computed'}
-          </Text>
-        </Card>
-        <Card withBorder padding="sm">
-          <Text size="sm" c="dimmed">
-            Versions used
-          </Text>
-          <Text size="sm">
-            {r
-              ? `Tolerance v${r.tolerance_version ?? '-'}, NTSL mapping v${r.map_version ?? '-'}, rule run #${r.rule_run_id ?? '-'}`
-              : '-'}
-          </Text>
-        </Card>
-      </SimpleGrid>
+      {summary && <SettlementSummaryView s={summary} />}
+
+      {/* The self-check shows on top only when it fails (UI refinements 2026-10-27, 5.4). */}
+      {selfCheckFailed && (
+        <Alert color="red" role="alert" title="NTSL self-check did not pass">
+          Self-check: {selfCheckLine(s.self_check)}. See &quot;NTSL self-check per cycle&quot; under Details
+          below.
+        </Alert>
+      )}
+
+      {/* Fee GST check (owner 2026-11-06): warning only, shown on top because Details starts closed. */}
+      {gstWarning && (
+        <Alert color="yellow" role="status" title={gstWarning}>
+          Warning only: it does not change PASS / FAIL. See &quot;NTSL self-check per cycle&quot; under
+          Details below.
+        </Alert>
+      )}
+
+      {!summary && (
+        <SimpleGrid
+          cols={{ base: 1, sm: 2 }}
+          spacing="sm"
+          role="group"
+          aria-label="Settlement summary"
+          maw={800}
+        >
+          <Card withBorder padding="sm">
+            <Text size="sm" c="dimmed">
+              Status
+            </Text>
+            <SettlementStatusBadge value={r?.status} />
+          </Card>
+          <Card withBorder padding="sm">
+            <Text size="sm" c="dimmed">
+              Unexplained difference
+            </Text>
+            <Text fw={700}>
+              {r
+                ? `Unexplained: ${formatRupees(r.unexplained_amount)} (${formatCount(r.unexplained_count)} transactions)`
+                : 'Unexplained: not computed'}
+            </Text>
+          </Card>
+        </SimpleGrid>
+      )}
 
       <Stack gap="xs" component="section" aria-labelledby="settlement-case-title">
         <Title order={2} size="h4" id="settlement-case-title">
@@ -107,8 +136,7 @@ export function SettlementPage() {
             <Anchor component={Link} to={`/${module}/cases/${s.case.id}`}>
               Open settlement case #{s.case.id}
             </Anchor>{' '}
-            <StatusBadge value={s.case.status} choices={meta?.case_statuses} />{' '}
-            <PriorityBadge value={s.case.priority} choices={meta?.priorities} /> held by{' '}
+            <StatusBadge value={s.case.status} choices={meta?.case_statuses} /> held by{' '}
             {s.case.assigned_to ?? 'nobody'}
             {s.case.needs_review ? ' - needs review' : ''}
           </Text>
@@ -120,31 +148,41 @@ export function SettlementPage() {
       </Stack>
 
       {r ? (
-        <SettlementBlock s={r} />
+        !summary && <SettlementBlock s={r} />
       ) : (
         <Alert color="gray" title="No settlement result">
           The NTSL self-check exists, but no settlement result has been computed for this date yet.
         </Alert>
       )}
 
-      <Stack gap="xs" component="section" aria-labelledby="self-check-title">
-        <Title order={2} size="h4" id="self-check-title">
-          NTSL self-check per cycle
-        </Title>
-        <SelfCheckTable check={s.self_check} />
-      </Stack>
-
       {r && (
         <Stack gap="xs" component="section" aria-labelledby="settlement-tx-title">
           <Title order={2} size="h4" id="settlement-tx-title">
-            Contributing transactions
+            Unexplained entries{summary ? ` (${formatCount(summary.unexplained_entries)})` : ''}
           </Title>
-          <SettlementTransactions module={module} source={{ businessDate: s.business_date }} meta={meta} />
+          <ContributingEntries
+            module={module}
+            source={{ businessDate: s.business_date }}
+            meta={meta}
+            idPrefix="settlement"
+          />
         </Stack>
       )}
 
-      <Stack gap="xs" component="section" aria-labelledby="earlier-settlement-title">
-        <Title order={2} size="h4" id="earlier-settlement-title">
+      <DetailsSection title="Details" id="settlement-details-title">
+        {r && summary && <SettlementBlock s={r} title="Settlement result in full" />}
+        <Text size="sm">
+          Versions used:{' '}
+          {r
+            ? `Tolerance v${r.tolerance_version ?? '-'}, NTSL mapping v${r.map_version ?? '-'}, rule run #${r.rule_run_id ?? '-'}`
+            : '-'}
+        </Text>
+        <Title order={3} size="h5" id="self-check-title">
+          NTSL self-check per cycle
+        </Title>
+        <Text size="sm">Self-check: {selfCheckLine(s.self_check)}</Text>
+        <SelfCheckTable check={s.self_check} />
+        <Title order={3} size="h5" id="earlier-settlement-title">
           Earlier results
         </Title>
         {s.earlier_results.length === 0 ? (
@@ -156,7 +194,7 @@ export function SettlementPage() {
                 <Table.Th scope="col">Result</Table.Th>
                 <Table.Th scope="col">Status</Table.Th>
                 <Table.Th scope="col">Computed</Table.Th>
-                <Table.Th scope="col">Superseded</Table.Th>
+                <Table.Th scope="col">Replaced by a later run</Table.Th>
                 <Table.Th scope="col" ta="right">
                   Unexplained
                 </Table.Th>
@@ -177,7 +215,7 @@ export function SettlementPage() {
             </Table.Tbody>
           </Table>
         )}
-      </Stack>
+      </DetailsSection>
     </Stack>
   );
 }

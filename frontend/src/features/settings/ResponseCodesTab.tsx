@@ -41,9 +41,10 @@ import type {
 } from '../../api/types';
 import { useMe } from '../../auth/auth';
 import { SelfApprovedBadge, VersionStatusBadge } from '../../components/Badges';
+import { DetailsSection } from '../../components/DetailsSection';
 import { ListPager } from '../../components/ListPager';
 import { labelOf, useMeta, useModuleCode } from '../../hooks/module';
-import { displayValue, formatDateTime } from '../../lib/format';
+import { displayValue, formatCount, formatDateTime } from '../../lib/format';
 import { can } from '../../lib/roles';
 import { pageBounds } from '../../lib/urlFilters';
 import { Actions, applyApiError, RootError } from '../cases/actionForms';
@@ -51,6 +52,33 @@ import { DecisionModal, invalidateSettings, type DecisionTarget } from './Decisi
 import { SettingsEvents } from './SettingsEvents';
 
 const PAGE_SIZE = 50;
+const CODES_PAGE_SIZE = 500;
+
+/**
+ * Codes grouped by reply type (UI refinements U2, 7.2): the server's groups
+ * in SSKUPI file order (DRC, RRC, TCC, RET, then OTHER), each with its codes;
+ * a code without reply_type (older server) goes under its flag.
+ */
+export function replyGroups(
+  rows: ResponseCodeRow[],
+  types: { value: string; label: string }[] | undefined,
+): { value: string; label: string; rows: ResponseCodeRow[] }[] {
+  const out: { value: string; label: string; rows: ResponseCodeRow[] }[] = (types ?? []).map((t) => ({
+    value: t.value,
+    label: t.label,
+    rows: [],
+  }));
+  for (const r of rows) {
+    const key = r.reply_type ?? r.flag;
+    let g = out.find((x) => x.value === key);
+    if (!g) {
+      g = { value: key, label: key === 'OTHER' ? 'Other (not in the SSKUPI file)' : key, rows: [] };
+      out.push(g);
+    }
+    g.rows.push(r);
+  }
+  return out.filter((g) => g.rows.length > 0);
+}
 const KINDS = [
   { value: 'EDIT', label: 'Edit' },
   { value: 'CREATE', label: 'New code' },
@@ -153,7 +181,7 @@ export function EditCodeForm({
         )}
         {editable('description') && (
           <Text size="xs" c="dimmed">
-            The description is also the reply text written into the NPCI file: an approved change applies to the
+            The description is also the reply text written into the SSKUPI file: an approved change applies to the
             next file generated, not to files already generated.
           </Text>
         )}
@@ -304,6 +332,112 @@ export function changeText(changes: CodeChangeRequest['changes']): string {
     .join('; ');
 }
 
+/** Every decided status; the history leaves PENDING out (it is listed above, U1 follow-up). */
+export const DECIDED_STATUSES = 'APPROVED,REJECTED';
+
+function RequestTable({
+  rows,
+  label,
+  busy,
+  loaded,
+  mayDecide,
+  onDecide,
+  empty,
+}: {
+  rows: CodeChangeRequest[];
+  label: string;
+  busy: boolean;
+  loaded: boolean;
+  mayDecide: boolean;
+  onDecide: (r: CodeChangeRequest, decision: 'approve' | 'reject') => void;
+  empty: string;
+}) {
+  return (
+    <Table.ScrollContainer minWidth={1100}>
+      <Table withTableBorder aria-label={label} aria-busy={busy}>
+        <Table.Thead>
+          <Table.Tr>
+            {['Request', 'Code', 'Changes', 'Reason', 'Status', 'Proposed', 'Decision', 'Actions'].map((h) => (
+              <Table.Th key={h} scope="col">
+                {h}
+              </Table.Th>
+            ))}
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {rows.map((r) => (
+            <Table.Tr key={r.id}>
+              <Table.Td>
+                #{r.id}
+                <Text size="xs" c="dimmed">
+                  {labelOf(KINDS, r.kind)}
+                </Text>
+              </Table.Td>
+              <Table.Td>{requestTarget(r)}</Table.Td>
+              <Table.Td className="wrap-anywhere">
+                {changeText(r.changes) || '-'}
+                {r.new_source && (
+                  <Text size="xs" c="dimmed">
+                    Source: {r.new_source}
+                  </Text>
+                )}
+              </Table.Td>
+              <Table.Td className="wrap-anywhere">{r.reason}</Table.Td>
+              <Table.Td>
+                <VersionStatusBadge value={r.status} /> {r.self_approved && <SelfApprovedBadge />}
+              </Table.Td>
+              <Table.Td>
+                {r.requested_by ?? '-'}
+                <Text size="xs" c="dimmed">
+                  {formatDateTime(r.requested_at)}
+                </Text>
+              </Table.Td>
+              <Table.Td className="wrap-anywhere">
+                {r.decided_by ? `${r.decided_by}, ${formatDateTime(r.decided_at)}` : '-'}
+                {r.decision_remarks && (
+                  <Text size="xs" c={r.status === 'REJECTED' ? 'red' : 'dimmed'}>
+                    {r.decision_remarks}
+                  </Text>
+                )}
+                <SettingsEvents events={r.events} label={`History of code request #${r.id}`} />
+              </Table.Td>
+              <Table.Td>
+                {r.status === 'PENDING' && mayDecide ? (
+                  <Group gap={4}>
+                    <Button size="xs" onClick={() => onDecide(r, 'approve')}>
+                      Approve code request #{r.id}
+                    </Button>
+                    <Button size="xs" variant="default" onClick={() => onDecide(r, 'reject')}>
+                      Reject code request #{r.id}
+                    </Button>
+                  </Group>
+                ) : r.status === 'PENDING' ? (
+                  <Text size="xs" c="dimmed">
+                    Awaiting a Checker{r.self_approval ? ' (your proposal)' : ''}
+                  </Text>
+                ) : (
+                  '-'
+                )}
+              </Table.Td>
+            </Table.Tr>
+          ))}
+          {loaded && rows.length === 0 && (
+            <Table.Tr>
+              <Table.Td colSpan={8}>{empty}</Table.Td>
+            </Table.Tr>
+          )}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
+  );
+}
+
+/**
+ * The pending requests stay in view, since Checkers act on them here; the
+ * decided ones are the collapsed history (UI refinements 2026-10-27, 7.3 and
+ * the PM's U1 follow-up). Both read the same list, filtered by status (the
+ * server takes a comma-separated status list).
+ */
 function RequestHistory({
   module,
   meta,
@@ -315,23 +449,31 @@ function RequestHistory({
   canDecide: boolean;
   onDecide: (t: DecisionTarget) => void;
 }) {
+  const [pendingPage, setPendingPage] = useState(1);
   const [status, setStatus] = useState('');
   const [code, setCode] = useState('');
   const [page, setPage] = useState(1);
+  const pending = useQuery({
+    queryKey: ['settings', module, 'code-requests', 'PENDING', pendingPage],
+    queryFn: () => listCodeRequests(module, { status: 'PENDING', page: pendingPage, page_size: PAGE_SIZE }),
+    placeholderData: keepPreviousData,
+  });
+  const decided = status || DECIDED_STATUSES;
   const query = useQuery({
-    queryKey: ['settings', module, 'code-requests', status, code, page],
+    queryKey: ['settings', module, 'code-requests', decided, code, page],
     queryFn: () =>
       listCodeRequests(module, {
-        status,
+        status: decided,
         response_code: code ? Number(code) : undefined,
         page,
         page_size: PAGE_SIZE,
       }),
     placeholderData: keepPreviousData,
   });
+  const pendingPages = pageBounds(pending.data?.count ?? 0, pendingPage, PAGE_SIZE).pages;
   const { pages } = pageBounds(query.data?.count ?? 0, page, PAGE_SIZE);
   // The requests list says who may decide (contract D3); the codes list's answer until it arrives.
-  const mayDecide = query.data?.can_decide ?? canDecide;
+  const mayDecide = pending.data?.can_decide ?? query.data?.can_decide ?? canDecide;
   const decide = (r: CodeChangeRequest, decision: 'approve' | 'reject') =>
     onDecide({
       kind: 'response_code',
@@ -340,126 +482,94 @@ function RequestHistory({
       selfApproval: r.self_approval,
       decision,
     });
+  const pendingCount = pending.data?.count;
+  const decidedCount = query.data?.count;
 
   return (
-    <Stack gap="xs" component="section" aria-labelledby="code-requests-title">
-      <Title order={2} size="h4" id="code-requests-title">
-        Change requests
-      </Title>
-      <Group gap="xs" align="flex-end" wrap="wrap" component="section" aria-label="Request filters">
-        <Select
-          label="Request status"
-          data={[{ value: '', label: 'Any' }, ...(meta?.change_request_statuses ?? [])]}
-          value={status}
-          onChange={(v) => {
-            setStatus(v ?? '');
-            setPage(1);
-          }}
-          allowDeselect={false}
-          w={220}
+    <>
+      <Stack gap="xs" component="section" aria-labelledby="code-pending-title">
+        <Title order={2} size="h4" id="code-pending-title">
+          Pending change requests{pendingCount === undefined ? '' : ` (${pendingCount})`}
+        </Title>
+        {pending.error && (
+          <Alert color="red" role="alert">
+            {pending.error.message}
+          </Alert>
+        )}
+        {!pending.isPending && pendingCount === 0 ? (
+          <Text size="sm">No change request is awaiting a Checker.</Text>
+        ) : (
+          <RequestTable
+            rows={pending.data?.results ?? []}
+            label="Pending response code change requests"
+            busy={pending.isFetching}
+            loaded={!pending.isPending}
+            mayDecide={mayDecide}
+            onDecide={decide}
+            empty="No change request is awaiting a Checker."
+          />
+        )}
+        <ListPager
+          total={pendingPages}
+          value={pendingPage}
+          onChange={setPendingPage}
+          label="Pending change requests"
         />
-        {/* The module's codes (meta); a CREATE not yet approved has no code, so "Any" lists it. */}
-        <Select
-          label="Code"
-          data={[
-            { value: '', label: 'Any' },
-            ...(meta?.response_codes ?? []).map((c) => ({ value: String(c.id), label: c.label })),
-          ]}
-          value={code}
-          onChange={(v) => {
-            setCode(v ?? '');
-            setPage(1);
-          }}
-          allowDeselect={false}
-          searchable
-          w={340}
+      </Stack>
+
+      <DetailsSection
+        title={`Change requests${decidedCount === undefined ? '' : ` (${decidedCount})`}`}
+        id="code-requests-title"
+      >
+        <Group gap="xs" align="flex-end" wrap="wrap" component="section" aria-label="Request filters">
+          <Select
+            label="Request status"
+            data={[
+              { value: '', label: 'Any decided' },
+              ...(meta?.change_request_statuses ?? []).filter((s) => s.value !== 'PENDING'),
+            ]}
+            value={status}
+            onChange={(v) => {
+              setStatus(v ?? '');
+              setPage(1);
+            }}
+            allowDeselect={false}
+            w={220}
+          />
+          {/* The module's codes (meta); a CREATE not yet approved has no code, so "Any" lists it. */}
+          <Select
+            label="Code"
+            data={[
+              { value: '', label: 'Any' },
+              ...(meta?.response_codes ?? []).map((c) => ({ value: String(c.id), label: c.label })),
+            ]}
+            value={code}
+            onChange={(v) => {
+              setCode(v ?? '');
+              setPage(1);
+            }}
+            allowDeselect={false}
+            searchable
+            w={340}
+          />
+        </Group>
+        {query.error && (
+          <Alert color="red" role="alert">
+            {query.error.message}
+          </Alert>
+        )}
+        <RequestTable
+          rows={query.data?.results ?? []}
+          label="Response code change requests"
+          busy={query.isFetching}
+          loaded={!query.isPending}
+          mayDecide={mayDecide}
+          onDecide={decide}
+          empty="No decided change requests."
         />
-      </Group>
-      {query.error && (
-        <Alert color="red" role="alert">
-          {query.error.message}
-        </Alert>
-      )}
-      <Table.ScrollContainer minWidth={1100}>
-        <Table withTableBorder aria-label="Response code change requests" aria-busy={query.isFetching}>
-          <Table.Thead>
-            <Table.Tr>
-              {['Request', 'Code', 'Changes', 'Reason', 'Status', 'Proposed', 'Decision', 'Actions'].map(
-                (h) => (
-                  <Table.Th key={h} scope="col">
-                    {h}
-                  </Table.Th>
-                ),
-              )}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {(query.data?.results ?? []).map((r) => (
-              <Table.Tr key={r.id}>
-                <Table.Td>
-                  #{r.id}
-                  <Text size="xs" c="dimmed">
-                    {labelOf(KINDS, r.kind)}
-                  </Text>
-                </Table.Td>
-                <Table.Td>{requestTarget(r)}</Table.Td>
-                <Table.Td className="wrap-anywhere">
-                  {changeText(r.changes) || '-'}
-                  {r.new_source && (
-                    <Text size="xs" c="dimmed">
-                      Source: {r.new_source}
-                    </Text>
-                  )}
-                </Table.Td>
-                <Table.Td className="wrap-anywhere">{r.reason}</Table.Td>
-                <Table.Td>
-                  <VersionStatusBadge value={r.status} /> {r.self_approved && <SelfApprovedBadge />}
-                </Table.Td>
-                <Table.Td>
-                  {r.requested_by ?? '-'}
-                  <Text size="xs" c="dimmed">
-                    {formatDateTime(r.requested_at)}
-                  </Text>
-                </Table.Td>
-                <Table.Td className="wrap-anywhere">
-                  {r.decided_by ? `${r.decided_by}, ${formatDateTime(r.decided_at)}` : '-'}
-                  {r.decision_remarks && (
-                    <Text size="xs" c={r.status === 'REJECTED' ? 'red' : 'dimmed'}>
-                      {r.decision_remarks}
-                    </Text>
-                  )}
-                  <SettingsEvents events={r.events} label={`History of code request #${r.id}`} />
-                </Table.Td>
-                <Table.Td>
-                  {r.status === 'PENDING' && mayDecide ? (
-                    <Group gap={4}>
-                      <Button size="xs" onClick={() => decide(r, 'approve')}>
-                        Approve code request #{r.id}
-                      </Button>
-                      <Button size="xs" variant="default" onClick={() => decide(r, 'reject')}>
-                        Reject code request #{r.id}
-                      </Button>
-                    </Group>
-                  ) : r.status === 'PENDING' ? (
-                    <Text size="xs" c="dimmed">
-                      Awaiting a Checker{r.self_approval ? ' (your proposal)' : ''}
-                    </Text>
-                  ) : (
-                    '-'
-                  )}
-                </Table.Td>
-              </Table.Tr>
-            ))}
-            {!query.isPending && (query.data?.results.length ?? 0) === 0 && (
-              <Table.Tr>
-                <Table.Td colSpan={8}>No change requests.</Table.Td>
-              </Table.Tr>
-            )}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
-      <ListPager total={pages} value={page} onChange={setPage} label="Change requests" />
-    </Stack>
+        <ListPager total={pages} value={page} onChange={setPage} label="Change requests" />
+      </DetailsSection>
+    </>
   );
 }
 
@@ -542,14 +652,17 @@ export function ResponseCodesTab() {
 
   const query = useQuery({
     queryKey: ['settings', module, 'response-codes', flag, known, page],
-    queryFn: () => listResponseCodes(module, { flag, known, page, page_size: PAGE_SIZE }),
+    // The whole table in SSKUPI file order (a few dozen codes; contract A6).
+    queryFn: () =>
+      listResponseCodes(module, { flag, known, ordering: 'reply_type', page, page_size: CODES_PAGE_SIZE }),
     placeholderData: keepPreviousData,
   });
   const data = query.data;
   // The server says who may act (can_propose / can_decide); /me until the list arrives.
   const canPropose = data?.can_propose ?? can(me.permissions, 'settings.propose_codes');
   const canDecide = data?.can_decide ?? can(me.permissions, 'settings.approve');
-  const { pages } = pageBounds(data?.count ?? 0, page, PAGE_SIZE);
+  const { pages } = pageBounds(data?.count ?? 0, page, CODES_PAGE_SIZE);
+  const groups = replyGroups(data?.results ?? [], data?.reply_types);
 
   const propose = async (p: CodeChangeProposal) => {
     const req = await proposeCodeChange(module, p);
@@ -605,79 +718,113 @@ export function ResponseCodesTab() {
           {query.error.message}
         </Alert>
       )}
-      <Table.ScrollContainer minWidth={1000}>
+      <Table.ScrollContainer minWidth={900}>
         <Table withTableBorder aria-label="Response codes" aria-busy={query.isFetching}>
           <Table.Thead>
             <Table.Tr>
-              {['Flag', 'Code', 'Description', 'Source', 'Used by rules', 'Pending', ''].map((h, i) => (
+              {['Code', 'Text in the SSKUPI file', 'Pending', ''].map((h, i) => (
                 <Table.Th key={i} scope="col">
                   {h}
                 </Table.Th>
               ))}
             </Table.Tr>
           </Table.Thead>
-          <Table.Tbody>
-            {(data?.results ?? []).map((c) => (
-              <Table.Tr key={c.id}>
-                <Table.Td>{c.flag}</Table.Td>
-                <Table.Td>
-                  {c.code ?? (
-                    <Text span c="dimmed">
-                      unknown
-                    </Text>
-                  )}
-                </Table.Td>
-                <Table.Td className="wrap-anywhere">
-                  {c.description}
-                  {c.notes && (
-                    <Text size="xs" c="dimmed">
-                      {c.notes}
-                    </Text>
-                  )}
-                </Table.Td>
-                <Table.Td className="wrap-anywhere">{c.source || '-'}</Table.Td>
-                <Table.Td>
-                  {c.used_by.length ? c.used_by.join(', ') : '-'}{' '}
-                  {c.locked && (
-                    <Badge size="sm" variant="outline" color="yellow">
-                      Locked
-                    </Badge>
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  {c.pending_request_id ? (
-                    <Button
-                      size="compact-sm"
-                      variant="subtle"
-                      onClick={() => setViewing(c.pending_request_id)}
-                      aria-label={`Request #${c.pending_request_id} for ${c.label}`}
-                    >
-                      Request #{c.pending_request_id}
-                    </Button>
-                  ) : (
-                    '-'
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  {canPropose && !c.pending_request_id && (
-                    <Button
-                      size="xs"
-                      variant="default"
-                      onClick={() => setEditing(c)}
-                      aria-label={`Propose edit of ${c.label}`}
-                    >
-                      Propose edit
-                    </Button>
-                  )}
-                </Table.Td>
-              </Table.Tr>
-            ))}
-            {!query.isPending && (data?.results.length ?? 0) === 0 && (
+          {groups.map((g) => (
+            <Table.Tbody key={g.value}>
               <Table.Tr>
-                <Table.Td colSpan={7}>No response codes match.</Table.Td>
+                <Table.Th scope="colgroup" colSpan={4} bg="var(--mantine-color-gray-1)">
+                  {g.label} ({formatCount(g.rows.length)})
+                </Table.Th>
               </Table.Tr>
-            )}
-          </Table.Tbody>
+              {g.rows.map((c) => (
+                <Table.Tr key={c.id}>
+                  <Table.Td style={{ whiteSpace: 'nowrap' }}>
+                    {c.flag}{' '}
+                    {c.code ?? (
+                      <Text span c="dimmed">
+                        (code not known yet)
+                      </Text>
+                    )}{' '}
+                    {c.locked && (
+                      <Badge size="sm" variant="outline" color="yellow">
+                        Locked
+                      </Badge>
+                    )}
+                  </Table.Td>
+                  <Table.Td className="wrap-anywhere">
+                    {c.in_sskupi_file === false ? (
+                      <>
+                        <Text size="sm">{c.description}</Text>
+                        <Text size="xs" c="dimmed">
+                          Not an SSKUPI file reply
+                        </Text>
+                      </>
+                    ) : (
+                      <Text size="sm" fw={600}>
+                        {c.sskupi_text ?? c.description}
+                      </Text>
+                    )}
+                    {c.sskupi_problem && (
+                      <Text size="xs" c="red">
+                        {c.sskupi_problem}
+                      </Text>
+                    )}
+                    {c.in_sskupi_file && c.sskupi_ready === false && !c.sskupi_problem && (
+                      <Text size="xs" c="orange">
+                        Left out of the file until its numeric code is known.
+                      </Text>
+                    )}
+                    {/* Source, notes and the rules using it, behind the code's details (7.2). */}
+                    <details className="details-section">
+                      <summary>
+                        <Text size="xs" span>
+                          Details
+                        </Text>
+                      </summary>
+                      <Stack gap={0} mt={4}>
+                        <Text size="xs">Source: {c.source || '-'}</Text>
+                        <Text size="xs">Used by rules: {c.used_by.length ? c.used_by.join(', ') : '-'}</Text>
+                        {c.notes && <Text size="xs">Notes: {c.notes}</Text>}
+                      </Stack>
+                    </details>
+                  </Table.Td>
+                  <Table.Td>
+                    {c.pending_request_id ? (
+                      <Button
+                        size="compact-sm"
+                        variant="subtle"
+                        onClick={() => setViewing(c.pending_request_id)}
+                        aria-label={`Request #${c.pending_request_id} for ${c.label}`}
+                      >
+                        Request #{c.pending_request_id}
+                      </Button>
+                    ) : (
+                      '-'
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    {canPropose && !c.pending_request_id && (
+                      <Button
+                        size="xs"
+                        variant="default"
+                        onClick={() => setEditing(c)}
+                        aria-label={`Propose edit of ${c.label}`}
+                      >
+                        Propose edit
+                      </Button>
+                    )}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          ))}
+          {!query.isPending && (data?.results.length ?? 0) === 0 && (
+            <Table.Tbody>
+              <Table.Tr>
+                <Table.Td colSpan={4}>No response codes match.</Table.Td>
+              </Table.Tr>
+            </Table.Tbody>
+          )}
         </Table>
       </Table.ScrollContainer>
       <ListPager total={pages} value={page} onChange={setPage} label="Response codes" />

@@ -1,12 +1,14 @@
 /**
  * One settlement result (design 4.14 / 4.15): status with the reasons, the
- * SOP check, tolerance, fees and the cycle x side table. Shared by the
- * settlement case detail and the per-date settlement screen.
+ * SOP check, tolerance, fees and the cycle x side table (collapsed, UI
+ * refinements 2026-10-27, 5.4). Shared by the settlement case detail and the
+ * per-date settlement screen.
  */
 import { Group, List, Stack, Table, Text, Title } from '@mantine/core';
 
 import type { SettlementResultBody } from '../../api/types';
 import { SettlementStatusBadge } from '../../components/Badges';
+import { DetailsSection } from '../../components/DetailsSection';
 import { displayValue, formatCount, formatDateTime, formatRupees, yesNo } from '../../lib/format';
 
 export function reasonList(reasons: SettlementResultBody['reasons']): string[] {
@@ -68,42 +70,44 @@ export function SettlementBlock({
         Tolerance: {formatRupees(s.tolerance.amount)} / {formatCount(s.tolerance.txn_count)} transactions.
         Fees net: {formatRupees(s.fees_net)}
       </Text>
-      <Table.ScrollContainer minWidth={900}>
-        <Table withTableBorder aria-label="Cycle by side">
-          <Table.Thead>
-            <Table.Tr>
-              {['Cycle', 'Side', 'NTSL', 'Matched', 'Explained', 'Unexplained', 'Within tolerance'].map(
-                (h) => (
-                  <Table.Th key={h} scope="col">
-                    {h}
-                  </Table.Th>
-                ),
-              )}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {s.cycles.map((c, i) => (
-              <Table.Tr key={`${c.cycle}-${c.side}-${i}`}>
-                <Table.Td>{c.cycle ?? '-'}</Table.Td>
-                <Table.Td>{c.side}</Table.Td>
-                <Table.Td>
-                  {formatRupees(c.ntsl_amount)} ({formatCount(c.ntsl_count)})
-                </Table.Td>
-                <Table.Td>
-                  {formatRupees(c.matched_amount)} ({formatCount(c.matched_count)})
-                </Table.Td>
-                <Table.Td>
-                  {formatRupees(c.explained_amount)} ({formatCount(c.explained_count)})
-                </Table.Td>
-                <Table.Td>
-                  {formatRupees(c.unexplained_amount)} ({formatCount(c.unexplained_count)})
-                </Table.Td>
-                <Table.Td>{yesNo(c.within_tolerance)}</Table.Td>
+      <DetailsSection title="Cycle by side" id="settlement-cycles-title" order={3}>
+        <Table.ScrollContainer minWidth={900}>
+          <Table withTableBorder aria-label="Cycle by side">
+            <Table.Thead>
+              <Table.Tr>
+                {['Cycle', 'Side', 'NTSL', 'Matched', 'Explained', 'Unexplained', 'Within tolerance'].map(
+                  (h) => (
+                    <Table.Th key={h} scope="col">
+                      {h}
+                    </Table.Th>
+                  ),
+                )}
               </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+            </Table.Thead>
+            <Table.Tbody>
+              {s.cycles.map((c, i) => (
+                <Table.Tr key={`${c.cycle}-${c.side}-${i}`}>
+                  <Table.Td>{c.cycle ?? '-'}</Table.Td>
+                  <Table.Td>{c.side}</Table.Td>
+                  <Table.Td>
+                    {formatRupees(c.ntsl_amount)} ({formatCount(c.ntsl_count)})
+                  </Table.Td>
+                  <Table.Td>
+                    {formatRupees(c.matched_amount)} ({formatCount(c.matched_count)})
+                  </Table.Td>
+                  <Table.Td>
+                    {formatRupees(c.explained_amount)} ({formatCount(c.explained_count)})
+                  </Table.Td>
+                  <Table.Td>
+                    {formatRupees(c.unexplained_amount)} ({formatCount(c.unexplained_count)})
+                  </Table.Td>
+                  <Table.Td>{yesNo(c.within_tolerance)}</Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      </DetailsSection>
     </Stack>
   );
 }

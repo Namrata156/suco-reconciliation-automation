@@ -22,7 +22,7 @@ import { Link, useParams } from 'react-router';
 
 import { ApiError, getGroup } from '../api/client';
 import type { FactInfo, FullRuleResult, ModuleMeta } from '../api/types';
-import { PriorityBadge, StatusBadge } from '../components/Badges';
+import { StatusBadge } from '../components/Badges';
 import { Field } from '../components/Field';
 import { OverlayRowsTable } from '../components/OverlayRowsTable';
 import { labelOf, useMeta, useModuleCode } from '../hooks/module';
@@ -63,10 +63,7 @@ function RuleResultCard({ r, meta }: { r: FullRuleResult; meta: ModuleMeta | und
           {r.rule_code} - {r.rule_name}
         </Field>
         <Field label="Rule set">{r.rule_set}</Field>
-        <Field label="Status category">{labelOf(meta?.status_categories, r.status_category)}</Field>
-        <Field label="Priority">
-          <PriorityBadge value={r.priority} choices={meta?.priorities} />
-        </Field>
+        <Field label="Outcome">{labelOf(meta?.status_categories, r.status_category)}</Field>
         <Field label="Action">{r.action || '-'}</Field>
         <Field label="Response code">{r.response_code ?? '-'}</Field>
         <Field label="Deadline (TAT)">{r.tat_label || '-'}</Field>
@@ -114,7 +111,7 @@ export function GroupDetailPage() {
   });
   const g = query.data;
 
-  if (!valid) return <Alert color="red">Invalid match group address.</Alert>;
+  if (!valid) return <Alert color="red">Invalid transaction address.</Alert>;
   if (query.isPending) return <Skeleton h={300} />;
   if (query.error || !g) {
     const notFound = query.error instanceof ApiError && query.error.status === 404;
@@ -122,9 +119,9 @@ export function GroupDetailPage() {
       <Alert
         color="red"
         role="alert"
-        title={notFound ? 'Match group not found' : 'The match group could not be loaded'}
+        title={notFound ? 'Transaction not found' : 'The transaction could not be loaded'}
       >
-        {notFound ? `There is no match group ${id} on ${formatDate(businessDate)}.` : query.error?.message}
+        {notFound ? `There is no transaction ${id} on ${formatDate(businessDate)}.` : query.error?.message}
       </Alert>
     );
   }
@@ -139,15 +136,15 @@ export function GroupDetailPage() {
 
   return (
     <Stack>
-      <Anchor component={Link} to={`/${module}/dates/${businessDate}/results`} size="sm">
-        Back to the results of {formatDate(businessDate)}
+      <Anchor component={Link} to={`/${module}/dates/${businessDate}`} size="sm">
+        Back to business date {formatDate(businessDate)}
       </Anchor>
       <Title order={1} size="h3" className="wrap-anywhere">
-        Match group {g.rrn}
+        Transaction {g.rrn}
       </Title>
       {g.flags.is_superseded && (
-        <Alert color="gray" title="Superseded">
-          This group was replaced by a later presence-matrix build on {formatDateTime(g.superseded_at)}.
+        <Alert color="gray" title="Replaced by a later run">
+          This transaction was replaced by a later run on {formatDateTime(g.superseded_at)}.
         </Alert>
       )}
       <SimpleGrid cols={{ base: 2, md: 4 }} spacing="sm">
@@ -207,7 +204,7 @@ export function GroupDetailPage() {
                     {l.leg}
                     {l.kind === 'overlay' && (
                       <Text size="xs" c="dimmed">
-                        overlay
+                        adjustment
                       </Text>
                     )}
                   </Table.Td>
@@ -238,7 +235,7 @@ export function GroupDetailPage() {
 
       <Stack gap="xs" component="section" aria-labelledby="overlay-title">
         <Title order={2} size="h4" id="overlay-title">
-          DRC / Timeout / Adjustment rows of this date
+          Adjustments for this RRN
         </Title>
         <OverlayRowsTable rows={g.overlay_rows} />
       </Stack>
@@ -259,7 +256,7 @@ export function GroupDetailPage() {
           Earlier rule results
         </Title>
         {g.earlier_rule_results.length === 0 ? (
-          <Text size="sm">None: this group was evaluated once.</Text>
+          <Text size="sm">None: this transaction was evaluated once.</Text>
         ) : (
           <Table.ScrollContainer minWidth={900}>
             <Table withTableBorder aria-label="Earlier rule results">
@@ -267,11 +264,10 @@ export function GroupDetailPage() {
                 <Table.Tr>
                   {[
                     'Evaluated',
-                    'Superseded',
+                    'Replaced by a later run',
                     'Rule',
                     'Rule set',
-                    'Status category',
-                    'Priority',
+                    'Outcome',
                     'Reason',
                   ].map((h) => (
                     <Table.Th key={h} scope="col">
@@ -288,7 +284,6 @@ export function GroupDetailPage() {
                     <Table.Td>{r.rule_code}</Table.Td>
                     <Table.Td>{r.rule_set}</Table.Td>
                     <Table.Td>{labelOf(meta?.status_categories, r.status_category)}</Table.Td>
-                    <Table.Td>{labelOf(meta?.priorities, r.priority)}</Table.Td>
                     <Table.Td className="wrap-anywhere">{r.reason || '-'}</Table.Td>
                   </Table.Tr>
                 ))}

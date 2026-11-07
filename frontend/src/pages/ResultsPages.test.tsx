@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   GroupDetail,
-  ResultRow,
   ResultSummary,
   SelfCheck,
   SelfCheckRow,
@@ -18,9 +17,9 @@ import { SettlementTransactions } from '../features/settlement/SettlementTransac
 import { selfCheckLine } from '../features/settlement/SelfCheckTable';
 import { ResultsSummaryPanel } from '../features/results/ResultsSummaryPanel';
 import { isActive } from '../layout/AppLayout';
+import { MENU } from '../lib/roles';
 import { json, makeMe, META, renderWithProviders, routeFetch } from '../test/fixtures';
 import { GroupDetailPage } from './GroupDetailPage';
-import { resultOrderings, ResultsPage } from './ResultsPage';
 import { SettlementPage } from './SettlementPage';
 
 afterEach(() => {
@@ -44,42 +43,6 @@ function renderAt(path: string, route: string, element: ReactElement) {
     </MeProvider>,
     { route },
   );
-}
-
-const leg = (amount: string | null, o: Partial<ResultRow['cbs']> = {}) => ({
-  present: amount !== null,
-  amount,
-  direction: amount ? 'CREDIT' : null,
-  response_code: null,
-  ...o,
-});
-
-function resultRow(o: Partial<ResultRow> = {}): ResultRow {
-  return {
-    id: 41,
-    rrn: '419512345678',
-    business_date: '2026-07-14',
-    settlement_cycle: '1C',
-    processing_status: 'MATCHED',
-    cbs: leg('1000.00'),
-    npci: leg('1000.00', { response_code: '00' }),
-    overlays: [],
-    amount_match: true,
-    direction_match: true,
-    is_on_us: false,
-    cbs_reversed: false,
-    is_superseded: false,
-    rule_result: {
-      id: 9,
-      rule_code: 'R01',
-      status_category: 'RECONCILED',
-      priority: 'LOW',
-      due_date: null,
-      due_cutoff_time: null,
-    },
-    case: null,
-    ...o,
-  };
 }
 
 const SUMMARY: ResultSummary = {
@@ -124,15 +87,23 @@ const SUMMARY: ResultSummary = {
 };
 
 describe('Results summary on the date overview (design 4.12)', () => {
-  it('links each rule count into the filtered results list', async () => {
+  it('counts per rule, plain numbers: the results list is gone (U3 4.5)', async () => {
     vi.stubGlobal('fetch', routeFetch({ '/results/summary/': SUMMARY, '/meta/': META }));
     renderWithProviders(<ResultsSummaryPanel module="upi" businessDate="2026-07-14" runId={5} enabled />);
-    const r01 = await screen.findByRole('link', { name: 'R01: 120 results' });
-    expect(r01.getAttribute('href')).toBe('/upi/dates/2026-07-14/results?rule_code=R01');
-    expect(screen.getByRole('link', { name: 'Open the results list' }).getAttribute('href')).toBe(
-      '/upi/dates/2026-07-14/results',
-    );
-    expect(screen.queryByRole('link', { name: /R13/ })).toBeNull(); // 0: no link
+    const table = await screen.findByRole('table', { name: 'Results per rule for 14-Jul-2026' });
+    expect(screen.queryByRole('link')).toBeNull();
+    // Only the rules that occurred, plain name first (U1 3.5); no 0-count row.
+    expect(within(table).getByText('Debited and reversed')).toBeTruthy();
+    expect(within(table).queryByText('Investigate')).toBeNull();
+    expect(within(table).queryByText('R13')).toBeNull();
+    // Ops' words (4.4).
+    expect(screen.getByText('Transactions')).toBeTruthy();
+    expect(screen.getByText('3 replaced by a later run (not counted)')).toBeTruthy();
+    expect(screen.getByText('By outcome')).toBeTruthy();
+    expect(screen.queryByText(/match group|superseded|status category/i)).toBeNull();
+    // The case priority is not shown (the summary still carries it).
+    expect(screen.queryByText('By priority')).toBeNull();
+    expect(within(table).queryByRole('columnheader', { name: 'Priority' })).toBeNull();
   });
 
   it('asks nothing while the date has no matrix and no rule run', () => {
@@ -146,61 +117,7 @@ describe('Results summary on the date overview (design 4.12)', () => {
   });
 });
 
-describe('Results list (design 4.12, LARGE)', () => {
-  it('sends the address filters, one page of 50, and links each group and case', async () => {
-    const fetch = routeFetch({
-      '/dates/2026-07-14/results/': page([
-        resultRow(),
-        resultRow({
-          id: 42,
-          rrn: '419500000002',
-          case: { id: 77, status: 'OPEN', priority: 'LOW', rule_code: 'R01', assigned_to: null },
-        }),
-      ]),
-      '/meta/': META,
-    });
-    vi.stubGlobal('fetch', fetch);
-    renderAt(
-      '/:module/dates/:businessDate/results',
-      '/upi/dates/2026-07-14/results?rule_code=R01&presence=CBS_ONLY',
-      <ResultsPage />,
-    );
-
-    const table = await screen.findByRole('table', { name: 'Reconciliation results' });
-    await within(table).findByRole('link', { name: '419512345678' });
-    const call = fetch.mock.calls.map((c) => String(c[0])).find((u) => u.includes('/results/'));
-    expect(call).toContain('rule_code=R01');
-    expect(call).toContain('presence=CBS_ONLY');
-    expect(call).toContain('page_size=50');
-    expect(within(table).getByRole('link', { name: '419512345678' }).getAttribute('href')).toBe(
-      '/upi/dates/2026-07-14/groups/41',
-    );
-    expect(within(table).getByRole('link', { name: 'Case for 419500000002' }).getAttribute('href')).toBe(
-      '/upi/cases/77',
-    );
-    expect(screen.getByText('Showing 1-2 of 2 match groups')).toBeTruthy();
-  });
-
-  it('says when the date has no results (404)', async () => {
-    vi.stubGlobal(
-      'fetch',
-      routeFetch({
-        '/results/': () => json(404, { detail: 'No reconciliation results for this date.' }),
-        '/meta/': META,
-      }),
-    );
-    renderAt('/:module/dates/:businessDate/results', '/upi/dates/2026-07-15/results', <ResultsPage />);
-    expect(await screen.findByText('No reconciliation results for 15-Jul-2026 yet.')).toBeTruthy();
-  });
-
-  it('offers each meta ordering both ways', () => {
-    const o = resultOrderings(['priority', 'rrn', 'rule_code']);
-    expect(o.map((x) => x.value)).toEqual(['', 'priority', '-priority', '-rrn', 'rule_code', '-rule_code']);
-    expect(o.find((x) => x.value === 'priority')?.label).toBe('Priority (HIGH first)');
-  });
-});
-
-describe('Match group detail (design 4.13)', () => {
+describe('Transaction (match group) detail (design 4.13)', () => {
   const group: GroupDetail = {
     id: 41,
     rrn: '419512345678',
@@ -290,12 +207,14 @@ describe('Match group detail (design 4.13)', () => {
       <GroupDetailPage />,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Match group 419512345678' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Transaction 419512345678' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'cbs_14072026.xls' }).getAttribute('href')).toBe('/upi/files/12');
     expect(screen.getByText('Amount match: No')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open case #77' }).getAttribute('href')).toBe('/upi/cases/77');
     expect(within(screen.getByRole('table', { name: 'Earlier rule results' })).getByText('R13')).toBeTruthy();
     expect(screen.getAllByText('CBS debit reversed')).toHaveLength(2); // current + earlier
+    // No case priority, neither on the current result nor on the earlier ones.
+    expect(screen.queryByText('Priority')).toBeNull();
   });
 });
 
@@ -317,6 +236,8 @@ const checkRow = (cycle: string, status = 'PASS'): SelfCheckRow => ({
   subtotal_credit: fig,
   settlement_net: fig,
   final_net: fig,
+  gst_warning: false,
+  gst_check: null,
   checked_at: '2026-07-15T05:02:00Z',
   source: 'run',
 });
@@ -327,6 +248,7 @@ const ALL_PASS: SelfCheck = {
   fail: 0,
   missing: 0,
   all_pass: true,
+  gst_warnings: 0,
   results: CYCLES.map((c) => checkRow(c)),
 };
 
@@ -379,7 +301,24 @@ describe('Settlement per date (design 4.14)', () => {
     const fetch = routeFetch({
       '/dates/2026-07-14/settlement/': SETTLEMENT,
       '/settlement/transactions/': (_init: RequestInit | undefined, url: string) =>
-        url.includes('kind=sop')
+        url.includes('kind=unexplained')
+          ? json(
+              200,
+              txPage(
+                'unexplained',
+                ['source', 'source_label', 'rrn', 'amount', 'detail'],
+                [
+                  {
+                    source: 'NPCI_NOT_ATTRIBUTED',
+                    source_label: 'NTSL-settled NPCI row no rule explains',
+                    rrn: '4195000077',
+                    amount: '100.00',
+                    detail: 'No G rule explains it.',
+                  },
+                ],
+              ),
+            )
+          : url.includes('kind=sop')
           ? json(
               200,
               txPage(
@@ -408,16 +347,93 @@ describe('Settlement per date (design 4.14)', () => {
     expect(await screen.findByText('Self-check: 12 of 12 cycles PASS')).toBeTruthy();
     expect(screen.getByText('Unexplained: Rs 0.00 (0 transactions)')).toBeTruthy();
     expect(screen.getByText('No settlement case for this date (tallied).')).toBeTruthy();
+    // A passing self-check stays under the collapsed "Details" (U1 5.4).
+    expect(screen.queryByText('NTSL self-check did not pass')).toBeNull();
+    const details = screen.getByRole('heading', { name: 'Details' });
+    expect(details.closest('details')!.open).toBe(false);
+    await userEvent.click(details);
+    expect(screen.getByText(/^Versions used: Tolerance v/)).toBeTruthy();
     expect(
       within(screen.getByRole('table', { name: 'NTSL self-check per cycle' })).getAllByText('PASS'),
     ).toHaveLength(12);
 
-    const tx = screen.getByRole('table', { name: 'Contributing transactions' });
+    // Only the unexplained entries lead (U3 5.3); the source code column is not shown.
+    const unexplained = screen.getByRole('table', { name: 'Unexplained entries' });
+    expect(await within(unexplained).findByText('NTSL-settled NPCI row no rule explains')).toBeTruthy();
+    expect(within(unexplained).queryByText('NPCI_NOT_ATTRIBUTED')).toBeNull();
+    expect(fetch.mock.calls.some((c) => String(c[0]).includes('kind=npci'))).toBe(false);
+
+    // Every contributing row, one click away (loaded when opened).
+    await userEvent.click(screen.getByRole('heading', { name: 'All contributing rows' }));
+    const tx = await screen.findByRole('table', { name: 'Contributing transactions' });
     expect(await within(tx).findByText('-1,070.50')).toBeTruthy();
     await userEvent.click(screen.getByRole('radio', { name: /SOP check items/ }));
     expect(await within(tx).findByText('G07')).toBeTruthy();
     const sopCall = fetch.mock.calls.map((c) => String(c[0])).find((u) => u.includes('kind=sop'));
     expect(sopCall).toMatch(/^\/api\/v1\/upi\/dates\/2026-07-14\/settlement\/transactions\/\?kind=sop/);
+  });
+
+  it('shows a failing NTSL self-check on top (U1 5.4)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routeFetch({
+        '/settlement/transactions/': txPage('npci', [], []),
+        '/settlement/': { ...SETTLEMENT, self_check: { ...SETTLEMENT.self_check, pass: 11, fail: 1 } },
+        '/meta/': META,
+      }),
+    );
+    renderAt(
+      '/:module/dates/:businessDate/settlement',
+      '/upi/dates/2026-07-14/settlement',
+      <SettlementPage />,
+    );
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('NTSL self-check did not pass')).toBeTruthy();
+    expect(within(alert).getByText(/11 of 12 cycles PASS \(1 FAIL\)/)).toBeTruthy();
+  });
+
+  it('hides everything GST on fees by default (owner 2026-11-06; lib/featureFlags)', async () => {
+    const gstRow = {
+      fee_category: 'PSP_FEE',
+      gst_category: 'PSP_FEE_GST',
+      side: 'CREDIT' as const,
+      fee: '1000.00',
+      fee_txn_count: 120,
+      expected_gst: '180.00',
+      ntsl_gst: '175.00',
+      difference: '5.00',
+      tolerance: '1.00',
+      within: false,
+      note: 'OUTSIDE_TOLERANCE' as const,
+    };
+    const results = SETTLEMENT.self_check.results.map((r, i) =>
+      i === 0
+        ? { ...r, gst_warning: true, gst_check: { rate: '0.18', tolerance: '1.00', rows: [gstRow] } }
+        : i === 1
+          ? { ...r, gst_check: null }
+          : r,
+    );
+    vi.stubGlobal(
+      'fetch',
+      routeFetch({
+        '/settlement/transactions/': txPage('npci', [], []),
+        '/settlement/': { ...SETTLEMENT, self_check: { ...SETTLEMENT.self_check, gst_warnings: 1, results } },
+        '/meta/': META,
+      }),
+    );
+    renderAt(
+      '/:module/dates/:businessDate/settlement',
+      '/upi/dates/2026-07-14/settlement',
+      <SettlementPage />,
+    );
+    // The self-check table is there (under Details), as before the GST work.
+    expect(await screen.findByText('Final net diff')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull(); // no top notice
+    expect(screen.queryByText(/GST on fees/)).toBeNull(); // column, summary and not-checked lines
+    expect(screen.queryByText('GST warning')).toBeNull();
+    expect(screen.queryByText('Not checked')).toBeNull();
+    expect(screen.queryByText(/GST rows/)).toBeNull();
+    expect(screen.queryByText('Payer PSP fee')).toBeNull();
   });
 
   it('links the settlement case of an UNEXPLAINED date', async () => {
@@ -453,7 +469,7 @@ describe('Settlement per date (design 4.14)', () => {
     expect(selfCheckLine({ ...ALL_PASS, pass: 10, fail: 1, missing: 1 })).toBe(
       '10 of 12 cycles PASS (1 FAIL, 1 MISSING)',
     );
-    expect(selfCheckLine({ cycles: 0, pass: 0, fail: 0, missing: 0, all_pass: false, results: [] })).toBe(
+    expect(selfCheckLine({ cycles: 0, pass: 0, fail: 0, missing: 0, all_pass: false, gst_warnings: 0, results: [] })).toBe(
       'No NTSL self-check for this date yet',
     );
   });
@@ -480,5 +496,13 @@ describe('menu highlighting', () => {
     expect(isActive('/upi/settings', '/upi/settings/tolerance', '', true)).toBe(true);
     expect(isActive('/upi/settings', '/upi/settings/tolerance', '')).toBe(false);
     expect(isActive('/upi', '/upi/settings', '', false)).toBe(false);
+  });
+
+  it('keeps Exception cases highlighted on "Assigned to me", not on "Awaiting my approval"', () => {
+    const cases = MENU.find((i) => i.key === 'cases')!;
+    const on = (search: string) => isActive('/upi/cases', '/upi/cases', search, false, cases.alsoMine);
+    expect(on('')).toBe(true);
+    expect(on('?mine=assigned')).toBe(true);
+    expect(on('?mine=approval')).toBe(false);
   });
 });

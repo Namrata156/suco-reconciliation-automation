@@ -19,6 +19,7 @@ import type {
   ModuleMeta,
   ReassignPayload,
   RemarksPayload,
+  ResponseCodeMeta,
   SubmitPayload,
   UserRef,
 } from '../../api/types';
@@ -572,17 +573,39 @@ const SUBMIT_FIELDS = [
   'evidence_notes',
 ] as const;
 
+/**
+ * The submit button names the reply (UI refinements U2, 6.5): the case's
+ * ready-made label while the rule's reply is kept ("Submit reply DRC 102 -
+ * Online Reversal"), else built from the form's current choice.
+ */
+export function submitReplyLabel(
+  spec: Pick<ActionTypeMeta, 'label' | 'code_flag'> | undefined,
+  code: Pick<ResponseCodeMeta, 'flag' | 'code' | 'description'> | undefined,
+  ruleReplyLabel: string | null | undefined,
+): string {
+  if (ruleReplyLabel) return `Submit reply ${ruleReplyLabel}`;
+  if (!spec) return 'Submit for approval';
+  if (spec.code_flag && code) {
+    return `Submit reply ${code.flag} ${code.code ?? '(code not known yet)'} - ${code.description}`;
+  }
+  if (spec.code_flag) return `Submit reply ${spec.code_flag}`;
+  return `Submit: ${spec.label}`;
+}
+
 export function SubmitActionForm({
   caseDetail,
   meta,
   onSubmit,
   onCancel,
+  ruleReplyLabel,
 }: FormProps<SubmitPayload> & {
   caseDetail: Pick<
     CaseDetail,
     'default_action_type' | 'default_response_code' | 'case_type' | 'rrc_already_sent_on' | 'rule_code'
   >;
   meta: Pick<ModuleMeta, 'action_types' | 'response_codes'>;
+  /** The case's reply label while it is the rule's suggestion (contract A4 reply, source RULE). */
+  ruleReplyLabel?: string | null;
 }) {
   const isSettlement = caseDetail.case_type === 'SETTLEMENT';
   const ctx: SubmitContext = useMemo(
@@ -616,6 +639,15 @@ export function SubmitActionForm({
         .map((c) => ({ value: String(c.id), label: c.label }))
     : [];
   const usesDefaultCode = actionType === caseDetail.default_action_type && !!caseDetail.default_response_code;
+  const chosenId = watch('response_code');
+  const chosen = chosenId ? meta.response_codes.find((c) => String(c.id) === chosenId) : undefined;
+  const fixed =
+    spec?.code_flag && spec.fixed_code !== null
+      ? meta.response_codes.find((c) => c.flag === spec.code_flag && c.code === spec.fixed_code)
+      : undefined;
+  // The rule's reply is kept while the action is unchanged and no other code is picked.
+  const keepsRuleReply = actionType === caseDetail.default_action_type && !chosen;
+  const submitLabel = submitReplyLabel(spec, chosen ?? fixed, keepsRuleReply ? ruleReplyLabel : null);
 
   const submit = handleSubmit(async (v) => {
     try {
@@ -733,7 +765,7 @@ export function SubmitActionForm({
           </fieldset>
         )}
         <Textarea label="Evidence notes (optional)" autosize minRows={2} {...register('evidence_notes')} />
-        <Actions submitLabel="Submit for approval" busy={isSubmitting} onCancel={onCancel} />
+        <Actions submitLabel={submitLabel} busy={isSubmitting} onCancel={onCancel} />
       </Stack>
     </form>
   );

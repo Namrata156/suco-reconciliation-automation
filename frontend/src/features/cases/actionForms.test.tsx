@@ -29,7 +29,9 @@ describe('SubmitActionForm (design 4.6)', () => {
       <SubmitActionForm caseDetail={caseOf()} meta={META} onSubmit={onSubmit} onCancel={() => {}} />,
     );
     expect(screen.getByText(/Sent as DRC 102/)).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Submit for approval' }));
+    // The button names the reply (U2 6.5), from the form's current choice.
+    expect(screen.getByRole('button', { name: 'Submit reply DRC 102 - Reversed online' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /^Submit/ }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ action_type: 'DRC_102' }));
   });
 
@@ -44,7 +46,7 @@ describe('SubmitActionForm (design 4.6)', () => {
       />,
     );
     expect(screen.getByText(/Rule R13 has no pre-filled action/)).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Submit for approval' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Submit/ }));
     expect(await screen.findByText('Choose an action (this rule has no default)')).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -65,7 +67,7 @@ describe('SubmitActionForm (design 4.6)', () => {
     );
     expect(screen.getByText('CBS reversal already posted (evidence, required)')).toBeTruthy();
     await userEvent.type(screen.getByLabelText(/CBS reversal amount/), '12.345');
-    await userEvent.click(screen.getByRole('button', { name: 'Submit for approval' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Submit/ }));
     expect(await screen.findByText('The CBS reversal date is required')).toBeTruthy();
     expect(screen.getByText(/positive amount with at most 2 decimals/)).toBeTruthy();
     expect(screen.getByText('The CBS reversal RRN is required')).toBeTruthy();
@@ -107,7 +109,7 @@ describe('SubmitActionForm (design 4.6)', () => {
         onCancel={() => {}}
       />,
     );
-    await userEvent.click(screen.getByRole('button', { name: 'Submit for approval' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Submit/ }));
     expect(await screen.findByText('The explanation is required')).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -144,7 +146,7 @@ describe('SubmitActionForm (design 4.6)', () => {
     renderWithProviders(
       <SubmitActionForm caseDetail={caseOf()} meta={META} onSubmit={onSubmit} onCancel={() => {}} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: 'Submit for approval' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Submit/ }));
     expect(await screen.findByText('Too long.')).toBeTruthy();
   });
 });

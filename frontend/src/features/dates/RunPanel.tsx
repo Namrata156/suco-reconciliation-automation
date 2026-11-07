@@ -54,9 +54,12 @@ export function RunPanel({
   overview,
   canRun,
   onRun,
+  bare = false,
 }: {
   overview: BusinessDateOverview;
   canRun: boolean;
+  /** Inside the date page's "2. Run reconciliation" step: no card or heading of its own. */
+  bare?: boolean;
   /** Throws an ApiError when the server refuses; the refusal is shown here. */
   onRun: () => Promise<void>;
 }) {
@@ -85,95 +88,112 @@ export function RunPanel({
     }
   };
 
-  return (
-    <Card withBorder padding="md" component="section" aria-labelledby="run-title">
-      <Stack gap="sm">
+  const body = (
+    <Stack gap="sm">
+      {!bare && (
         <Title order={2} size="h4" id="run-title">
           Reconciliation run
         </Title>
-        {run ? (
-          <Stack gap={4} role="group" aria-label="Last run">
-            <Group gap="xs">
-              <Text size="sm" fw={600}>
-                Last run #{run.id}:
-              </Text>
-              <RunStatusBadge value={run.status} />
-              <Text size="sm">
-                started by {run.requested_by || '-'} on {formatDateTime(run.requested_at)}
-                {run.finished_at ? `, finished ${formatDateTime(run.finished_at)}` : ''}
-              </Text>
-            </Group>
-            <RunSteps run={run} />
-            {run.status === 'FAILED' && run.error && (
-              <Alert color="red" title="The run failed">
-                {run.error}
-              </Alert>
-            )}
-          </Stack>
-        ) : (
-          <Text size="sm">No run for this date yet.</Text>
-        )}
-
-        {overview.run_blockers.length > 0 && (
-          <Alert color="gray" title="A run cannot start now">
-            <List size="sm">
-              {overview.run_blockers.map((b) => (
-                <List.Item key={b.code}>{b.message}</List.Item>
-              ))}
-            </List>
-          </Alert>
-        )}
-        {refusal && (
-          <Alert color="red" role="alert" title="The run was not started">
-            {refusal}
-          </Alert>
-        )}
-
-        {canRun ? (
-          <Group>
-            <Button onClick={() => setConfirming(true)} disabled={blocked}>
-              {run ? 'Run reconciliation again' : 'Run reconciliation'}
-            </Button>
+      )}
+      {run ? (
+        <Stack gap={4} role="group" aria-label="Last run">
+          <Group gap="xs">
+            <Text size="sm" fw={600}>
+              Last run #{run.id}:
+            </Text>
+            <RunStatusBadge value={run.status} />
+            <Text size="sm">
+              started by {run.requested_by || '-'} on {formatDateTime(run.requested_at)}
+              {run.finished_at ? `, finished ${formatDateTime(run.finished_at)}` : ''}
+            </Text>
           </Group>
-        ) : (
-          <Text size="sm" c="dimmed">
-            An Operations User starts the run.
-          </Text>
-        )}
-      </Stack>
-
-      <Modal
-        opened={confirming}
-        onClose={() => setConfirming(false)}
-        title={`Run reconciliation for ${formatDate(overview.business_date)}?`}
-        centered
-      >
-        <Stack gap="sm">
-          <Text size="sm">
-            {overview.files.files_loaded} file(s) loaded, {overview.files.loaded} of {overview.files.expected}{' '}
-            expected files present.
-          </Text>
-          {missing.length > 0 ? (
-            <Alert color="orange" title={`${missing.length} expected file(s) missing`}>
-              <Text size="sm">The run uses only the files loaded now:</Text>
-              <Text size="sm" className="wrap-anywhere">
-                {missing.map((m) => (m.cycle ? `${m.label} ${m.cycle}` : m.label)).join(', ')}
-              </Text>
+          <RunSteps run={run} />
+          {run.status === 'FAILED' && run.error && (
+            <Alert color="red" title="The run failed">
+              {run.error}
             </Alert>
-          ) : (
-            <Text size="sm">Every expected file is present.</Text>
           )}
-          {run && <Text size="sm">A new run replaces the results of the earlier one.</Text>}
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setConfirming(false)} disabled={busy}>
-              Cancel
-            </Button>
-            <Button onClick={start} loading={busy} data-autofocus>
-              Start run
-            </Button>
-          </Group>
         </Stack>
-      </Modal>
+      ) : (
+        <Text size="sm">No run for this date yet.</Text>
+      )}
+
+      {overview.run_blockers.length > 0 && (
+        <Alert color="gray" title="A run cannot start now">
+          <List size="sm">
+            {overview.run_blockers.map((b) => (
+              <List.Item key={b.code}>{b.message}</List.Item>
+            ))}
+          </List>
+        </Alert>
+      )}
+      {refusal && (
+        <Alert color="red" role="alert" title="The run was not started">
+          {refusal}
+        </Alert>
+      )}
+
+      {canRun ? (
+        <Group>
+          <Button onClick={() => setConfirming(true)} disabled={blocked}>
+            {run ? 'Run reconciliation again' : 'Run reconciliation'}
+          </Button>
+        </Group>
+      ) : (
+        <Text size="sm" c="dimmed">
+          An Operations User starts the run.
+        </Text>
+      )}
+    </Stack>
+  );
+
+  const modal = (
+    <Modal
+      opened={confirming}
+      onClose={() => setConfirming(false)}
+      title={`Run reconciliation for ${formatDate(overview.business_date)}?`}
+      centered
+    >
+      <Stack gap="sm">
+        <Text size="sm">
+          {overview.files.files_loaded} file(s) loaded, {overview.files.loaded} of {overview.files.expected}{' '}
+          expected files present.
+        </Text>
+        {missing.length > 0 ? (
+          <Alert color="orange" title={`${missing.length} expected file(s) missing`}>
+            <Text size="sm">The run uses only the files loaded now:</Text>
+            <Text size="sm" className="wrap-anywhere">
+              {missing.map((m) => (m.cycle ? `${m.label} ${m.cycle}` : m.label)).join(', ')}
+            </Text>
+          </Alert>
+        ) : (
+          <Text size="sm">Every expected file is present.</Text>
+        )}
+        {run && <Text size="sm">A new run replaces the results of the earlier one.</Text>}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={() => setConfirming(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={start} loading={busy} data-autofocus>
+            Start run
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+
+  if (bare) {
+    return (
+      <>
+        {body}
+        {modal}
+      </>
+    );
+  }
+  return (
+    <Card withBorder padding="md" component="section" aria-labelledby="run-title">
+      {body}
+      {modal}
     </Card>
   );
 }

@@ -116,7 +116,8 @@ test('Operations User uploads 14 Jul, picks 14 Jul for CBS, runs, and sees the c
 
   // 1. Upload with the review table.
   await page.goto(`/${MODULE}/files/upload`);
-  await page.getByLabel('Choose files').setInputFiles(files);
+  // exact: the U2.4 drop zone's label also says "... choose files".
+  await page.getByLabel('Choose files', { exact: true }).setInputFiles(files);
   await expect(page.getByText(`${files.length} file(s) chosen.`)).toBeVisible();
   await page.getByRole('button', { name: 'Check files' }).click();
 

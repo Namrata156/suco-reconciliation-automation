@@ -1,6 +1,9 @@
 /**
- * The four read-only audit lists (design 4.19 / 3.6, Slice 4 contract B):
- * case events, settings events, user activity (login log) and operations.
+ * The read-only audit lists (design 4.19 / 3.6, Slice 4 contract B): the
+ * "Everything" timeline (UI refinements U3, 9.1 / 9.2; contract B5: all four
+ * kinds, newest first, one plain sentence per entry, the raw row behind
+ * "Details"), then case events, settings events, user activity (login log)
+ * and operations.
  * They grow for ever, so they are paged and filtered on the server; every
  * filter is kept in the address (lib/urlFilters.ts), so a link reproduces
  * the list. Nothing on these screens changes anything: there are no
@@ -40,7 +43,8 @@ const CASE_KEYS = [...COMMON, 'module', 'business_date', 'case', 'rrn'] as const
 const SETTINGS_KEYS = [...COMMON, 'module', 'kind'] as const;
 const ACTIVITY_KEYS = [...COMMON] as const;
 const OPERATION_KEYS = [...COMMON, 'module', 'business_date'] as const;
-type Key = (typeof CASE_KEYS)[number] | 'kind';
+const EVERYTHING_KEYS = [...COMMON, 'module', 'source'] as const;
+type Key = (typeof CASE_KEYS)[number] | 'kind' | 'source';
 
 export function useAuditMeta() {
   return useQuery({ queryKey: ['audit', 'meta'], queryFn: getAuditMeta, staleTime: 10 * 60_000 });
@@ -175,6 +179,17 @@ function AuditFiltersBar({
             onChange={(v) => setFilter('module', v)}
             allowDeselect={false}
             w={130}
+          />
+        )}
+        {has('source') && (
+          <MultiSelect
+            label="Kind of event"
+            placeholder={filters.source ? undefined : 'Any'}
+            data={meta?.everything_sources ?? []}
+            value={filters.source ? filters.source.split(',') : []}
+            onChange={(v) => setFilter('source', v.join(','))}
+            clearable
+            w={260}
           />
         )}
         {has('kind') && (
@@ -326,8 +341,90 @@ function ItemLink({ link, label, children }: { link: string | null; label: strin
 }
 
 // ---------------------------------------------------------------------------
-// the four lists
+// the lists
 // ---------------------------------------------------------------------------
+/** Every event type of the four lists, once (the "Everything" event filter, B5). */
+export function allEventTypes(m: AuditMeta | undefined): Choice[] {
+  const seen = new Set<string>();
+  const out: Choice[] = [];
+  for (const c of [
+    ...(m?.case_event_types ?? []),
+    ...(m?.settings_event_types ?? []),
+    ...(m?.user_activity_types ?? []),
+    ...(m?.operation_types ?? []),
+  ]) {
+    if (seen.has(c.value)) continue;
+    seen.add(c.value);
+    out.push(c);
+  }
+  return out;
+}
+
+const EVERYTHING_SPEC: FilterSpec = {
+  keys: EVERYTHING_KEYS,
+  eventTypes: allEventTypes,
+  eventLabel: 'Event type',
+};
+
+/** The raw row, one "field: value" per line. */
+function RawDetails({ details }: { details: Record<string, unknown> }) {
+  const entries = Object.entries(details ?? {});
+  if (entries.length === 0) return <>-</>;
+  return (
+    <details className="details-section">
+      <summary>
+        <Text size="xs" span>
+          Details
+        </Text>
+      </summary>
+      <Stack gap={0} mt={4}>
+        {entries.map(([k, v]) => (
+          <Text key={k} size="xs" className="wrap-anywhere">
+            {k}:{' '}
+            {v !== null && typeof v === 'object'
+              ? describeObject(v as Record<string, unknown>) || '-'
+              : displayValue(v)}
+          </Text>
+        ))}
+      </Stack>
+    </details>
+  );
+}
+
+export function AuditEverything() {
+  return (
+    <AuditTable
+      list="everything"
+      spec={EVERYTHING_SPEC}
+      caption="Everything"
+      headers={['When', 'What happened', 'Kind', 'Details']}
+      row={(e) => (
+        <Table.Tr key={e.id}>
+          <When at={e.created_at} />
+          <Table.Td className="wrap-anywhere">
+            <ItemLink link={e.link} label={`${e.summary} (${e.id})`}>
+              {e.summary}
+            </ItemLink>
+            {e.module && (
+              <Text size="xs" c="dimmed">
+                {e.module.toUpperCase()}
+              </Text>
+            )}
+          </Table.Td>
+          <Table.Td>
+            {e.source_label}
+            <Text size="xs" c="dimmed">
+              {e.event_type_label}
+            </Text>
+          </Table.Td>
+          <Table.Td>
+            <RawDetails details={e.details} />
+          </Table.Td>
+        </Table.Tr>
+      )}
+    />
+  );
+}
 const CASE_SPEC: FilterSpec = {
   keys: CASE_KEYS,
   eventTypes: (m) => m?.case_event_types ?? [],

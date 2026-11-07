@@ -29,6 +29,7 @@ import { z } from 'zod';
 import { getTolerance, listToleranceVersions, proposeTolerance } from '../../api/client';
 import type { StaleToleranceDates, ToleranceDecisionResult, ToleranceProposal } from '../../api/types';
 import { SelfApprovedBadge, VersionStatusBadge } from '../../components/Badges';
+import { DetailsSection } from '../../components/DetailsSection';
 import { Field } from '../../components/Field';
 import { ListPager } from '../../components/ListPager';
 import { useModuleCode } from '../../hooks/module';
@@ -38,6 +39,10 @@ import { Actions, applyApiError, RootError } from '../cases/actionForms';
 import { DecisionModal, invalidateSettings, type DecisionTarget } from './DecisionModal';
 import { SettingsEvents } from './SettingsEvents';
 import { StaleDatesList } from './StaleDatesList';
+
+/** What the tab is about, in ops' words (UI refinements 2026-10-27, 7.4). */
+export const TOLERANCE_INTRO =
+  'If the unexplained settlement difference is at most this amount and this many transactions, the date still counts as tallied.';
 
 export const toleranceSchema = z.object({
   amount: z
@@ -158,6 +163,7 @@ export function ToleranceTab() {
 
   return (
     <Stack>
+      <Text size="sm">{TOLERANCE_INTRO}</Text>
       <Card withBorder padding="sm" component="section" aria-labelledby="tolerance-active-title">
         <Title order={2} size="h4" id="tolerance-active-title">
           {t.active ? `Active tolerance v${t.active.version}` : 'Active tolerance (none recorded yet)'}
@@ -256,17 +262,19 @@ export function ToleranceTab() {
         </Alert>
       )}
 
-      <Stack gap="xs" component="section" aria-labelledby="stale-dates-title">
-        <Title order={2} size="h4" id="stale-dates-title">
-          Dates settled with an older tolerance
-        </Title>
+      {/* Opens by itself when an approval just listed dates to run again. */}
+      <DetailsSection
+        title={`Dates settled with an older tolerance (${formatCount(t.dates_with_older_tolerance.count)})`}
+        id="stale-dates-title"
+        defaultOpen={!!approvedStale && approvedStale.count > 0}
+      >
         <StaleDatesList module={module} block={t.dates_with_older_tolerance} />
-      </Stack>
+      </DetailsSection>
 
-      <Stack gap="xs" component="section" aria-labelledby="tolerance-versions-title">
-        <Title order={2} size="h4" id="tolerance-versions-title">
-          Tolerance history
-        </Title>
+      <DetailsSection
+        title={`Tolerance history${versions.data ? ` (${formatCount(versions.data.count)})` : ''}`}
+        id="tolerance-versions-title"
+      >
         {versions.error && (
           <Alert color="red" role="alert">
             {versions.error.message}
@@ -326,7 +334,7 @@ export function ToleranceTab() {
           </Table>
         </Table.ScrollContainer>
         <ListPager total={pages} value={page} onChange={setPage} label="Tolerance versions" />
-      </Stack>
+      </DetailsSection>
 
       <Modal opened={proposing} onClose={() => setProposing(false)} title="Propose a tolerance change">
         <ToleranceForm current={current} onSubmit={propose} onCancel={() => setProposing(false)} />

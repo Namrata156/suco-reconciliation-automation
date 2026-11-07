@@ -61,26 +61,27 @@ export interface MenuItem {
   slice: 1 | 2 | 3 | 4 | 6.1 | 6.2 | 6.3 | 6.4 | 'deferred';
   /** Also highlighted on the addresses below it (settings tabs). */
   matchPrefix?: boolean;
+  /** Also highlighted for these "mine" filter values (the queue's "Assigned to me"). */
+  alsoMine?: readonly string[];
+  /** Listed under the navbar's "Admin & audit" heading. */
+  section?: 'admin';
 }
 
 export const MENU: readonly MenuItem[] = [
+  // Menu cut from 16 items to 11 (UI refinements 2026-10-27, 9.4): "My cases"
+  // is the queue's "Assigned to me" filter, the files list opens from the
+  // business dates, the all-dates results and settlement are reports (5.5),
+  // and alerts open from the header bell (9.3). Their routes stay, so old
+  // links keep working.
   { key: 'home', label: 'Home', to: '', scoped: true, capability: 'cases.view', slice: 1 },
-  { key: 'cases', label: 'Exception cases', to: 'cases', scoped: true, capability: 'cases.view', slice: 1 },
+  // Tables now; the charts wait for the chart package (UI refinements U5 8.3).
   {
-    key: 'my-cases',
-    label: 'My cases',
-    to: 'cases?mine=assigned',
+    key: 'dashboard',
+    label: 'Dashboard',
+    to: 'dashboard',
     scoped: true,
-    capability: 'cases.work',
-    slice: 1,
-  },
-  {
-    key: 'awaiting-approval',
-    label: 'Awaiting my approval',
-    to: 'cases?mine=approval',
-    scoped: true,
-    capability: 'cases.approve',
-    slice: 1,
+    capability: 'results.view',
+    slice: 6.1,
   },
   {
     key: 'upload',
@@ -90,28 +91,31 @@ export const MENU: readonly MenuItem[] = [
     capability: 'files.upload',
     slice: 2,
   },
-  { key: 'files', label: 'Files', to: 'files', scoped: true, capability: 'files.view', slice: 2 },
+  // Per-date results, settlement and the files list open from here.
   { key: 'dates', label: 'Business dates', to: 'dates', scoped: true, capability: 'files.view', slice: 2 },
-  // Per-date results and settlement open from the business-date list. The
-  // all-dates views have their own entries (Phase 6 R3, owner 2026-10-22/23);
-  // they read GET /dates/, which every role may read (results.view).
+  // Also highlighted while the queue shows "Assigned to me" (the old "My cases" item).
   {
-    key: 'results-all',
-    label: 'Results (all dates)',
-    to: 'results',
+    key: 'cases',
+    label: 'Exception cases',
+    to: 'cases',
     scoped: true,
-    capability: 'results.view',
-    slice: 6.1,
+    capability: 'cases.view',
+    slice: 1,
+    alsoMine: ['assigned'],
   },
+  // One inbox, tabs Cases | Settings changes (UI refinements U2, 7.1); it replaces
+  // "Awaiting my approval" and "Pending approvals". All five roles read it; only
+  // Checkers act (owner 2026-10-20).
   {
-    key: 'settlement-all',
-    label: 'Settlement (all dates)',
-    to: 'settlement',
+    key: 'approvals',
+    label: 'Approvals',
+    to: 'approvals',
     scoped: true,
-    capability: 'results.view',
-    slice: 6.1,
+    capability: 'settings.view',
+    slice: 3,
   },
-  // The page shows each user only the reports their role may open (R2).
+  // The page shows each user only the reports their role may open (R2),
+  // including the all-dates results and settlement (Phase 6 R3).
   {
     key: 'reports',
     label: 'Reports',
@@ -130,26 +134,6 @@ export const MENU: readonly MenuItem[] = [
     slice: 3,
     matchPrefix: true,
   },
-  // All five roles read the pending list; only Checkers act (owner 2026-10-20).
-  {
-    key: 'pending-approvals',
-    label: 'Pending approvals',
-    to: 'approvals',
-    scoped: true,
-    capability: 'settings.view',
-    slice: 3,
-  },
-  // Not module-scoped (design 3.1); the audit lists filter by module instead.
-  { key: 'alerts', label: 'Alerts', to: '/alerts', scoped: false, capability: 'alerts.view', slice: 4 },
-  {
-    key: 'audit',
-    label: 'Audit trail',
-    to: '/audit',
-    scoped: false,
-    capability: 'audit.view',
-    slice: 4,
-    matchPrefix: true,
-  },
   {
     key: 'npci-uploads',
     label: 'NPCI uploads',
@@ -158,8 +142,27 @@ export const MENU: readonly MenuItem[] = [
     capability: 'cases.approve',
     slice: 'deferred',
   },
+  // Not module-scoped (design 3.1); the audit lists filter by module instead.
+  {
+    key: 'audit',
+    label: 'Audit trail',
+    to: '/audit',
+    scoped: false,
+    capability: 'audit.view',
+    slice: 4,
+    matchPrefix: true,
+    section: 'admin',
+  },
   // Read-only "who holds which role" (design 4.17, contract C1; Auditor too, owner 2026-10-22).
-  { key: 'users', label: 'Users and roles', to: '/users', scoped: false, capability: 'users.view', slice: 4 },
+  {
+    key: 'users',
+    label: 'Users and roles',
+    to: '/users',
+    scoped: false,
+    capability: 'users.view',
+    slice: 4,
+    section: 'admin',
+  },
   {
     key: 'django-admin',
     label: 'Edit users (Django admin)',
@@ -168,6 +171,7 @@ export const MENU: readonly MenuItem[] = [
     external: true,
     capability: 'users.admin',
     slice: 1,
+    section: 'admin',
   },
 ];
 

@@ -16,7 +16,7 @@ import {
   renderWithProviders,
   routeFetch,
 } from '../test/fixtures';
-import { DateDetailPage } from './DateDetailPage';
+import { DateDetailPage, reconciledLine } from './DateDetailPage';
 import { dateIsBusy } from './DatesPage';
 import { fileDateText, fileFiltersFromParams, fileStatusChoices, fileTypeChoices, shortStatus } from './FilesPage';
 
@@ -90,6 +90,45 @@ describe('Business-date overview (design 4.11)', () => {
     renderDate(['Auditor']);
     expect(await screen.findByText('No files or runs for 14-Jul-2026.')).toBeTruthy();
     expect(screen.getByText('Nothing for this date')).toBeTruthy();
+  });
+
+  it('one plain reconciliation line; rule set, earlier runs and history collapsed (U1 3.2 / 3.3)', async () => {
+    const d = detail({
+      matrix: { built: true, match_groups: 69_120, built_at: '2026-09-26T05:00:00Z' },
+      cases: { total: 21, active: 21 },
+      rule_evaluation: {
+        id: 5,
+        rule_set: 'UPI rules v3.3',
+        started_at: '2026-09-26T05:10:00Z',
+        finished_at: '2026-09-26T05:12:00Z',
+        group_count: 69_120,
+        triggered_by: 'ops1',
+      },
+      runs: [makeRun({ id: 2 }), makeRun({ id: 1 })],
+    });
+    vi.stubGlobal(
+      'fetch',
+      routeFetch({ '/dates/2026-07-14/': () => json(200, d), '/results/summary/': () => json(404, {}) }),
+    );
+    renderDate(['Maker']);
+    expect(
+      await screen.findByText(/^Reconciled 26-Sep-2026 \d\d:\d\d IST - 69,120 transactions, 21 exceptions$/),
+    ).toBeTruthy();
+    expect(screen.queryByText('Presence matrix')).toBeNull();
+    for (const name of ['Details', 'Earlier runs (2)', 'History']) {
+      expect(screen.getByRole('heading', { name }).closest('details')!.open).toBe(false);
+    }
+    expect(screen.getByText(/^Rule set UPI rules v3\.3:/)).toBeTruthy();
+    const files = screen.getByRole('link', { name: /files received: open the files list/ });
+    expect(files.getAttribute('href')).toBe('/upi/files?business_date=2026-07-14');
+  });
+
+  it('says plainly when the date is not (fully) reconciled', () => {
+    const o = makeDateOverview();
+    expect(reconciledLine(o)).toBe('Not reconciled yet');
+    expect(reconciledLine({ ...o, matrix: { built: true, match_groups: 5, built_at: null } })).toBe(
+      'Transactions matched - 5 transactions; rules not applied yet',
+    );
   });
 
   it('polls only while a run is active or files are processing', () => {

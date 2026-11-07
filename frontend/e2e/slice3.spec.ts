@@ -87,18 +87,25 @@ test('14 Jul results and settlement: 12/12 cycles PASS, unexplained Rs 0.00', as
     timeout: LOAD,
   });
 
-  // The paged list: one page of 50 out of ~69,000 groups.
-  await page.getByRole('link', { name: 'Open the results list' }).click({ timeout: SHORT });
-  await expect(page.getByRole('heading', { name: `Reconciliation results ${DATE_SHOWN}` })).toBeVisible({
-    timeout: LOAD,
-  });
-  const results = page.getByRole('table', { name: 'Reconciliation results' });
-  await expect(page.getByText(/^Showing 1-50 of [\d,]+ match groups$/)).toBeVisible({ timeout: LOAD });
-  await expect(results.getByRole('row')).toHaveCount(51, { timeout: SHORT });
+  // The per-date results list is gone (UI refinements U3 4.5): its old address opens the date page.
+  await page.goto(`/${MODULE}/dates/${DATE}/results`, { timeout: LOAD });
+  await expect(page).toHaveURL(new RegExp(`/${MODULE}/dates/${DATE}#step-results$`), { timeout: LOAD });
 
-  // One match group's detail.
-  await results.getByRole('link').first().click({ timeout: SHORT });
-  await expect(page.getByRole('heading', { name: /^Match group / })).toBeVisible({ timeout: LOAD });
+  // One transaction, found with "Find an RRN" in the header (an RRN of one of the date's cases).
+  const someCases = await page.request.get(
+    `/api/v1/${MODULE}/cases/?business_date=${DATE}&case_type=TRANSACTION&status=all&page_size=1`,
+    { timeout: LOAD },
+  );
+  const rrn = ((await someCases.json()) as { results: { rrn: string }[] }).results[0]?.rrn ?? '';
+  expect(rrn, 'the date has a transaction case').not.toBe('');
+  await page.getByRole('textbox', { name: 'Find an RRN' }).fill(rrn, { timeout: SHORT });
+  await page.getByRole('textbox', { name: 'Find an RRN' }).press('Enter');
+  // One transaction opens directly; several are listed first.
+  const list = page.getByRole('table', { name: `Transactions with RRN ${rrn}` });
+  const detail = page.getByRole('heading', { name: /^Transaction / });
+  await expect(list.or(detail)).toBeVisible({ timeout: LOAD });
+  if (await list.isVisible()) await list.getByRole('link').first().click({ timeout: SHORT });
+  await expect(detail).toBeVisible({ timeout: LOAD });
   await expect(page.getByRole('table', { name: 'Legs' })).toBeVisible({ timeout: SHORT });
 
   // The settlement of the date.
@@ -107,17 +114,22 @@ test('14 Jul results and settlement: 12/12 cycles PASS, unexplained Rs 0.00', as
   await expect(page.getByRole('heading', { name: `Settlement ${DATE_SHOWN}` })).toBeVisible({
     timeout: LOAD,
   });
+  // One plain sentence first (UI refinements U3 5.1).
   const summary = page.getByRole('group', { name: 'Settlement summary' });
-  await expect(summary.getByText('Self-check: 12 of 12 cycles PASS')).toBeVisible({ timeout: SHORT });
-  await expect(summary.getByText(/^Unexplained: Rs 0\.00 /)).toBeVisible({ timeout: SHORT });
-  await expect(summary.getByText('Tallied')).toBeVisible({ timeout: SHORT });
+  await expect(summary.getByText(/^Tallied\. CBS /)).toBeVisible({ timeout: SHORT });
+  await expect(summary.getByText('Tallied', { exact: true })).toBeVisible({ timeout: SHORT });
+  // A passing self-check is under the collapsed "Details" (UI refinements U1, 5.4).
+  await expect(page.getByText('NTSL self-check did not pass')).toHaveCount(0, { timeout: SHORT });
+  await page.getByRole('heading', { name: 'Details', exact: true }).click({ timeout: SHORT });
+  await expect(page.getByText('Self-check: 12 of 12 cycles PASS')).toBeVisible({ timeout: SHORT });
   await expect(page.getByRole('table', { name: 'NTSL self-check per cycle' }).getByText('PASS')).toHaveCount(
     12,
     {
       timeout: SHORT,
     },
   );
-  await expect(page.getByRole('table', { name: 'Contributing transactions' })).toBeVisible({ timeout: LOAD });
+  // Only the unexplained entries lead (5.3).
+  await expect(page.getByRole('table', { name: 'Unexplained entries' })).toBeVisible({ timeout: LOAD });
 });
 
 test('Administrator proposes a tolerance change; Checker approves it', async ({ page }) => {
@@ -154,15 +166,13 @@ test('Administrator proposes a tolerance change; Checker approves it', async ({ 
   });
   await logout(page);
 
-  // 2. Checker approves from the Pending approvals screen.
+  // 2. Checker approves from the Approvals inbox, "Settings changes" tab (UI refinements U2 7.1).
   await login(page, CHECKER);
-  await page
-    .getByRole('navigation', { name: 'Main menu' })
-    .getByRole('link', { name: 'Pending approvals' })
-    .click({
-      timeout: SHORT,
-    });
-  await expect(page.getByRole('heading', { name: 'Pending approvals' })).toBeVisible({ timeout: LOAD });
+  await page.getByRole('navigation', { name: 'Main menu' }).getByRole('link', { name: 'Approvals' }).click({
+    timeout: SHORT,
+  });
+  await expect(page.getByRole('heading', { name: 'Approvals' })).toBeVisible({ timeout: LOAD });
+  await page.getByRole('tab', { name: /^Settings changes/ }).click({ timeout: SHORT });
   const approve = page.getByRole('button', { name: new RegExp(`^Approve Tolerance v${version}:`) });
   await approve.click({ timeout: LOAD });
   const approveDialog = page.getByRole('dialog');

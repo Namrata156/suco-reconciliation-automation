@@ -13,6 +13,7 @@ import type { RoleName } from '../api/types';
 import { MeProvider } from '../auth/auth';
 import { makeDateOverview, makeMe, makeRun, renderWithProviders, routeFetch } from '../test/fixtures';
 import { ALL_DATES_PAGE_SIZE, ResultsAllDatesPage, SettlementAllDatesPage } from './AllDatesPages';
+import { reportsFor } from '../lib/reports';
 import { ReportsPage } from './ReportsPage';
 
 afterEach(() => {
@@ -89,22 +90,27 @@ describe('Reports page (design 5.2, R2)', () => {
     ['Maker', ['volume', 'exceptions', 'ageing']],
     ['Checker', ['volume', 'exceptions', 'ageing', 'approvals']],
     ['Auditor', ['volume', 'exceptions', 'ageing', 'approvals', 'user-activity']],
-  ])('%s: the reports their role may open', (role, later) => {
+  ])('%s: only the reports built so far are shown (U1 8.2)', (role, later) => {
     renderAt('/upi/reports', <ReportsPage />, [role]);
     const cards = screen.getAllByRole('listitem');
-    expect(cards).toHaveLength(2 + later.length);
-    // The two all-dates reports open now.
+    expect(cards).toHaveLength(3);
+    // The two all-dates reports open now (they left the menu in U1, 5.5).
     expect(screen.getByRole('link', { name: /Results \(all dates\)/ }).getAttribute('href')).toBe(
       '/upi/results',
     );
     expect(screen.getByRole('link', { name: /Settlement \(all dates\)/ }).getAttribute('href')).toBe(
       '/upi/settlement',
     );
-    // The rest are listed, not linked.
-    expect(screen.getAllByText('Not available yet')).toHaveLength(later.length);
-    expect(screen.getAllByRole('link')).toHaveLength(2);
-    if (!later.includes('approvals')) expect(screen.queryByText('Approval report')).toBeNull();
-    if (!later.includes('user-activity')) expect(screen.queryByText('User activity report')).toBeNull();
+    // The later ones are hidden until their screen is built, though the role may open them.
+    expect(screen.queryByText('Not available yet')).toBeNull();
+    expect(screen.getByRole('link', { name: 'NPCI files (SSKUPI)' }).getAttribute('href')).toBe(
+      '/upi/reports/npci-files',
+    );
+    expect(screen.getAllByRole('link')).toHaveLength(3);
+    const catalogue = reportsFor(makeMe([role]), 'upi');
+    expect(catalogue.filter((r) => !r.available).map((r) => r.key)).toEqual(later);
+    expect(screen.queryByText('Approval report')).toBeNull();
+    expect(screen.queryByText('User activity report')).toBeNull();
   });
 });
 
@@ -125,7 +131,7 @@ describe('Results (all dates) on GET /dates/', () => {
     expect(q.get('ordering')).toBeNull();
 
     expect(within(table).getByRole('link', { name: 'Results for 14-Jul-2026' }).getAttribute('href')).toBe(
-      '/upi/dates/2026-07-14/results',
+      '/upi/dates/2026-07-14#step-results',
     );
     expect(within(table).getByRole('link', { name: 'Overview for 16-Jul-2026' }).getAttribute('href')).toBe(
       '/upi/dates/2026-07-16',
@@ -144,7 +150,7 @@ describe('Results (all dates) on GET /dates/', () => {
     renderAt('/upi/results?date_from=2026-07-01&date_to=2026-07-31', <ResultsAllDatesPage />);
     const cell = await screen.findByText('70,969');
     await userEvent.click(cell);
-    expect(screen.getByTestId('where').textContent).toContain('/upi/dates/2026-07-14/results');
+    expect(screen.getByTestId('where').textContent).toContain('/upi/dates/2026-07-14');
   });
 
   it('the month of the latest business date, up to yesterday, when the address has no dates', async () => {

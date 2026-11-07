@@ -1,7 +1,8 @@
 /**
  * Business-date overview list (design 4.11): one row per date with the file
- * checklist counts, matrix, rule evaluation, cases, settlement and the last
- * run, with links to the date's results and settlement (Slice 3). Paged on the server; refreshes itself while a run is active or files
+ * checklist counts, one plain status (UI refinements U2 3.4, contract A0:
+ * the server's label and sentence), cases, settlement, the SSKUPI file and
+ * the last run, with links to the date's files and settlement. Paged on the server; refreshes itself while a run is active or files
  * are being processed on a shown date (lib/polling.ts).
  */
 import { Alert, Anchor, Button, Group, Pagination, Select, Stack, Table, Text, Title } from '@mantine/core';
@@ -14,9 +15,10 @@ import { listDates } from '../api/client';
 import type { BusinessDateOverview, DateFilters, Paginated } from '../api/types';
 import { AutoRefresh } from '../components/AutoRefresh';
 import { RunStatusBadge, SettlementStatusBadge } from '../components/Badges';
+import { DateStatusBadge, SskupiStateBadge } from '../components/DayStatus';
 import { isRunActive } from '../features/dates/RunPanel';
 import { useModuleCode } from '../hooks/module';
-import { formatCount, formatDate, formatDateTime } from '../lib/format';
+import { formatCount, formatDate } from '../lib/format';
 import { pollInterval, pollingState, useUserActive } from '../lib/polling';
 
 export const PAGE_SIZE = 50;
@@ -67,9 +69,15 @@ export function DatesPage() {
 
   return (
     <Stack gap="sm">
-      <Title order={1} size="h3">
-        Business dates
-      </Title>
+      <Group justify="space-between" align="flex-end" wrap="wrap">
+        <Title order={1} size="h3">
+          Business dates
+        </Title>
+        {/* The files list has no menu item since U1 (9.4); it opens from here. */}
+        <Anchor component={Link} to={`/${module}/files`} size="sm">
+          All uploaded files
+        </Anchor>
+      </Group>
       <Group gap="xs" align="flex-end" wrap="wrap" component="section" aria-label="Filters">
         <DateInput
           label="From"
@@ -127,10 +135,10 @@ export function DatesPage() {
               <Table.Th scope="col">Expected files present</Table.Th>
               <Table.Th scope="col">Missing</Table.Th>
               <Table.Th scope="col">Awaiting date / failed / processing</Table.Th>
-              <Table.Th scope="col">Matrix</Table.Th>
-              <Table.Th scope="col">Rule evaluation</Table.Th>
+              <Table.Th scope="col">Status</Table.Th>
               <Table.Th scope="col">Cases (active)</Table.Th>
               <Table.Th scope="col">Settlement</Table.Th>
+              <Table.Th scope="col">SSKUPI file</Table.Th>
               <Table.Th scope="col">Last run</Table.Th>
             </Table.Tr>
           </Table.Thead>
@@ -142,16 +150,14 @@ export function DatesPage() {
                     {formatDate(o.business_date)}
                   </Anchor>
                   <Group gap={8}>
-                    {(o.matrix.built || o.rule_evaluation) && (
-                      <Anchor
-                        component={Link}
-                        to={`/${module}/dates/${o.business_date}/results`}
-                        size="xs"
-                        aria-label={`Results for ${formatDate(o.business_date)}`}
-                      >
-                        Results
-                      </Anchor>
-                    )}
+                    <Anchor
+                      component={Link}
+                      to={`/${module}/files?business_date=${o.business_date}`}
+                      size="xs"
+                      aria-label={`Files for ${formatDate(o.business_date)}`}
+                    >
+                      Files
+                    </Anchor>
                     {o.settlement && (
                       <Anchor
                         component={Link}
@@ -171,11 +177,13 @@ export function DatesPage() {
                 <Table.Td>
                   {o.files.awaiting_date_selection} / {o.files.failed} / {o.files.processing}
                 </Table.Td>
-                <Table.Td>{o.matrix.built ? `built (${formatCount(o.matrix.match_groups)} groups)` : 'not built'}</Table.Td>
-                <Table.Td>
-                  {o.rule_evaluation
-                    ? `${o.rule_evaluation.rule_set}, ${formatDateTime(o.rule_evaluation.finished_at ?? o.rule_evaluation.started_at)}`
-                    : 'not run'}
+                <Table.Td maw={260}>
+                  <DateStatusBadge status={o.status} label={o.status_label} />
+                  {o.status_detail && (
+                    <Text size="xs" c="dimmed">
+                      {o.status_detail}
+                    </Text>
+                  )}
                 </Table.Td>
                 <Table.Td>
                   {formatCount(o.cases.total)} ({formatCount(o.cases.active)})
@@ -183,12 +191,27 @@ export function DatesPage() {
                 <Table.Td>
                   <SettlementStatusBadge value={o.settlement?.status} />
                 </Table.Td>
+                <Table.Td className="wrap-anywhere">
+                  {o.sskupi ? (
+                    <>
+                      <SskupiStateBadge state={o.sskupi.state} label={o.sskupi.state_label} />
+                      {o.sskupi.latest && <Text size="xs">{o.sskupi.latest.file_name}</Text>}
+                      {(o.sskupi.not_downloaded ?? []).length > 0 && (
+                        <Text size="xs" c="orange">
+                          Not downloaded: {(o.sskupi.not_downloaded ?? []).join(', ')}
+                        </Text>
+                      )}
+                    </>
+                  ) : (
+                    '-'
+                  )}
+                </Table.Td>
                 <Table.Td>{o.last_run ? <RunStatusBadge value={o.last_run.status} /> : 'none'}</Table.Td>
               </Table.Tr>
             ))}
             {!query.isPending && rows.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={9}>No business dates yet: upload a day&apos;s files first.</Table.Td>
+                <Table.Td colSpan={10}>No business dates yet: upload a day&apos;s files first.</Table.Td>
               </Table.Tr>
             )}
           </Table.Tbody>

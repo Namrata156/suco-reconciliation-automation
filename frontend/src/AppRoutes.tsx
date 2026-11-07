@@ -1,6 +1,6 @@
 import { Center, Loader } from '@mantine/core';
 import { lazy, Suspense, type ComponentType } from 'react';
-import { Navigate, Route, Routes } from 'react-router';
+import { Navigate, Route, Routes, useParams } from 'react-router';
 
 import { RequireAuth, useMe } from './auth/auth';
 import { AppLayout } from './layout/AppLayout';
@@ -26,7 +26,9 @@ const pages = {
   fileDetail: () => import('./pages/FileDetailPage'),
   dates: () => import('./pages/DatesPage'),
   dateDetail: () => import('./pages/DateDetailPage'),
-  results: () => import('./pages/ResultsPage'),
+  rrn: () => import('./pages/RrnLookupPage'),
+  npciReport: () => import('./pages/NpciFilesReportPage'),
+  dashboard: () => import('./pages/DashboardPage'),
   group: () => import('./pages/GroupDetailPage'),
   settlement: () => import('./pages/SettlementPage'),
   settings: () => import('./pages/SettingsPage'),
@@ -47,16 +49,19 @@ const UploadPage = named(pages.upload, 'UploadPage');
 const FileDetailPage = named(pages.fileDetail, 'FileDetailPage');
 const DatesPage = named(pages.dates, 'DatesPage');
 const DateDetailPage = named(pages.dateDetail, 'DateDetailPage');
-const ResultsPage = named(pages.results, 'ResultsPage');
+const RrnLookupPage = named(pages.rrn, 'RrnLookupPage');
+const NpciFilesReportPage = named(pages.npciReport, 'NpciFilesReportPage');
+const DashboardPage = named(pages.dashboard, 'DashboardPage');
+const ApprovalsPage = named(pages.approvals, 'ApprovalsPage');
 const GroupDetailPage = named(pages.group, 'GroupDetailPage');
 const SettlementPage = named(pages.settlement, 'SettlementPage');
 const SettingsPage = named(pages.settings, 'SettingsPage');
 const ResponseCodesTab = named(pages.settings, 'ResponseCodesTab');
 const NtslMappingTab = named(pages.settings, 'NtslMappingTab');
 const ToleranceTab = named(pages.settings, 'ToleranceTab');
-const PendingApprovalsPage = named(pages.approvals, 'PendingApprovalsPage');
 const AlertsPage = named(pages.alerts, 'AlertsPage');
 const AuditPage = named(pages.audit, 'AuditPage');
+const AuditEverything = named(pages.audit, 'AuditEverything');
 const AuditCaseEvents = named(pages.audit, 'AuditCaseEvents');
 const AuditSettingsEvents = named(pages.audit, 'AuditSettingsEvents');
 const AuditUserActivity = named(pages.audit, 'AuditUserActivity');
@@ -65,6 +70,12 @@ const UsersPage = named(pages.users, 'UsersPage');
 const ReportsPage = named(pages.reports, 'ReportsPage');
 const ResultsAllDatesPage = named(pages.allDates, 'ResultsAllDatesPage');
 const SettlementAllDatesPage = named(pages.allDates, 'SettlementAllDatesPage');
+
+/** The per-date results list is gone (UI refinements U3 4.5): old links open the date's results step. */
+function ResultsListRedirect() {
+  const { module, businessDate } = useParams();
+  return <Navigate to={`/${module}/dates/${businessDate}#step-results`} replace />;
+}
 
 function IndexRedirect() {
   const me = useMe();
@@ -105,7 +116,8 @@ export function AppRoutes() {
         </Route>
         <Route path="/audit" element={globalShell}>
           <Route element={<AuditPage />}>
-            <Route index element={<Navigate to="case-events" replace />} />
+            <Route index element={<Navigate to="everything" replace />} />
+            <Route path="everything" element={<AuditEverything />} />
             <Route path="case-events" element={<AuditCaseEvents />} />
             <Route path="settings-events" element={<AuditSettingsEvents />} />
             <Route path="user-activity" element={<AuditUserActivity />} />
@@ -131,7 +143,7 @@ export function AppRoutes() {
           <Route path="files/:fileId" element={<FileDetailPage />} />
           <Route path="dates" element={<DatesPage />} />
           <Route path="dates/:businessDate" element={<DateDetailPage />} />
-          <Route path="dates/:businessDate/results" element={<ResultsPage />} />
+          <Route path="dates/:businessDate/results" element={<ResultsListRedirect />} />
           <Route path="dates/:businessDate/groups/:groupId" element={<GroupDetailPage />} />
           <Route path="dates/:businessDate/settlement" element={<SettlementPage />} />
           <Route path="settings" element={<SettingsPage />}>
@@ -140,11 +152,14 @@ export function AppRoutes() {
             <Route path="ntsl-mapping" element={<NtslMappingTab />} />
             <Route path="tolerance" element={<ToleranceTab />} />
           </Route>
-          <Route path="approvals" element={<PendingApprovalsPage />} />
+          <Route path="approvals" element={<ApprovalsPage />} />
+          <Route path="rrn/:rrn" element={<RrnLookupPage />} />
           {/* Phase 6: all-dates views (R3) and the reports page. */}
           <Route path="results" element={<ResultsAllDatesPage />} />
           <Route path="settlement" element={<SettlementAllDatesPage />} />
           <Route path="reports" element={<ReportsPage />} />
+          <Route path="reports/npci-files" element={<NpciFilesReportPage />} />
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />

@@ -34,13 +34,13 @@ export interface ReportDef {
 /** The slice of Phase 6 the running build implements. */
 export const BUILT_REPORT_SLICE: ReportSlice = 6.1;
 
-/** The 7 spec reports (design section 2), in the design's order. */
+/** The 7 spec reports (design section 2), in the design's order, plus the NPCI files report (U5). */
 export const REPORTS: readonly ReportDef[] = [
   {
     key: 'reconciliation',
     title: 'Daily reconciliation report - Results (all dates)',
     description:
-      'How each business date reconciled: files, match groups, cases and settlement status, one row per date.',
+      'How each business date reconciled: files, transactions, cases and settlement status, one row per date.',
     to: 'results',
     scoped: true,
     capability: 'results.view',
@@ -53,6 +53,18 @@ export const REPORTS: readonly ReportDef[] = [
     to: 'settlement',
     scoped: true,
     capability: 'results.view',
+    slice: 6.1,
+  },
+  // UI refinements U5 8.1 (contract F1): not one of the 7 spec reports; replaces
+  // the tracker's "all-files list page".
+  {
+    key: 'npci-files',
+    title: 'NPCI files (SSKUPI)',
+    description:
+      'Every SSKUPI file generated, with rows and amount, who generated it and who downloaded it, and when.',
+    to: 'reports/npci-files',
+    scoped: true,
+    capability: 'reports.view',
     slice: 6.1,
   },
   {
