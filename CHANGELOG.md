@@ -6,6 +6,78 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-11-07
+
+- **Added: Dashboard charts** (U5 8.3; owner approved `@mantine/charts`
+  2026-11-07, pinned 8.3.18; "keep it concise — MIS goes in a separate
+  app"). Four charts above the existing tables, over the dashboard's
+  date range (last 30 business dates by default): settlement tallied /
+  not tallied, exceptions by reply type, transaction volume, NPCI files
+  generated / downloaded (by business date). Open cases by age stays a
+  table. Recharts split into its own chunk, loaded only on the Dashboard
+  (~118 kB gzip); first-load +7 kB. No new API fields. Verified
+  (engineer-reported): Vitest 256/256, lint, type-check, build clean; not
+  yet checked in a browser.
+- **e2e slices 1–4: 7/7 pass** (test-engineer). `slice2.spec.ts`: file
+  input selector made exact (U2.4 drop zone label also says "choose
+  files"). `reconciliation_e2e` migrated (13 pending).
+- **Fixed: first run on a fresh DB could stall in settlement** (found in
+  e2e slice 2). Cause: no planner statistics on the just-filled presence /
+  match-group / rule-result tables → Postgres estimated 1 match group
+  (real 77,354) and re-scanned per NPCI row. `reconcile_settlement_date()`
+  now runs `ANALYZE` on fact, match group, presence and rule result tables
+  first, in its own short transaction (PostgreSQL only; a failure is
+  logged and the run continues). Fresh DB with autovacuum off: settlement
+  5.7 s (was hours). New `settlement/tests/test_statistics.py`. Verified
+  (engineer-reported): settlement, reconciliation, file_processing and
+  slice 2 API tests 275/275.
+- **Full Django suite 777/777** (PM, 2026-11-08, 46 min incl. a 7-min
+  standby) on everything above plus U1–U5; committed on
+  `phase5-api-frontend`.
+
+## 2026-11-06
+
+- **Added: NTSL GST-on-fees check** (owner 2026-11-06, from ops' manual
+  NTSL sheet). Per cycle, for each fee/GST pair (interchange, switching,
+  PSP, rebate, mandate, NRP) and each side: expected GST = fee × 18%
+  (half-up to the paisa) vs NTSL's GST line, tolerance flat ₹1 (PM
+  decision at owner's request). Warning only: stored as
+  `NtslCycleCheck.gst_check` / `gst_warning`, never changes the self-check
+  status, failures or settlement readiness. New `settlement/fee_gst.py`;
+  migrations `settlement/0005`, `0006`; API `self_check.gst_warnings` and
+  `results[*].gst_check` (`{rate, tolerance, rows}`); `check_ntsl` prints
+  GST warnings.
+- **Settlement screen:** a "GST on fees" column in the NTSL self-check
+  table (`SelfCheckTable.tsx`): GST warning / OK / Not checked, with
+  expandable per-cycle GST rows (rows outside ₹1 highlighted), a summary
+  line, and a yellow top-of-page notice when any cycle warns (PASS/FAIL
+  unchanged). **Hidden the same day by owner**: behind
+  `SHOW_GST_ON_FEES = false` (`frontend/src/lib/featureFlags.ts`); the
+  screen looks as before, the backend check still runs and stores results.
+  Verified (engineer-reported): Vitest 251/251 (GST display tested with the
+  flag forced on, plus a hidden-by-default test), lint, type-check and
+  build clean. No e2e.
+- Verified (engineer-reported): real data, 5 dates / 299 rows, 0 warnings
+  (max diff ₹0.04); full suite 774/774 before the tolerance change,
+  `settlement api` 307/307 after. Migrations applied on dev by PM.
+- **Docs:** `docs/sop_reference.md` — CBS GL flow and manual credits, ops'
+  eff/rev workbook layout, ops' NTSL working sheet; SOP settlement formula
+  sign corrected to `(NTSL debit − credit)` (approved 2026-10-11 as C1/O2,
+  never applied to this doc).
+
+## 2026-11-02
+
+- **Changed: case priority hidden from every screen** (owner 2026-11-02).
+  Removed from the case queue (column, filter and sort option), case
+  detail, transaction detail, the Approvals cases tab, the Settlement page,
+  the Results summary ("By priority" card and column), and the Home tiles
+  (HIGH open / overdue / awaiting). `PriorityBadge` deleted. Frontend only:
+  the rule engine, API and emails still carry priority, and the HIGH bulk
+  refusal is unchanged. `e2e/slice1.spec.ts` no longer filters on
+  `priority=LOW`.
+- Verified (engineer-reported): Vitest 245/245, lint/type-check clean.
+  e2e not run.
+
 ## 2026-10-24 / 25
 
 - **Changed: NPCI file generated right after reconciliation** (owner

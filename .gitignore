@@ -59,6 +59,9 @@ manual_reconciliation_sheet.xlsx
 # and generated ones alike.
 SSKUPI_files/
 SSKUPI*.csv
+# Ops' manual reconciliation workbooks (real RRNs, accounts, VPAs).
+docs/manual_reconciliation/
+docs/14072026.xlsx
 
 # Real bank SOP doc -- contains live NPCI/EFRM portal credentials in
 # plaintext. Never commit. See doubts.md.

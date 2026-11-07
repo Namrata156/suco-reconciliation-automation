@@ -1,0 +1,159 @@
+================================================================================
+ UI REFINEMENTS U4 + U5 - API CONTRACT
+ backend-engineer, 2026-10-27. Source: docs/ui_refinements_2026-10-27.txt
+ items 2.1-2.4 (U4), 8.1 and 8.3 (U5). Follows
+ docs/ui_refinements_api_contract.txt (U2 / U3); same common rules: session
+ + CSRF, 401 / 403, lists {count, next, previous, results} (page_size default
+ 50, max 500), errors {"detail", "errors": {field: [str]}}, ISO dates,
+ 2-decimal amount strings, made-up values only. Every change ADDS fields,
+ filters or endpoints; nothing is renamed or removed. No migration.
+================================================================================
+
+--------------------------------------------------------------------------------
+E. U4 - UPLOAD PAGE
+--------------------------------------------------------------------------------
+
+E1 POST /api/v1/<module>/files/detect/   (2.1 review step)
+   Unchanged input (multipart files=..., sha256=...) plus ONE optional field:
+     business_date=YYYY-MM-DD   the date the user has chosen on the review
+                                step; omit = the proposed date (from the
+                                file names, as today). Bad value -> 400
+                                errors.business_date.
+   Unchanged output keys stay. NEW key "checklist" (null when there is no
+   date: none given and none found in the names):
+   {
+     "business_date": "2026-07-14",    // the date the checklist is for
+     "summary": {"expected": 60, "already_present": 41, "in_batch": 17,
+                 "missing_after_batch": 2, "outside_checklist": 1},
+     "slots": [                        // every expected file type x cycle, checklist order
+       {"file_type_config_id": 3, "file_type_code": "RAW_DATA", "label": "Raw Data ACQ",
+        "cycle": "1C" | null,
+        "state": "LOADED",             // the slot's state NOW (date overview states):
+                                       // LOADED | PROCESSING | AWAITING_DATE_SELECTION |
+                                       // FAILED | MISSING
+        "group": "ALREADY_PRESENT",    // ALREADY_PRESENT  a current file is there
+                                       //                  (loaded, processing or waiting
+                                       //                  for its CBS date)
+                                       // IN_BATCH         a file of this batch fills it
+                                       //                  (a FAILED slot counts: the new
+                                       //                  file replaces the failed one)
+                                       // MISSING          still missing after this batch
+        "batch_files": [0],            // indexes (files[].index) of this batch proposed for
+                                       // the slot. Non-empty on an ALREADY_PRESENT slot
+                                       // = the upload will refuse that file (the file
+                                       // already carries a warning, as today)
+        "existing_files": [{"id": 88, "filename": "...", "processing_status": "LOADED"}]}
+     ],
+     "outside_checklist": [4]          // batch files that fill no slot of the date:
+                                       // type not recognised, no cycle, another date
+                                       // in the name, or a slot not expected
+   }
+   Matching: a batch file fills a slot when its proposal has the slot's file
+   type and cycle and its name date is the checklist date or none (CBS).
+   Still a dry run: nothing saved, nothing logged. Operations User only, as
+   today.
+
+E2 2.2 live per-file status after upload - existing endpoints are enough:
+   POST /files/ answers 201 with accepted[] (each with id, state,
+   processing_status) and refused[]. Poll GET /files/?ids=<id,id,...> (NEW
+   filter "ids", csv of file ids; unknown ids simply do not appear; non-
+   numbers -> 400 errors.ids) every few seconds while any row's state is
+   PROCESSING; "processing_count" (already on the list) tells whether anything
+   of the module is still running. "Go to <date>" once every row's state is
+   LOADED: the link is /<module>/dates/<business_date> (business_date as sent
+   with the upload).
+
+E3 2.3 confirm the CBS business date on the upload page - existing
+   endpoints are enough: the CBS file's row (E2 poll) reaches state
+   AWAITING_DATE_SELECTION with "date_selection": {"detected_dates",
+   "batch_business_date", "preselected"}; the page shows the picker and posts
+   POST /files/<id>/select-date/ {"business_date"} (Operations User; 200 =
+   the file detail; it resumes processing, keep polling). No change.
+
+E4 2.4 drag-and-drop - frontend only.
+
+--------------------------------------------------------------------------------
+F. U5 - NPCI FILES REPORT AND DASHBOARD
+--------------------------------------------------------------------------------
+
+F1 GET /api/v1/<module>/reports/npci-files/   (8.1)
+   Roles: all five (as the NPCI file list). Download links per row only for
+   Maker, Checker, Operations User (download_url null otherwise); the
+   download itself stays GET /npci-files/<id>/download/ (logged).
+   Filters (Phase 6 rule RR1, on the file's business date = file_date):
+     date_from, date_to   inclusive; both omitted = this month (1st .. today,
+                          IST); one omitted -> 400 errors.<the other>:
+                          ["Give both dates."]; date_to before date_from ->
+                          400 errors.date_to; more than 92 days -> 400
+                          errors.date_to ["At most 92 days per report;
+                          narrow the dates."]
+     downloaded           true | false (omit = all): files downloaded at
+                          least once / never
+     ordering             -business_date (default) | business_date; within a
+                          date by sequence (SSKUPI.., _2, _3)
+     page, page_size
+   Row = the NPCI file list row (GET /npci-files/) plus:
+     "business_date": "2026-07-14",           // = file_date
+     "links": {"file": "/upi/npci-files/7", "date": "/upi/dates/2026-07-14"}
+   i.e. id, file_name, sequence, row_count, total_amount, partial,
+   not_included_count, generated_by, generated_at, remarks, sha256,
+   size_bytes, download_url, downloads [{"by", "at"}] (newest first),
+   download_count.
+   Extra top-level keys:
+     "totals": {"files": 9, "rows": 412, "amount": "123456.50",
+                "downloaded": 8, "not_downloaded": 1}   // whole range, not the page
+     "report": {"key": "npci_files", "title": "NPCI files (SSKUPI)",
+                "module": "upi", "filters": {"date_from", "date_to",
+                "downloaded": true|false|null, "ordering"},
+                "generated_at": timestamp, "generated_by": "aud1",
+                "versions": {"rule_sets": [], "ntsl_mappings": [], "tolerances": []}}
+     "export": null   // Excel / CSV download comes with the shared Phase 6
+                      // export (slice 6.2, contract section A); not built yet.
+   Capability: /me permissions gains "reports.view" (all five roles), as
+   Phase 6 contract C1 planned.
+
+F2 GET /api/v1/<module>/dashboard/   (8.3)
+   Roles: all five (results.view). Read-only. Chart-package independent: plain
+   numbers per date, oldest first, ready for any chart.
+   Filters:
+     (none)               the last 30 business dates that have files or runs
+                          (the dates list's dates), oldest first
+     date_from, date_to   both, inclusive, at most 92 days (400 as F1);
+                          only dates that have files or runs are returned
+   200:
+   {
+     "range": {"date_from": "2026-06-15", "date_to": "2026-07-14", "dates": 30},
+     "reply_types": [{"value": "DRC", "label": "DRC"}, ... "SETTLEMENT"],
+     "dates": [
+       {"business_date": "2026-07-14",
+        "status": "FILE_PENDING", "status_label": "...",   // date status (U2 A0), see note
+        "volume": {"transactions": 70210,                  // live match groups
+                   "npci": {"count": 70500, "amount": "98765432.10"},
+                                         // NPCI Raw Data + Merchant rows (all codes)
+                   "cbs": {"count": 69900, "amount": "97654321.00"}},
+        "exceptions": {"DRC": 179, "TCC": 2, "RET": 18, "RRC": 54,
+                       "NEEDS_REVIEW": 606, "SETTLEMENT": 1, "total": 860},
+                                         // cases of the date by reply type (U2), any
+                                         // status except closed by a re-run
+        "open_cases": 12,                // active cases of the date now
+        "settlement": {"status": "UNEXPLAINED", "tallied": false,
+                       "unexplained_amount": "200.00"} | null,
+        "sskupi": {"state": "DOWNLOADED", "file_count": 2, "not_downloaded": 0,
+                   "pending": false},    // pending = status FILE_PENDING
+        "link": "/upi/dates/2026-07-14"}
+     ],
+     "open_cases_by_age": {              // NOW, every active case of the module
+       "buckets": [{"label": "0-1 d", "min_days": 0, "max_days": 1,
+                    "count": 40, "overdue": 3}, ...],   // meta.ageing_buckets order
+       "total": 95, "overdue": 11},
+     "generated_at": timestamp
+   }
+   Note on status: the dashboard decides FILE_PENDING without building each
+   date's file plan (fixed query count): a finished date with a reply case in
+   no file counts as pending even when the generator would leave that row
+   out (no numeric code yet, no NPCI row). The dates list / date page use the
+   exact plan; the two differ only for such left-out rows.
+   Query count: fixed (about 20), whatever the number of dates. The volume
+   aggregate reads the date's NPCI and CBS rows (about 0.1 s per date on dev
+   data); Phase 6 R4a's daily summary table can replace it later without a
+   change to this shape.

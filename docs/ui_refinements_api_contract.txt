@@ -1,0 +1,525 @@
+================================================================================
+ UI REFINEMENTS U2 + U3 - API CONTRACT
+ backend-engineer, 2026-10-27. Source: docs/ui_refinements_2026-10-27.txt
+ (owner walk-through 2026-10-27, "PROPOSED BUILD ORDER" U2 and U3).
+ For the frontend engineer, who builds the U2 / U3 screens from it.
+================================================================================
+
+Common rules (unchanged from Phase 5 Slices 1-4, docs/phase5_slice4_api_contract.txt):
+  - Session login + CSRF. Not logged in -> 401. No role -> 403. Wrong role
+    for the endpoint -> 403. Everything in this contract is GET (others 405).
+  - Lists: {count, next, previous, results}; page_size default 50, max 500.
+  - Errors: {"detail": str, "errors": {field: [str]}}; 400 / 401 / 403 / 404
+    (and 410 for C2 only).
+  - Dates ISO "YYYY-MM-DD"; timestamps ISO 8601 with offset (IST); amounts
+    2-decimal strings ("1070.50", "-35.00"); counts integers.
+  - <module> is the lower-case slug (upi).
+  - Backward compatible: every change ADDS fields, filters or endpoints.
+    Nothing is renamed or removed. Every value below is made up.
+  - Role checks stay on the server (api/base.py CAPABILITIES, the audit
+    role check, the NPCI file role lists). No new capability is needed: the
+    new endpoints use existing ones (noted per endpoint).
+  - The app never sends anything to NPCI. Nothing here changes that.
+
+The "reply" object (used by A3, A4, A5)
+--------------------------------------
+The NPCI reply a case carries NOW, with exactly the generator's precedence
+(npci_files/generator.py, Amendment 2): the Checker-approved reply
+(APPROVED / COMPLETED case), else the Maker's submitted one
+(PENDING_APPROVAL), else the rule's suggestion (OPEN / IN_PROGRESS /
+CLOSED_SUPERSEDED).
+  "reply": {
+    "reply_type": "DRC",            // DRC | TCC | RET | RRC | NEEDS_REVIEW | SETTLEMENT (section "Reply types")
+    "reply_type_label": "DRC",
+    "action_type": "DRC_102",       // ActionType value; "" when the rule has no default
+    "action_type_label": "DRC reply 102 (customer reversed online)",   // "" when none
+    "flag": "DRC",                  // DRC | TCC | RET | RRC, or null (not an SSKUPI reply)
+    "code": "102",                  // numeric NPCI code, null when not known yet / not a reply
+    "text": "Online Reversal",      // the code's description = what the SSKUPI
+                                    // "specifyother" column would hold if a file were
+                                    // generated now; null when there is no code
+    "label": "DRC 102 - Online Reversal",
+                                    // ready-made button / column text:
+                                    //   reply with code:   "<flag> <code> - <text>"
+                                    //   code not known:    "RET (code not known yet) - <text>"
+                                    //   not an SSKUPI reply: the action label
+                                    //     ("Adjustment entry in CBS")
+                                    //   nothing chosen:    null
+    "source": "RULE",               // RULE | SUBMITTED | APPROVED (npci_files ReplySource)
+    "source_label": "The rule's suggested reply"
+  }
+
+Reply types (the queue tabs, item 6.1) - a partition, every case is in one:
+  SETTLEMENT    case_type SETTLEMENT.
+  DRC/TCC/RET/RRC  a transaction case whose reply (above) has that flag:
+                DRC_102/103/104 -> DRC; TCC_102/103 -> TCC; RET -> RET;
+                MANUAL_CREDIT_RRC_501, RRC_501_NO_CREDIT -> RRC.
+  NEEDS_REVIEW  every other transaction case = the reply is NOT an SSKUPI
+                reply, i.e. a person must look at it:
+                - the rule has no default reply: R07b / R07x (chargebacks),
+                  R07c, R13, R14-R17, R99, and any rule added later without one;
+                - or the reply chosen is not an NPCI file reply: CBS
+                  adjustment entry (R12's default), chargeback raise / accept /
+                  represent, refund customer, close without action.
+  NOTE: the "needs review" FLAG (case flagged after a re-run, flag=needs_review)
+  is a different thing and is NOT used for the tabs; such a case stays in its
+  reply's tab and carries flags.needs_review = true. (Owner question Q1.)
+
+--------------------------------------------------------------------------------
+A. U2 - THE DAY'S FLOW AND THE SSKUPI FILE EVERYWHERE
+--------------------------------------------------------------------------------
+
+A0 Date status (used by A1 and A2)
+   One plain status per business date, computed from data the date overview
+   already reads (reconciliation/overview.py), first match wins:
+     RUNNING            a reconciliation run of the date is QUEUED or RUNNING.
+     WAITING_FOR_FILES  the date was never reconciled (no rule evaluation),
+                        or files were uploaded after the last reconciliation,
+                        AND at least one expected file slot is not LOADED
+                        (missing, still processing, waiting for the CBS date,
+                        or failed).
+     READY_TO_RUN       never reconciled, or files uploaded after the last
+                        reconciliation, and every expected slot is LOADED.
+     CASES_OPEN         reconciled, no newer file, and the date has active
+                        cases (OPEN / IN_PROGRESS / PENDING_APPROVAL /
+                        APPROVED; transaction and settlement cases).
+     FILE_PENDING       (owner Q2, 2026-10-27) reconciled, no newer file, no
+                        active case, but the SSKUPI step is not finished:
+                        reply rows still wait for a file (the generator's
+                        plan for the date has rows), OR a file of the date
+                        (any sequence, _2 included) was never downloaded.
+                        Label "SSKUPI file to generate / download".
+     DONE               reconciled, no newer file, no active case, nothing
+                        waits for a file and every file of the date has been
+                        downloaded at least once. A date with nothing to send
+                        at all (no DRC / TCC / RET / RRC reply rows, so no
+                        file) is DONE without a file.
+   "Reconciled" = a RuleEvaluationRun exists for the date. "Files uploaded
+   after" = any current file of the date has uploaded_at later than the
+   latest rule evaluation's started_at.
+   Fields added:  "status": str, "status_label": str,
+                  "status_detail": str   // one plain sentence, e.g.
+                     "3 expected file(s) are not loaded yet." /
+                     "Files changed since the last run; run again." /
+                     "12 case(s) open." /
+                     "All cases worked. 4 reply row(s) wait for the SSKUPI file:
+                      generate SSKUPI14072026_2.csv." /
+                     "All cases worked. Download SSKUPI14072026.csv." /
+                     "No case open; SSKUPI file(s) generated and downloaded." /
+                     "No case open; nothing to send in an SSKUPI file."
+                   A DONE / FILE_PENDING sentence may end with
+                     " 2 reply row(s) cannot go into a file yet (see the SSKUPI
+                      preview)."  (rows the generator leaves out, e.g. no
+                      numeric code: they do not block DONE but are named), and
+                   any status may end with " The last run failed: <error>."
+   The same status is returned by the dates list, the date detail and the
+   home "day" block. Modules without an NPCI file format (IMPS later) never
+   get FILE_PENDING. Cost: the generator's plan is built only for dates that
+   would otherwise be DONE and still have a reply case in no file (one query
+   finds them for the whole page), so a page of finished dates stays cheap.
+
+A1 GET /api/v1/<module>/summary/   (home page "Today's job", items 1.1 / 1.2)
+   Unchanged keys stay. NEW key "day", returned to ALL five roles, for the
+   summary's "business_date" (today - 1, IST):
+   "day": {
+     "business_date": "2026-07-14",
+     "status": "CASES_OPEN", "status_label": "Cases open",
+     "status_detail": "12 cases open.",
+     "files": {"expected": 60, "present": 58, "missing": 2, "loaded": 57,
+               "processing": 0, "failed": 1, "awaiting_date_selection": 0},
+               // present = expected - missing (slots with a file in any state)
+     "run": {"state": "DONE",            // NOT_RUN | RUNNING | DONE | FAILED
+             "run_id": 41 | null,         // null when results came from the command line
+             "requested_by": "ops1" | null,
+             "finished_at": timestamp | null,
+             "error": "" },
+     "results": {"reconciled_at": timestamp,   // the rule evaluation's finished_at
+                 "rule_set": "v3.3",
+                 "transactions": 70210,         // live match groups
+                 "matched": 69020,              // R09 count of that evaluation
+                 "exceptions": 1003}            // transaction cases of the date
+                | null,                         // null = not reconciled yet
+     "settlement": {"status": "TALLIED" | "UNEXPLAINED" | "NOT_READY",
+                    "status_label": "Tallied",
+                    "unexplained_amount": "0.00"} | null,
+     "cases": {"open": 12, "total": 1004},       // open = active statuses
+     "sskupi": <SSKUPI full block, A1a>,
+     "link": "/upi/dates/2026-07-14"
+   }
+   A1a SSKUPI full block (one date; reads the same plan as the NPCI preview,
+   nothing saved):
+   {
+     "state": "DOWNLOADED",          // NONE | GENERATED | DOWNLOADED
+                                     // (of the date's LATEST file)
+     "state_label": "Downloaded",
+     "file_count": 2,
+     "latest": {"id": 7, "file_name": "SSKUPI14072026_2.csv", "sequence": 2,
+                "row_count": 3, "generated_at": timestamp, "generated_by": "chk1",
+                "download_count": 1,
+                "last_download": {"by": "ops1", "at": timestamp} | null} | null,
+     "files": [ <same shape as latest>, ... ],     // oldest first
+     "waiting_rows": 4,             // rows the NEXT file would hold now
+     "next_file_name": "SSKUPI14072026_3.csv",
+     "held_for_checker": 1,         // left out until a Checker acts
+                                    // (NEEDS_APPROVAL + NEEDS_REVIEW)
+     "left_out": 0,                 // left out for any other reason
+     "changed_since_included": 0,   // cases already in a file that changed since
+     "can_generate": false          // waiting_rows > 0 and the user is a Checker
+   }
+   "Changed since last file" on the tile = waiting_rows > 0 while
+   file_count > 0 (a _2 file would hold something), plus changed_since_included.
+   Cost: about 1 s for a 600-case date (the plan is built once per request).
+   Module without an NPCI format (IMPS later): "sskupi": null.
+
+A2 GET /api/v1/<module>/dates/  and  GET /api/v1/<module>/dates/<date>/   (3.1, 3.4)
+   Each row (and the detail) gets the A0 fields plus a COMPACT SSKUPI block:
+     "status": str, "status_label": str, "status_detail": str,
+     "sskupi": {"state": "GENERATED", "state_label": "Generated, not downloaded",
+                "file_count": 1,
+                "latest": {"id", "file_name", "sequence", "row_count",
+                           "generated_at", "generated_by", "download_count",
+                           "last_download": {"by", "at"} | null} | null,
+                "not_downloaded": ["SSKUPI14072026_2.csv"]}   // files of the date never
+                                                               // downloaded (also in A1a)
+              | null   // module without an NPCI format
+   No waiting / held counts in the list (they need the full plan per date);
+   the date page uses the existing preview (GET .../npci-file/preview/) for
+   those. Queries: 3 more per PAGE (latest upload per date, files, their
+   downloads), not per row.
+   Existing fields (matrix, rule_evaluation, cases, settlement, last_run,
+   run_blockers) are unchanged; the screen just stops showing some of them.
+
+A3 GET /api/v1/<module>/cases/   (6.1, 6.2)
+   NEW filter:  reply_type (csv of DRC, TCC, RET, RRC, NEEDS_REVIEW,
+                SETTLEMENT); unknown value -> 400 errors.reply_type.
+   NEW top-level key, next to count/results:
+     "reply_type_counts": {"DRC": 179, "TCC": 2, "RET": 18, "RRC": 54,
+                           "NEEDS_REVIEW": 607, "SETTLEMENT": 1}
+     = counts for ALL the other filters of the request (status default =
+     active, business_date, rrn, mine, flag, priority, ...) but WITHOUT
+     reply_type, so the tabs show their counts whichever tab is open. One
+     query. All six keys always present.
+   NEW fields per row:
+     "amount": "140.50" | null,
+     "amount_source": "DRC",   // which row it came from, first present of:
+                               //  the reply's NPCI dispute row (DRC / TIMEOUT /
+                               //  ADJUSTMENT), NPCI, CBS, any dispute row.
+                               //  SETTLEMENT case: "SETTLEMENT" = the current
+                               //  result's unexplained amount. null when none.
+     "rule_name": "DRC - debited and already reversed",   // "" for settlement
+     "reply": <reply object>,
+     "npci_file": {"id": 7, "file_name": "SSKUPI14072026.csv"} | null
+                               // the SSKUPI file the case is already in
+   Query count: a fixed number per page (cases, count, tab counts, actions,
+   presences, rule names, files, settlement results), not per row.
+
+A4 GET /api/v1/<module>/cases/<id>/   (6.3, 6.5)
+   NEW fields: "amount", "amount_source", "rule_name", "reply" (as A3) and
+   "what_happened":
+   {
+     "cbs":  {"present": true, "amount": "140.50", "direction": "DEBIT"},
+     "npci": {"present": true, "amount": "140.50", "direction": "DEBIT",
+              "response_code": "U3",
+              "status": "DECLINED"},      // APPROVED (code 00 / RB) | DECLINED | null
+     "reply": <reply object>,
+     "sskupi": {
+       "status": "HELD_FOR_CHECKER",
+                 // IN_FILE           in a generated file (file below)
+                 // NOT_YET_IN_FILE   goes into the next file of file_date
+                 // HELD_FOR_CHECKER  left out until a Checker approves the
+                 //                   reply (NEEDS_APPROVAL: R06b / R07x /
+                 //                   R04b / evidence replies) or clears the
+                 //                   review flag (NEEDS_REVIEW)
+                 // LEFT_OUT          left out for another reason: REJECTED
+                 //                   (waiting for the Maker's new reply),
+                 //                   NO_NUMERIC_CODE, NO_NPCI_ROW, BAD_SOURCE_DATA
+                 // NO_FILE_REPLY     the reply is not an SSKUPI reply, or the
+                 //                   case was closed by a re-run
+       "status_label": "Held until a Checker approves",
+       "reason": "NEEDS_APPROVAL" | null,      // generator Reason value
+       "reason_label": str | null,
+       "detail": "R06b: RRC 501 without a new credit may be approved only ...",
+       "file_date": "2026-07-14" | null,       // the date of the file it is / would be in
+                                               // (RRC: the Adjustment row's date)
+       "file": {"id", "file_name", "file_date", "line", "generated_at",
+                "generated_by", "flag", "code", "reply_source"} | null,   // IN_FILE only
+       "changed_since_included": false         // IN_FILE only: reply changed /
+                                               // flagged / closed since
+     }
+   }
+   "what_happened" is null for a SETTLEMENT case (its page keeps "settlement").
+   6.5 button labels: no transition change needed. The detail already has
+   everything:
+     - "submit" in available_transitions: "Submit reply <reply.label>"
+       (reply.source is RULE; the Maker may still pick another reply in the
+       form, so label it from the form's current choice once changed).
+     - "approve" / "reject": reply.source is SUBMITTED and reply.label is the
+       Maker's reply: "Approve <reply.label>".
+     - Every transition answer (POST .../cases/<id>/<name>/) returns this same
+       detail, so the new fields are there after each click.
+   The existing "npci_file" field stays (same data as sskupi.file).
+
+A5 Approvals inbox (7.1) - NO CHANGE NEEDED.
+   GET /api/v1/<module>/settings/pending/?page_size=1 already returns both
+   tab counts in one call:
+     "count"                              -> Settings changes (N)
+     "cases_awaiting_approval": {"count", "query": {"status": "PENDING_APPROVAL"}}
+                                          -> Cases (N)
+   The Cases tab lists GET /cases/?status=PENDING_APPROVAL (now with reply,
+   amount and rule_name per row, A3). Any Checker may approve any pending
+   case (maker-checker design), so "awaiting me" = all pending cases; a case
+   the Checker submitted shows self_approval = true. The home summary's
+   checker block (awaiting, settings_awaiting) is unchanged.
+
+A6 GET /api/v1/<module>/settings/response-codes/   (7.2)
+   NEW fields per code:
+     "reply_type": "DRC",            // DRC | TCC | RET | RRC | OTHER (NPCI response codes)
+     "in_sskupi_file": true,         // the flag is an SSKUPI reply flag
+     "sskupi_text": "Online Reversal" | null,
+                                     // EXACT specifyother text the generator
+                                     // writes today (= description); null when
+                                     // not an SSKUPI reply
+     "sskupi_ready": true,           // in_sskupi_file and the numeric code is known
+     "sskupi_problem": null | "specifyother (description) contains characters the
+                                file cannot hold: ','"
+                                     // a reply with this text would be left out
+                                     // (BAD_SOURCE_DATA)
+   NEW top-level key (whole table of the module, same flag / known filters,
+   not just the page):
+     "reply_types": [{"value": "DRC", "label": "DRC (Debit Reversal Confirmation)",
+                      "count": 4}, ...]      // SSKUPI file order DRC, RRC, TCC, RET, then OTHER
+   NEW ordering: ?ordering=reply_type -> SSKUPI file order, then code.
+   (Default order unchanged: flag, code, description.) The table has a few
+   dozen codes at most: page_size=500 gets all of it in one call.
+
+--------------------------------------------------------------------------------
+B. U3 - LOOKUP, SETTLEMENT AND AUDIT
+--------------------------------------------------------------------------------
+
+B1 GET /api/v1/<module>/rrn/<rrn>/   (4.5 Find an RRN)
+   Roles: all five (results.view). Exact match only (no partial search).
+   <rrn>: letters and digits, 1-20 characters, after trimming spaces and a
+   leading apostrophe (Excel); anything else -> 400 errors.rrn.
+   Query: include_replaced=true|false (default false: transactions replaced
+   by a later run are left out).
+   200 (always, even when nothing is found):
+   {
+     "rrn": "900000000101",
+     "found": true,
+     "transactions": [               // match groups, newest business date first
+       {"id": 5501, "business_date": "2026-07-14", "is_superseded": false,
+        "processing_status": "MATCHED",
+        "rule_code": "R01" | null, "rule_name": str | null,   // current rule result
+        "cbs": {"present", "amount", "direction"},
+        "npci": {"present", "amount", "direction", "response_code"},
+        "link": "/upi/dates/2026-07-14/groups/5501"}
+     ],
+     "cases": [                       // newest business date first
+       {"id": 4512, "business_date": "2026-07-14", "case_type": "TRANSACTION",
+        "status": "OPEN", "rule_code": "R01", "rule_name": str,
+        "reply_label": "DRC 102 - Online Reversal" | null,
+        "link": "/upi/cases/4512"}
+     ],
+     "file_rows": [                   // rows of loaded files with this RRN, max 100,
+                                      // newest business date first (shows an RRN that is
+                                      // in a file but in no transaction, e.g. a duplicate)
+       {"register_type": "DRC", "business_date": "2026-07-14",
+        "uploaded_file_id": 88, "filename": "Debit Reversal ... .csv",
+        "amount": "140.50", "direction": "DEBIT", "link": "/upi/files/88"}
+     ],
+     "replaced_count": 0             // replaced transactions not listed (include_replaced=false)
+   }
+   SPA: one transaction -> open its link; several -> a small chooser.
+   Nothing is logged (a read, like every other read).
+
+B2 GET /api/v1/<module>/files/<id>/original/   (4.6 Download original)
+   Roles: all five (files.view). Streams the stored upload byte for byte.
+   200: Content-Type from the file name (text/csv, application/vnd.ms-excel,
+        application/zip ...; application/octet-stream when unknown);
+        Content-Disposition: attachment; filename="<the name as uploaded>";
+        Content-Length; X-Content-SHA256: <sha256 recorded at upload>;
+        Cache-Control: no-store.
+   Refusals (nothing logged):
+     404 {"detail": "No such file."}                       unknown id / other module
+     404 {"detail": "The original of this file is not stored by the app (it was
+          loaded outside the upload page).", "reason": "NOT_STORED"}
+          - the stored path is outside FILE_PROCESSING_WORK_DIR/uploads/
+            (path safety: the resolved path, symlinks followed, must be
+            inside that folder, else nothing is served)
+     410 {"detail": "The stored original of this file is missing on the
+          server.", "reason": "MISSING"}
+     410 {"detail": "The stored original of this file has changed since it
+          was uploaded (size differs); it is not served.", "reason": "CHANGED"}
+   Audit: every successful download writes core.OperationLog with the NEW
+   operation type ORIGINAL_FILE_DOWNLOADED ("Original file downloaded"),
+   uploaded_file_id = the file, business_date = the file's business date
+   (CBS waiting for its date: the batch date), details {"filename",
+   "sha256", "size_bytes"}. It appears in /audit/operations/ (link = the
+   file page), in the file's "history" and in /audit/meta/ operation_types.
+   NOTE (dev data): the 172 files on the dev database were loaded from the
+   command line from another folder, so all of them answer NOT_STORED.
+   Files uploaded through the upload page are stored and download fine.
+
+   GET /api/v1/<module>/files/<id>/  - NEW fields:
+     "original": {"available": true,
+                  "reason": null | "NOT_STORED" | "MISSING" | "CHANGED",
+                  "message": "" | <the refusal detail above>,
+                  "download_url": "/api/v1/upi/files/88/original/" | null},
+     "downloads": [{"by": "ops1", "at": timestamp}, ...],   // newest first
+     "download_count": 1
+
+B3 GET /api/v1/<module>/dates/<date>/settlement/   (5.1, 5.2)
+   NEW top-level key "summary" (null when there is no settlement result):
+   {
+     "status": "UNEXPLAINED", "status_label": "Unexplained difference",
+     "tallied": false,
+     "reasons": [str],
+     "cbs_net": "-12500.00",        // SOP check (C1): CBS deposits - withdrawals
+     "ntsl_net": "-12000.00",       // NTSL TXN debit - credit
+     "difference": "-500.00",
+     "explained": "-300.00",        // sum of explained_by_type where in_sop_check
+     "unexplained": "-200.00",      // SOP residual
+     "cycles_unexplained_amount": "200.00",  // result.unexplained_amount
+     "cycles_unexplained_count": 1,
+     "unexplained_entries": 2,      // rows of kind=unexplained (B4)
+     "explained_by_type": [
+       {"type": "DRC", "label": "DRC (debited, not reversed)", "count": 2,
+        "amount": "-200.00", "in_sop_check": true,
+        "rules": [{"rule": "R02", "g_rule": "G07",
+                   "g_label": "DRC debited, not reversed (CBS side)",
+                   "count": 2, "amount": "-200.00"}]},
+       {"type": "RET", ...}, {"type": "RRC", ...}, {"type": "TCC", ...},
+       {"type": "OTHER", "label": "Other explained items", ...},   // R12 (G05), R13 (G08)
+       {"type": "LATE_ADJUSTMENTS", "label": "Adjustments in the dispute cycles (DC1 / DC2)",
+        "count": 3, "amount": "150.00", "in_sop_check": false, "rules": [...G09]}
+     ],   // only types with count > 0; order DRC, TCC, RET, RRC, LATE_ADJUSTMENTS, OTHER
+     "notes": {},                   // owner Q3 pending: today always {}. If ops
+                                    // decide late adjustments are only a note, the
+                                    // LATE_ADJUSTMENTS type leaves explained_by_type and
+                                    // appears here as {"late_adjustments": {"label",
+                                    // "count", "amount"}} (one server switch; the SPA
+                                    // should show notes when present)
+     "cbs_rows_without_valid_rrn": {"count": 2, "amount": "4677.72"},
+                                    // outside RRN matching and the SOP check
+     "self_check_failed": false,    // show the NTSL self-check on top only if true
+     "settlement_case": {"id": 4600, "status": "OPEN", "link": "/upi/cases/4600"} | null
+   }
+   How each type is decided: SOP items (snapshot sop.items, G04-G08) by the
+   rule's default reply flag: R02 -> DRC, R05 -> RET, R06b -> RRC; R12 and
+   R13 have no SSKUPI reply -> OTHER. TCC has no SOP item today (R04a is
+   settled, G03) and appears only if a rule with a TCC default becomes an SOP
+   item. LATE_ADJUSTMENTS = the G09 Adjustment rows assigned to DC1 / DC2
+   (they explain NTSL's Net Adjusted Amount, NOT the SOP difference, hence
+   in_sop_check false). Owner question Q3.
+   Sentence the SPA can write:
+     tallied:  "Tallied. CBS Rs {cbs_net} = NTSL Rs {ntsl_net} after Rs {explained}
+                explained by {types}."
+     else:     "Not tallied. Rs {unexplained} unexplained ({unexplained_entries}
+                entries). See settlement case #{settlement_case.id}."
+   NOT_READY result: status NOT_READY, the SOP amounts null, explained_by_type [].
+
+B4 GET /api/v1/<module>/dates/<date>/settlement/transactions/   (5.3)
+   and GET /api/v1/<module>/cases/<id>/settlement/transactions/
+   NEW kind=unexplained: every entry no rule explains, merged from the
+   result's snapshot, one shape:
+     {"source": "NPCI_NOT_ATTRIBUTED",
+        // NPCI_NOT_ATTRIBUTED   NTSL-settled NPCI row no G rule explains
+        // NPCI_NO_DIRECTION     NTSL-settled NPCI row with no debit / credit
+        // ADJUSTMENT_NOT_SIGNED Adjustment row whose type is not in the G09 sign
+        //                       table, or SSK on both / neither side
+        // ADJUSTMENT_NOT_ASSIGNED Adjustment row whose raised time is unknown or
+        //                       on another date
+        // NTSL_LINE_NOT_COVERED non-zero NTSL line no G rule covers (rrn null)
+      "source_label": str, "rrn": str | null, "rule": str | null,
+      "g_rule": str | null, "cycle": str | null, "side": str | null,
+      "amount": "100.00" | null, "detail": str}
+   Filters rrn, rule, cycle, side apply as for the other kinds.
+   "counts" gains "unexplained". NEW filter unexplained=true on kind=npci:
+   only rows with g_rule UNATTRIBUTED. Other kinds unchanged.
+
+B5 GET /api/v1/audit/everything/   (9.1, 9.2)
+   Roles: Administrator, Auditor (audit.view), like the other audit lists.
+   One timeline of case events, settings events, logins and operations,
+   newest first (ordering=created_at for oldest first), paged.
+   Filters (all optional; same meaning as the existing audit lists):
+     date_from, date_to   inclusive IST dates on created_at
+     user                 username, case-insensitive
+     source               csv of case_event, settings_event, user_activity,
+                          operation (the four existing tabs)
+     event_type           csv; any value of the four lists' event types
+                          (/audit/meta/); each applies to the source(s) it
+                          belongs to, and a source with none of the given
+                          types is left out
+     module               slug; logins have no module, so with a module
+                          filter logins are left out
+     ordering             -created_at (default) | created_at
+   GET /api/v1/audit/meta/ gains "everything_sources": [{"value", "label"}]
+   (the source filter choices).
+   Row:
+   {
+     "id": "case_event:9876",          // unique across sources; settings events are
+                                       // "settings_event:<kind>:<id>" (kind as /audit/settings-events/)
+     "source": "case_event",           // case_event | settings_event | user_activity | operation
+     "source_label": "Case event",
+     "event_id": 9876,
+     "created_at": timestamp,
+     "module": "upi" | null,           // null for logins
+     "username": "chk1" | null,        // null = the system
+     "event_type": "APPROVED", "event_type_label": "Approved",
+     "summary": "chk1 approved reply DRC 102 - Online Reversal on case #4512",
+     "link": "/upi/cases/4512" | null,
+     "details": { the row exactly as the source's own list returns it
+                  (/audit/case-events/, /audit/settings-events/,
+                  /audit/user-activity/, /audit/operations/) }
+   }
+   Summary sentences (server-made, plain, no amounts):
+     case events   "<user> took case #N", "... submitted reply DRC 102 -
+                   Online Reversal on case #N", "... approved reply ... on case
+                   #N" (+ " (self-approved)"), "... rejected reply ...", "...
+                   marked case #N done", "... added a remark on case #N",
+                   "The system created case #N", "The system changed the rule on
+                   case #N from R13 to R01", ...
+     settings      "<user> proposed / approved / rejected <item>", e.g.
+                   "chk1 approved the response code change 'Edit: DRC 102 -
+                   Online Reversal'"; "NTSL mapping v3 was retired (replaced)"
+     logins        "ops1 logged in", "ops1 logged out", "Failed login for ops9"
+     operations    "ops1 uploaded <file> for 14 Jul 2026", "ops1 started
+                   reconciliation run #41 for 14 Jul 2026", "chk1 generated
+                   SSKUPI14072026.csv (12 rows)", "ops1 downloaded
+                   SSKUPI14072026.csv", "ops1 downloaded the original file
+                   <file>", ...
+   Performance: one UNION ALL of (source, id, created_at) over the six
+   tables with the filters applied in each branch, ordered and LIMITed in
+   the database (created_at is indexed on the large tables), then one query
+   per source for the page's rows only. The total "count" is a COUNT over
+   the same union.
+
+--------------------------------------------------------------------------------
+C. NOT CHANGED / NOT NEEDED
+--------------------------------------------------------------------------------
+  - No new /me capability: lookup and original download use files.view /
+    results.view (all five), the audit timeline uses audit.view.
+  - No new database table or column. One migration: core.OperationLog's
+    operation choices gain ORIGINAL_FILE_DOWNLOADED (choices only, no
+    schema change).
+  - Transition endpoints: unchanged (A4 note).
+  - The approvals inbox: existing endpoints (A5).
+
+--------------------------------------------------------------------------------
+D. QUESTIONS FOR THE OWNER (answered 2026-10-27, kept for the record)
+--------------------------------------------------------------------------------
+  Q1 answer: keep ONE "Needs review" tab. No change.
+  Q2 answer: DONE only once the file is generated and downloaded and nothing
+     waits -> FILE_PENDING added (A0).
+  Q3 answer: waiting on ops; late adjustments stay in the breakdown, with a
+     one-line switch to move them to "notes" (B3).
+
+  Q1 The "Needs review" tab holds every case that has no SSKUPI reply: CBS-only
+     (R13), chargebacks, the R12 "pass an adjustment entry in CBS" cases and
+     the manual-investigation rules. Is that what you want, or should R12
+     and chargebacks get their own tab?
+  Q2 A date is "Done" when no case of it is open. Should it also wait until
+     the SSKUPI file is generated and downloaded?
+  Q3 On the settlement page, "late adjustments" is taken as the Adjustment
+     rows of the dispute cycles (DC1 / DC2). Ops' tally sheet may group them
+     differently - can ops confirm with one real tally sheet?

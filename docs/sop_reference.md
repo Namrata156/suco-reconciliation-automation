@@ -114,6 +114,34 @@ Transaction Presence Matrix concept in `tracker.md`:
    reason code 501 ("manually credited to customer post reconciliation").
    Chargebacks (if any) are separately accepted or declined.
 
+### CBS GL flow and manual credits (owner, 2026-11-06)
+
+- SSK's outward UPI debits go through the CBS general ledger: the amount
+  is first credited to the CBS GL, then sent to the other bank via the
+  switch.
+- If the credit to the other bank fails, it is **auto-reversed**. In the
+  CBS GL this shows as the same RRN and the same amount in both the
+  withdrawal and the deposit columns — the "reversed" check above
+  (`reconciliation/presence.py` `_split_pair` → `cbs_reversed`).
+- Only entries the system posts itself (like auto-reversals) appear in the
+  CBS GL. Payments that are **not** auto-reversed are credited to the
+  customer **manually**, and those manual credits do **not** appear in the
+  CBS GL. The only proof of a manual credit is the CBS reference the Maker
+  enters when marking the case done (DRC 103 / manual credit + RRC 501);
+  there is no data feed for it.
+
+### Ops' workbook layout: eff / rev (owner, 2026-11-06)
+
+- All NPCI files (DRC, Adjustment, Timeout, Issuer, Acquirer, Merchant
+  Issuer, Merchant Acquirer) are pasted into **sheet 10** of ops' working
+  Excel file.
+- **eff** is built on sheet **1535** (the CBS GL 1535 extract) with a
+  VLOOKUP by RRN against sheet 10.
+- **rev** = the switch's auto-reversals as they show in CBS GL 1535: the
+  duplicate-RRN rows (same RRN and amount in both the withdrawal and the
+  deposit column). It is **built from CBS**, not a separate switch file —
+  consistent with "no switch file" (owner, 2026-09-13).
+
 ## Raw Data / Merchant Raw Data structure
 
 Each covers the whole day's debit and credit transactions across all
@@ -147,13 +175,42 @@ format, separating debit amount, credit amount, adjustment amount,
 switching fee, and GST. The bank's own CBS-effected amount should match
 NTSL's final settlement amount. Then:
 
-> **(matched-transaction deposit − withdrawal) − (NTSL credit − debit)
-> should net to zero.** A non-zero difference should equal the sum of
+> **(CBS GL 1535 deposit − withdrawal) − (NTSL debit − credit)
+> = explained items.** A non-zero difference should equal the sum of
 > not-yet-credited Timeout amounts plus effected-but-not-reversed DRC
-> amounts.
+> amounts (plus the further items in `docs/phase4_gap_rules_draft_v1.txt`
+> C2).
 
-This is the concrete formula to build into Phase 4's NTSL validation once
-that component's design starts.
+**Sign corrected 2026-10-11 (C1, approved by owner as O2;
+`docs/phase4_gap_rules_draft_v1.txt`).** This doc originally said
+"(NTSL credit − debit)", which gives twice the net on real data: GL 1535
+deposits are SSK customers paying out, which NTSL books as **debits**.
+Ops (and the owner, 2026-11-06) describe the same check as "1535 deposit −
+withdrawal should match settlement credit − debit" — that wording is from
+the bank's side, after ops make debits negative (step 5 below); it is the
+same check. Built as check C1 in `settlement/reconcile.py`.
+
+### Ops' NTSL working sheet (owner, 2026-11-06)
+
+How ops work the NTSL file by hand today:
+
+1. Filter on the settlement amount and total both the credit and the
+   debit columns.
+2. Debit total > credit total → SSK pays this cycle (look at the debit
+   side); credit > debit → SSK receives (credit side). This only shows
+   the direction of money (system: net = credit − debit, negative = SSK
+   pays).
+3. Copy into a monthly workbook/sheet named like **"UPI NOV NTSL 2026"**.
+4. Debit amounts are entered as negative.
+5. Per cycle: a column for the amount debited, a column for the amount
+   credited, and a column for the difference (credit − debit).
+6. Filter the description on "fee", "does not contain GST": a **credit
+   fee** column and a **debit fee** column, each totalled.
+7. GST is calculated from those fee totals and checked against NTSL's
+   own GST lines. *(Not done by the system yet — open gap in
+   `tracker.md`.)*
+8. 1535 deposit − withdrawal is matched against the settlement net (the
+   check above).
 
 ## Dispute update actions (in the NPCI portal, maker → checker)
 

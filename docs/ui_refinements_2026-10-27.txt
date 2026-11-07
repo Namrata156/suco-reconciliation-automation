@@ -1,0 +1,146 @@
+UI REFINEMENTS - OWNER WALK-THROUGH, 2026-10-27
+=================================================
+
+The owner walked through the built app screen by screen with the PM
+(after rejecting two redesign mock-ups: "the original is good but needs
+refinement"). Every item below was accepted by the owner unless marked
+NO. Purpose of the app, in the owner's words: reconciliation, (SSKUPI)
+file generation, auditing, reports and dashboard - not browsing rows,
+since ops and Checkers have the source files in Excel.
+
+Effort figures are PM planning estimates, not engineer estimates.
+
+
+1. HOME ("My work")
+   1.1 "Today's job" strip at the top: Files -> Run -> Cases -> SSKUPI
+       file, each step a link with its state.
+   1.2 SSKUPI file tile (generated / downloaded) with a button to it.
+   1.3 Hide or grey out tiles that are 0.
+
+2. UPLOAD FILES
+   2.1 Review step shows expected vs. in this batch vs. still missing
+       for the date.
+   2.2 Live per-file status after uploading (Processing -> Loaded /
+       Failed); a "Go to <date>" button once all are loaded.
+   2.3 Confirm the CBS business date on the upload page itself.
+   2.4 Drag-and-drop box.
+
+3. BUSINESS DATES AND ONE DATE
+   3.1 Date page reordered as numbered steps of the day, each with a
+       tick or "waiting": Files -> Run -> Results -> Settlement ->
+       Cases -> SSKUPI file. Checklist at the top; SSKUPI file last and
+       prominent.
+   3.2 Plain words: "Reconciled at 10:42 - N transactions matched, N
+       exceptions" replaces the Presence matrix / Rule evaluation tiles;
+       technical detail in a collapsed "Details".
+   3.3 Earlier runs and History collapsed by default.
+   3.4 Dates list: one plain Status column (Waiting for files / Ready to
+       run / Cases open / Done) replaces Matrix + Rule evaluation; new
+       SSKUPI file column.
+   3.5 (from 4) Date page lists only the rules that occurred that day,
+       with plain names; no 0-count rows. Rule definitions stay in the
+       approved rule document.
+
+4. RESULTS
+   4.1 Summary in ops' terms with amounts - NO.
+   4.2 Simpler list with fewer columns / filters - NO.
+   4.3 Export to Excel button on the list - NO.
+   4.4 Rename the jargon everywhere: Match groups -> Transactions;
+       Superseded -> Replaced by a later run; Overlay rows ->
+       Adjustments; Status category -> Outcome.
+   4.5 The per-date results list (~70,000 rows, 9 filters) is replaced
+       by one "Find an RRN" box (in the header, every page) that opens
+       that transaction's page. Counts stay on the date page and the
+       dashboard.
+   4.6 "Download original" button on each uploaded file's page: the
+       stored file exactly as uploaded. All 5 roles; every download
+       logged like the SSKUPI downloads.
+
+5. SETTLEMENT
+   5.1 Lead with one plain sentence: "Tallied. CBS Rs X = NTSL Rs X
+       after Rs Y explained by ..." or "Not tallied. Rs X unexplained
+       (N entries). See settlement case #N". SOP-check row under it.
+   5.2 "Explained" broken down by type (DRC / TCC / RET / late
+       adjustments: count and amount), like ops' tally sheet.
+   5.3 Contributing transactions -> only the unexplained entries.
+   5.4 Cycle x side table, NTSL self-check, versions used and earlier
+       results collapsed under "Details"; the self-check shows on top
+       only when it fails.
+   5.5 "Results (all dates)" and "Settlement (all dates)" removed from
+       the MENU only - they are the spec's Daily reconciliation and
+       Settlement reports and stay on the Reports page.
+
+6. EXCEPTION CASES AND ONE CASE
+   6.1 Queue tabs by reply type with counts: DRC | TCC | RET | RRC |
+       Needs review | Settlement. Only Whose cases / Date / RRN filters
+       visible; the rest under "More filters".
+   6.2 Columns: add Amount and NPCI reply (e.g. "DRC 102 - Online
+       Reversal"); plain rule name instead of the code.
+   6.3 "What happened" box at the top of a case: CBS vs. NPCI, the
+       reply, and the SSKUPI status (in file X / not yet in a file /
+       held until a Checker approves). Closes the tracker item "case
+       page should show its NPCI file reply".
+   6.4 Facts table, rule set, evaluated time and case type under a
+       collapsed "Details".
+   6.5 The main button names the action: "Submit reply DRC 102 -
+       Online Reversal" / "Approve DRC 102".
+
+7. APPROVALS AND SETTINGS
+   7.1 One "Approvals" inbox for Checkers, tabs Cases (N) | Settings
+       changes (N); replaces the "Awaiting my approval" and "Pending
+       approvals" menu items.
+   7.2 Response codes grouped by reply type, each showing its exact
+       SSKUPI text (DRC 102 -> Online Reversal); Source and Used by
+       rules move into the code's details.
+   7.3 Every history section collapsed by default (change requests,
+       mapping history, tolerance history, dates on an older tolerance).
+   7.4 One plain sentence at the top of the NTSL mapping and Tolerance
+       tabs explaining what they are.
+
+8. REPORTS
+   8.1 New "NPCI files" report: every SSKUPI file generated (incl. _2
+       files), rows, generated by/when, downloaded by/when. Replaces the
+       tracker's "all-files list page".
+   8.2 Hide the "Not available yet" cards until each report is built.
+   8.3 SCOPE CHANGE - a dashboard page with charts over the last 30
+       days: volume per day, exceptions by reply type, tallied / not
+       tallied per day, open cases by age, SSKUPI generated/downloaded
+       per day. Reverses Phase 6 decision R9 (no charts). Needs a
+       charts package (same IT approval question as openpyxl).
+   (Excel download on every report is already in the approved Phase 6
+   design, R1; no new decision.)
+
+9. ALERTS, AUDIT TRAIL, USERS
+   9.1 Audit trail "Everything" tab first: one timeline of all event
+       kinds, newest first; the four existing tabs stay as filters.
+   9.2 One plain sentence per audit entry; raw details behind "Details".
+   9.3 Alerts through the bell only (menu item removed; the bell gets
+       "See all alerts").
+   9.4 Menu from 16 items to 11:
+         Home, Dashboard, Upload files, Business dates (files list
+         opens from here), Exception cases ("My cases" becomes a
+         filter), Approvals, Reports, Settings,
+         -- Admin & audit --: Audit trail, Users and roles,
+         Edit users (Django admin)
+       plus the "Find an RRN" box in the header.
+
+
+PROPOSED BUILD ORDER (PM, for the owner to approve)
+---------------------------------------------------
+U1  Wording and layout only, frontend: 1.3, 3.2 (wording), 3.3, 3.5,
+    4.4, 5.4, 5.5, 6.4, 7.3, 7.4, 8.2, 9.3, 9.4 (without Dashboard).
+    ~2 frontend days.
+U2  The day's flow and the SSKUPI file everywhere: 1.1, 1.2, 3.1, 3.4,
+    6.1, 6.2, 6.3, 6.5, 7.1, 7.2. Needs new fields from the API
+    (SSKUPI status per date and per case, reply/amount on the case
+    list, counts per reply type). ~3-4 frontend + ~2 backend days.
+U3  Lookup, settlement and audit: 4.5, 4.6, 5.1, 5.2, 5.3, 9.1, 9.2.
+    ~2 frontend + ~1.5 backend days.
+U4  Upload page: 2.1-2.4. ~1.5 frontend + ~0.5 backend days.
+U5  Scope change: 8.1 NPCI files report, 8.3 dashboard.
+    ~3-5 frontend + ~1-2 backend days.
+
+Total ~11.5-14.5 frontend and ~5-6 backend days; with both engineers in
+parallel roughly 2-3 weeks. This is on top of Phase 6 slices 6.2-6.4
+still owed and Phase 7 (UAT). The 2026-10-30 deadline cannot hold with
+this scope; re-baselining is the owner's call.
