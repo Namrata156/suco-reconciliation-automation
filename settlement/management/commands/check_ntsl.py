@@ -67,6 +67,14 @@ class Command(BaseCommand):
             )
             for reason in c.failures:
                 out.write(f"       - {reason}")
+            # Fee GST check: warning only, does not change the status above.
+            for r in (c.gst_check or {}).get("rows", []):
+                if not r["within"]:
+                    out.write(self.style.WARNING(
+                        f"       ! GST warning {r['fee_category']} {r['side']}: fee {r['fee']}, expected GST "
+                        f"{r['expected_gst']}, NTSL GST {r['ntsl_gst']}, difference {r['difference']}, "
+                        f"tolerance {r['tolerance']} ({r['note']})"
+                    ))
         counts = {s: sum(1 for c in summary.checks if c.status == s) for s in CheckStatus.values}
         if summary.lines_without_cycle:
             out.write(self.style.WARNING(f"{summary.lines_without_cycle} NTSL line(s) have no settlement cycle"))

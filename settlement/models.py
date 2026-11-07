@@ -255,6 +255,15 @@ class NtslCycleCheck(models.Model):
     ntsl_final_net = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     computed_final_net = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
 
+    # Fee GST check (settlement.fee_gst, owner 2026-11-06): WARNING ONLY, never part of status/failures.
+    gst_check = models.JSONField(
+        default=dict, blank=True,
+        help_text="{rate, tolerance, rows: [{fee_category, gst_category, side, fee, "
+                  "fee_txn_count, expected_gst, ntsl_gst, difference, tolerance, within, note}]}; "
+                  "{} when not checked (MISSING cycle, or checked before 2026-11-06)",
+    )
+    gst_warning = models.BooleanField(default=False, help_text="Some fee GST row is not within tolerance")
+
     checked_at = models.DateTimeField()
     source = models.CharField(max_length=150, blank=True, help_text="e.g. manage.py check_ntsl")
     is_current = models.BooleanField(default=True)

@@ -5,7 +5,14 @@ module + business date, applying the owner-approved gap rules G01-G10 / Z
 
     reconcile_settlement_date(module, date, source=...) -> ReconcileOutcome
 
-Steps, all in one transaction:
+Step 0, in its own short transaction first: ANALYZE the tables the run
+has just bulk-written (refresh_planner_statistics; PostgreSQL only). On a
+freshly filled database autovacuum may not have analyzed them yet, and with
+no statistics the planner runs _npci_side's correlated subqueries as a scan
+of every match group of the date per NPCI row (hours instead of seconds;
+e2e 2026-11-07).
+
+Steps 1-6, all in one transaction:
   1. Readiness. The S2 self-check is run first (settlement.selfcheck, incl.
      the O4 switching-fee count); every active cycle must PASS. Every live
      match group of the date must have a current rule result, evaluated
@@ -42,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.models import Count, Exists, F, Func, Max, OuterRef, Subquery, Sum, TextField, Value
 from django.utils import timezone
 
@@ -436,9 +443,36 @@ def _supersede(payment_module, business_date, now) -> None:
                                     is_current=True).update(is_current=False, superseded_at=now)
 
 
-@transaction.atomic
+# Tables the settlement queries join that were just bulk-written: facts by
+# file loading, presence / match groups by the presence matrix, rule results
+# by the evaluator. ANALYZE samples a fixed number of rows (~30K at the
+# default statistics target), so its cost does not grow with the tables.
+STATISTICS_MODELS = (TransactionFact, TransactionMatchGroup, RegisterPresence, RuleResult)
+
+
+def refresh_planner_statistics() -> None:
+    """ANALYZE STATISTICS_MODELS' tables (PostgreSQL only; ~2 s on a 78K-row
+    day). Its own short transaction when called outside one, so the lock it
+    takes is not held through the settlement. A failure is logged, not
+    raised: stale statistics make the run slow, not wrong."""
+    if connection.vendor != "postgresql":
+        return
+    tables = ", ".join(connection.ops.quote_name(m._meta.db_table) for m in STATISTICS_MODELS)
+    try:
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute(f"ANALYZE {tables}")
+    except DatabaseError:
+        logger.warning("ANALYZE before settlement failed; continuing with the current statistics", exc_info=True)
+
+
 def reconcile_settlement_date(payment_module: PaymentModule, business_date: date, *, source: str = "",
                               sync_case: bool = True) -> ReconcileOutcome:
+    refresh_planner_statistics()
+    return _reconcile(payment_module, business_date, source=source, sync_case=sync_case)
+
+
+@transaction.atomic
+def _reconcile(payment_module: PaymentModule, business_date: date, *, source: str, sync_case: bool) -> ReconcileOutcome:
     now = timezone.now()
     tolerance = active_tolerance(payment_module)
     try:

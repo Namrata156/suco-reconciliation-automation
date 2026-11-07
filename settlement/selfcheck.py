@@ -27,6 +27,10 @@ Slice 2 (O4, owner 2026-10-11) adds one more check per cycle: the NPCI
 switching-fee lines' transaction count must equal the remitter transaction
 count incl. RB (true on every real cycle: 45,366 / 46,990 / 45,695 a day).
 The interchange-fee (FEE) line counts are not checked.
+
+Fee GST check (owner 2026-11-06, settlement.fee_gst): GST at 18% on each
+fee category, per side, against NTSL's own GST lines. WARNING ONLY: stored
+in gst_check / gst_warning, never in status or failures.
 """
 from __future__ import annotations
 
@@ -40,6 +44,7 @@ from django.utils import timezone
 
 from core.models import PaymentModule, SettlementCycle
 from settlement.categories import SECTION_BY_CATEGORY, NtslCategory, Section
+from settlement.fee_gst import check_fee_gst
 from settlement.mapping import active_classifier
 from settlement.models import CheckStatus, NtslCycleCheck
 from transactions.models import NtslSettlementLine
@@ -152,15 +157,20 @@ def _evaluate(lines, classifier) -> dict:
             f"{remitter} (O4)"
         )
 
+    category_totals = {
+        cat: {**t, "debit": _money(t["debit"]), "credit": _money(t["credit"])} for cat, t in sorted(totals.items())
+    }
+    # Warning only (owner 2026-11-06): kept out of status and failures on purpose.
+    gst_check, gst_warning = check_fee_gst(category_totals)
     out.update(
         status=CheckStatus.FAIL if failures else CheckStatus.PASS,
         failures=failures,
         line_count=len(lines),
         unmapped_count=len(unmapped),
         unmapped_lines=unmapped,
-        category_totals={
-            cat: {**t, "debit": _money(t["debit"]), "credit": _money(t["credit"])} for cat, t in sorted(totals.items())
-        },
+        category_totals=category_totals,
+        gst_check=gst_check,
+        gst_warning=gst_warning,
     )
     return out
 
