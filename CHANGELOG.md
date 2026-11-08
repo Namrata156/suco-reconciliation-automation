@@ -12,6 +12,10 @@ don't duplicate this history there.
   monthly NTSL workbook ("UPI NOV NTSL 2026"); its check is already
   covered by the NTSL self-check and the GST check. `.gitignore`: ops'
   monthly NTSL workbooks (`docs/UPI * NTSL *.xlsx`, real amounts).
+- **Pinned `recharts` 3.10.1** in `frontend/package.json` (owner), the
+  version @mantine/charts already used; lockfile only lost npm's `peer`
+  flags. Vitest 256/256, type-check and build clean. Scratch DB
+  `reconciliation_perf` and `D:/tmp/perf_work` dropped (owner).
 
 ## 2026-11-07
 
