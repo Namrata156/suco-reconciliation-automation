@@ -212,6 +212,31 @@ How ops work the NTSL file by hand today:
 8. 1535 deposit − withdrawal is matched against the settlement net (the
    check above).
 
+**The workbook itself** (`docs/UPI NOV NTSL 2026.xlsx`, git-ignored — real
+amounts; seen 2026-11-08): one sheet, one row per date × cycle (1C–10C,
+DC1, DC2), the month pre-filled. Columns:
+
+| Col | Header | Content |
+|---|---|---|
+| A | ICICI AMOUNT | NTSL "Final Settlement Amount" for the cycle, signed (negative = SSK pays) — taken from the `upi_ntslssk` NTSL file (owner, 2026-11-08) |
+| B | DATE | date + cycle and its time window |
+| C / E | cycle credit / debit | the cycle's transaction credit / debit |
+| D, F, G, H | diff wid cbs | (empty on every filled row) |
+| I | | `C − D − E + F − G + H` — in practice C − E |
+| J / K | rev / time out | (empty, unused) |
+| L | adj | DC1 / DC2 Net Adjusted Amount only |
+| M / N | cr GST | credit fees excl. GST (all fee types together) / `M × 18%`, unrounded |
+| O / P | dr GST | debit fees excl. GST / `O × 18%`, unrounded |
+| Q / R | PENALTY CHRG / GST | (empty) |
+| S | | `D + I + M + N − O − P + L + Q + R` — the settlement rebuilt |
+| T | | `S − A`; within ±₹0.075 on 1–6 Nov (the unrounded GST) |
+
+So ops rebuild each cycle's final settlement from its parts and check it
+against NTSL's own final figure. The system does the same at ₹0 in the
+NTSL self-check (`settlement/selfcheck.py`: Sub Totals → Settlement Amount
+→ Final), and checks GST per fee pair and side against NTSL's GST lines
+(`settlement/fee_gst.py`, ₹1). No gap.
+
 ## Dispute update actions (in the NPCI portal, maker → checker)
 
 - **DRC update**: search by date + RRN, open "Debit Reversal Confirmation

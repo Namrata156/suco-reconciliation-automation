@@ -6,6 +6,13 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-11-08
+
+- **Docs:** `docs/sop_reference.md` — column layout and formulas of ops'
+  monthly NTSL workbook ("UPI NOV NTSL 2026"); its check is already
+  covered by the NTSL self-check and the GST check. `.gitignore`: ops'
+  monthly NTSL workbooks (`docs/UPI * NTSL *.xlsx`, real amounts).
+
 ## 2026-11-07
 
 - **Added: Dashboard charts** (U5 8.3; owner approved `@mantine/charts`

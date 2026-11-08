@@ -62,6 +62,8 @@ SSKUPI*.csv
 # Ops' manual reconciliation workbooks (real RRNs, accounts, VPAs).
 docs/manual_reconciliation/
 docs/14072026.xlsx
+# Ops' monthly NTSL settlement workbooks, e.g. "UPI NOV NTSL 2026.xlsx".
+docs/UPI * NTSL *.xlsx
 
 # Real bank SOP doc -- contains live NPCI/EFRM portal credentials in
 # plaintext. Never commit. See doubts.md.
