@@ -11,8 +11,24 @@
  * timeout warning follows (see sessionClock below).
  */
 import type {
+  AgeingReport,
+  AgeingReportFilters,
   AlertFilters,
   AlertListPage,
+  ApprovalReport,
+  ApprovalReportFilters,
+  ApprovalSettingsReport,
+  ExceptionReport,
+  ExceptionReportFilters,
+  ReconciliationReport,
+  ReconciliationReportFilters,
+  ReportsMeta,
+  SettlementReport,
+  SettlementReportFilters,
+  UserActivityReport,
+  UserActivityReportFilters,
+  VolumeReport,
+  VolumeReportFilters,
   ApiErrorBody,
   AuditCaseEvent,
   AuditEverythingRow,
@@ -523,6 +539,107 @@ export function getNpciFilesReport(module: string, filters: NpciFilesReportFilte
 /** U5 F2: the dashboard's numbers per date (none given: the last 30 business dates). */
 export function getDashboard(module: string, range: { date_from?: string; date_to?: string }): Promise<Dashboard> {
   return request<Dashboard>('GET', `${mod(module)}/dashboard/`, { query: { ...range } });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 reports (docs/phase6_api_contract.txt B0-B8). Every report is a GET;
+// the same address with ?export=csv|xlsx (and sheet= for a CSV) is the file.
+// ---------------------------------------------------------------------------
+/** The report addresses, shared by the screens (JSON) and their downloads. */
+export const reportPaths = {
+  reconciliation: (module: string) => `${mod(module)}/reports/reconciliation/`,
+  settlement: (module: string) => `${mod(module)}/reports/settlement/`,
+  volume: (module: string) => `${mod(module)}/reports/volume/`,
+  exceptions: (module: string) => `${mod(module)}/reports/exceptions/`,
+  ageing: (module: string) => `${mod(module)}/reports/ageing/`,
+  approvals: (module: string) => `${mod(module)}/reports/approvals/`,
+  approvalSettings: (module: string) => `${mod(module)}/reports/approvals/settings/`,
+  userActivity: () => `${API_ROOT}/reports/user-activity/`,
+  /** B8: one date's full results list. */
+  results: (module: string, businessDate: string) => `${day(module, businessDate)}/results/`,
+};
+
+/** B0: export formats, limits and the catalogue. */
+export function getReportsMeta(): Promise<ReportsMeta> {
+  return request<ReportsMeta>('GET', `${API_ROOT}/reports/meta/`);
+}
+
+export function getReconciliationReport(
+  module: string,
+  filters: ReconciliationReportFilters,
+): Promise<ReconciliationReport> {
+  return request('GET', reportPaths.reconciliation(module), { query: { ...filters } });
+}
+
+export function getSettlementReport(module: string, filters: SettlementReportFilters): Promise<SettlementReport> {
+  return request('GET', reportPaths.settlement(module), { query: { ...filters } });
+}
+
+export function getVolumeReport(module: string, filters: VolumeReportFilters): Promise<VolumeReport> {
+  return request('GET', reportPaths.volume(module), { query: { ...filters } });
+}
+
+export function getExceptionReport(module: string, filters: ExceptionReportFilters): Promise<ExceptionReport> {
+  return request('GET', reportPaths.exceptions(module), { query: { ...filters } });
+}
+
+export function getAgeingReport(module: string, filters: AgeingReportFilters): Promise<AgeingReport> {
+  return request('GET', reportPaths.ageing(module), { query: { ...filters } });
+}
+
+export function getApprovalReport(module: string, filters: ApprovalReportFilters): Promise<ApprovalReport> {
+  return request('GET', reportPaths.approvals(module), { query: { ...filters } });
+}
+
+export function getApprovalSettingsReport(
+  module: string,
+  filters: ApprovalReportFilters,
+): Promise<ApprovalSettingsReport> {
+  return request('GET', reportPaths.approvalSettings(module), { query: { ...filters } });
+}
+
+export function getUserActivityReport(filters: UserActivityReportFilters): Promise<UserActivityReport> {
+  return request('GET', reportPaths.userActivity(), { query: { ...filters } });
+}
+
+/** The name in Content-Disposition (attachment; filename="..."), or null. */
+export function dispositionFileName(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch {
+      /* fall through to the plain name */
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)/i.exec(header);
+  const name = (plain?.[1] ?? plain?.[2] ?? '').trim();
+  return name || null;
+}
+
+/**
+ * A report as a file (contract A): fetch() with the session cookie, never a
+ * plain link, so a refusal (400 "narrow the filters", "use CSV") comes back
+ * as an ApiError with the server's sentence instead of a JSON page. The
+ * server logs every successful download.
+ */
+export async function downloadReport(
+  path: string,
+  query: Query,
+  fallbackName: string,
+): Promise<{ blob: Blob; fileName: string }> {
+  const res = await fetch(`${path}${toQueryString(query)}`, { method: 'GET', credentials: 'same-origin' });
+  if (res.status === 401) sessionClock.expire();
+  else sessionClock.touch();
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new ApiError(res.status, body, STATUS_TEXT[res.status] ?? `Request failed (${res.status}).`);
+  }
+  return {
+    blob: await res.blob(),
+    fileName: dispositionFileName(res.headers.get('Content-Disposition')) ?? fallbackName,
+  };
 }
 
 export function getNpciFile(module: string, id: number): Promise<NpciFileDetail> {

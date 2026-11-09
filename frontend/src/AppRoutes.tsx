@@ -38,6 +38,9 @@ const pages = {
   users: () => import('./pages/UsersPage'),
   reports: () => import('./pages/ReportsPage'),
   allDates: () => import('./pages/AllDatesPages'),
+  volume: () => import('./pages/VolumeReportPage'),
+  caseReports: () => import('./pages/CaseReportsPages'),
+  userActivity: () => import('./pages/UserActivityReportPage'),
 };
 
 const LoginPage = named(pages.login, 'LoginPage');
@@ -70,6 +73,11 @@ const UsersPage = named(pages.users, 'UsersPage');
 const ReportsPage = named(pages.reports, 'ReportsPage');
 const ResultsAllDatesPage = named(pages.allDates, 'ResultsAllDatesPage');
 const SettlementAllDatesPage = named(pages.allDates, 'SettlementAllDatesPage');
+const VolumeReportPage = named(pages.volume, 'VolumeReportPage');
+const ExceptionReportPage = named(pages.caseReports, 'ExceptionReportPage');
+const AgeingReportPage = named(pages.caseReports, 'AgeingReportPage');
+const ApprovalReportPage = named(pages.caseReports, 'ApprovalReportPage');
+const UserActivityReportPage = named(pages.userActivity, 'UserActivityReportPage');
 
 /** The per-date results list is gone (UI refinements U3 4.5): old links open the date's results step. */
 function ResultsListRedirect() {
@@ -127,6 +135,10 @@ export function AppRoutes() {
         <Route path="/users" element={globalShell}>
           <Route index element={<UsersPage />} />
         </Route>
+        {/* Phase 6 B7: logins are global, so this report is not under a module. */}
+        <Route path="/reports/user-activity" element={globalShell}>
+          <Route index element={<UserActivityReportPage />} />
+        </Route>
         <Route
           path="/:module"
           element={
@@ -159,6 +171,10 @@ export function AppRoutes() {
           <Route path="settlement" element={<SettlementAllDatesPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="reports/npci-files" element={<NpciFilesReportPage />} />
+          <Route path="reports/volume" element={<VolumeReportPage />} />
+          <Route path="reports/exceptions" element={<ExceptionReportPage />} />
+          <Route path="reports/ageing" element={<AgeingReportPage />} />
+          <Route path="reports/approvals" element={<ApprovalReportPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

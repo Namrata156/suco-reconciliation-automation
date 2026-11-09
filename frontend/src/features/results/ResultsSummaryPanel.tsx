@@ -9,12 +9,20 @@
  * day are listed, plain name first; ops' words ("Transactions", "Outcome",
  * "Replaced by a later run"). The rule set and evaluation time are in the
  * date page's collapsed "Details".
+ *
+ * Phase 6 B8: the whole results list of the date as a file (CSV until IT
+ * approves Excel; the formats come from GET /reports/meta/). The row count
+ * is the summary's transaction total (replaced rows are left out, as in
+ * the download).
  */
-import { Alert, Card, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
+import { Alert, Card, Group, SimpleGrid, Skeleton, Stack, Table, Text, Title } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
-import { ApiError, getResultSummary } from '../../api/client';
-import type { ResultSummary } from '../../api/types';
+import { ApiError, getReportsMeta, getResultSummary, reportPaths } from '../../api/client';
+import type { ExportBlock, ResultSummary } from '../../api/types';
+import { useMe } from '../../auth/auth';
+import { allows } from '../../lib/roles';
+import { ExportButton } from '../reports/ExportButton';
 import { labelOf, useMeta } from '../../hooks/module';
 import { formatCount, formatDate } from '../../lib/format';
 
@@ -108,6 +116,41 @@ function SummaryBody({
   );
 }
 
+/** What a download of the date's results would hold (RR3 shape, from B0 and the summary). */
+export function resultsExportInfo(
+  formats: string[],
+  limit: number,
+  rows: number,
+): ExportBlock {
+  return {
+    formats,
+    row_count: rows,
+    limit,
+    allowed: rows <= limit,
+    sheets: [{ key: 'results', label: 'Results', row_count: rows }],
+  };
+}
+
+function ResultsDownload({ module, businessDate, rows }: { module: string; businessDate: string; rows: number }) {
+  const allowed = allows(useMe().permissions, 'reports.view');
+  const { data: meta } = useQuery({
+    queryKey: ['reports', 'meta'],
+    queryFn: getReportsMeta,
+    staleTime: 10 * 60_000,
+    enabled: allowed,
+  });
+  if (!allowed || !meta) return null;
+  return (
+    <ExportButton
+      info={resultsExportInfo(meta.export_formats, meta.max_export_rows, rows)}
+      path={reportPaths.results(module, businessDate)}
+      query={{}}
+      fallbackName={`${module.toUpperCase()}_results_${businessDate}`}
+      label={`all results of ${formatDate(businessDate)}`}
+    />
+  );
+}
+
 export function ResultsSummaryPanel({
   module,
   businessDate,
@@ -145,9 +188,12 @@ export function ResultsSummaryPanel({
 
   return (
     <Stack gap="xs" component="section" aria-labelledby="results-summary-title">
-      <Title order={2} size="h4" id="results-summary-title">
-        Reconciliation results
-      </Title>
+      <Group justify="space-between" align="flex-end">
+        <Title order={2} size="h4" id="results-summary-title">
+          Reconciliation results
+        </Title>
+        {s && <ResultsDownload module={module} businessDate={businessDate} rows={s.match_groups.total} />}
+      </Group>
       {body}
     </Stack>
   );

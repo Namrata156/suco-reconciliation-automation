@@ -590,7 +590,8 @@ export function AuditOperations() {
             <Table.Td>
               {o.event_type_label}
               <Text size="xs" c="dimmed">
-                {o.module.toUpperCase()}, {o.source}
+                {o.module ? `${o.module.toUpperCase()}, ` : ''}
+                {o.source}
               </Text>
             </Table.Td>
             <Table.Td>{by(o.username)}</Table.Td>

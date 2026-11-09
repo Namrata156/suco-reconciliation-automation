@@ -23,6 +23,7 @@ import {
   sentBody,
 } from '../../test/fixtures';
 import {
+  closesBySystemLine,
   countReplySources,
   needsPartialConfirmation,
   notIncludedSummary,
@@ -383,6 +384,68 @@ describe('NPCI file on the business date (A7, owner 2026-10-22/23)', () => {
     expect(
       await screen.findByText('3 row(s) included. Download it and upload it to the NPCI portal.'),
     ).toBeTruthy();
+  });
+
+  it('counts and marks the no-money cases the system closes on generation (owner 2026-11-09)', async () => {
+    expect(closesBySystemLine(261)).toBe(
+      '261 no-money case(s) (R01 / R03 / R04a) will be closed by the system when the file is generated.',
+    );
+    expect(closesBySystemLine(0)).toBeNull();
+    expect(closesBySystemLine(undefined)).toBeNull();
+
+    const r1 = { ...preview().rows[0]!, closes_case: true };
+    const r2 = {
+      ...r1,
+      line: 2,
+      case_id: 202,
+      rrn: '419500000202',
+      rule_code: 'R06',
+      action_type: 'MANUAL_CREDIT_RRC_501',
+      flag: 'RRC',
+      code: '501',
+      closes_case: false,
+    };
+    vi.stubGlobal(
+      'fetch',
+      routeFetch({
+        ...baseRoutes,
+        '/npci-file/preview/': () =>
+          json(200, preview({ row_count: 2, rows: [r1, r2], closes_by_system_count: 1 })),
+        '/npci-files/': () => json(200, filesPage([])),
+      }),
+    );
+    renderDate(['Checker']);
+
+    const card = await screen.findByRole('group', { name: 'Next SSKUPI file' });
+    expect(within(card).getByText(/^1 no-money case\(s\) \(R01 \/ R03 \/ R04a\) will be closed/)).toBeTruthy();
+    // The note under the files no longer says a file never changes a case's status.
+    expect(screen.getByText(/except the no-money cases \(R01 \/ R03 \/ R04a\)/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: `Show the 2 row(s) of ${NAME}` }));
+    const rows = within(screen.getByRole('table', { name: `Rows of ${NAME}` })).getAllByRole('row');
+    expect(within(rows[1]!).getByText('Will be closed by system')).toBeTruthy();
+    expect(within(rows[2]!).queryByText('Will be closed by system')).toBeNull();
+
+    // Shown again before the Checker confirms.
+    await userEvent.click(screen.getByRole('button', { name: `Generate ${NAME}` }));
+    const dialog = await screen.findByRole('dialog', { name: `Generate ${NAME}?` });
+    expect(within(dialog).getByRole('note', { name: 'Closed by the system' }).textContent).toContain(
+      '1 no-money case(s) (R01 / R03 / R04a) will be closed by the system',
+    );
+  });
+
+  it('says nothing about system closures when no row closes a case', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routeFetch({
+        ...baseRoutes,
+        '/npci-file/preview/': () => json(200, preview({ closes_by_system_count: 0 })),
+        '/npci-files/': () => json(200, filesPage([])),
+      }),
+    );
+    renderDate(['Checker']);
+    expect(await screen.findByText(`Next file: ${NAME}`)).toBeTruthy();
+    expect(screen.queryByText(/will be closed by the system/)).toBeNull();
   });
 
   it('warns when cases already included have changed since', async () => {

@@ -14,6 +14,7 @@ import {
   presetRange,
   rangeDays,
   rangeError,
+  rangeMonths,
   rangeFromParams,
   reportsFor,
   REPORTS,
@@ -43,13 +44,15 @@ describe('report gating by the R2 matrix', () => {
     expect(menuFor(makeMe([])).map((i) => i.key)).not.toContain('reports');
   });
 
-  it('the two all-dates reports and the NPCI files report (U5 8.1) are available; the rest are later', () => {
+  it('every report is available since slices 6.2-6.4; addresses per report', () => {
     const entries = reportsFor({ permissions: permissionsFor(ALL) }, 'UPI');
-    expect(entries.filter((r) => r.available).map((r) => r.key)).toEqual([
-      'reconciliation',
-      'settlement',
-      'npci-files',
-    ]);
+    expect(entries.every((r) => r.available)).toBe(true);
+    expect(entries.find((r) => r.key === 'volume')?.href).toBe('/upi/reports/volume');
+    expect(entries.find((r) => r.key === 'exceptions')?.href).toBe('/upi/reports/exceptions');
+    expect(entries.find((r) => r.key === 'ageing')?.href).toBe('/upi/reports/ageing');
+    expect(entries.find((r) => r.key === 'approvals')?.href).toBe('/upi/reports/approvals');
+    // No priority in any report (owner 2026-11-08).
+    expect(REPORTS.some((r) => /priority/i.test(r.description))).toBe(false);
     expect(entries.find((r) => r.key === 'npci-files')?.href).toBe('/upi/reports/npci-files');
     expect(entries.find((r) => r.key === 'reconciliation')?.href).toBe('/upi/results');
     expect(entries.find((r) => r.key === 'settlement')?.href).toBe('/upi/settlement');
@@ -58,9 +61,13 @@ describe('report gating by the R2 matrix', () => {
     expect(REPORTS).toHaveLength(8);
   });
 
-  it('a later build makes the other reports available', () => {
-    const entries = reportsFor({ permissions: permissionsFor(ALL) }, 'upi', { builtSlice: 6.4 });
-    expect(entries.every((r) => r.available)).toBe(true);
+  it('an earlier build (slice 6.1) hides the reports built later', () => {
+    const entries = reportsFor({ permissions: permissionsFor(ALL) }, 'upi', { builtSlice: 6.1 });
+    expect(entries.filter((r) => r.available).map((r) => r.key)).toEqual([
+      'reconciliation',
+      'settlement',
+      'npci-files',
+    ]);
   });
 });
 
@@ -96,7 +103,8 @@ describe('menu: Reports, with the all-dates entries inside it (R3; U1 5.5)', () 
       const hrefs = reportsFor(makeMe([role]), 'upi')
         .filter((r) => r.available)
         .map((r) => r.href);
-      expect(hrefs).toEqual(['/upi/results', '/upi/settlement', '/upi/reports/npci-files']);
+      expect(hrefs.slice(0, 3)).toEqual(['/upi/results', '/upi/settlement', '/upi/reports/npci-files']);
+      expect(hrefs).toContain('/upi/reports/ageing');
     }
   });
 
@@ -165,6 +173,16 @@ describe('business-date range (contract RR1)', () => {
       `At most ${MAX_RANGE_DAYS} days per report; narrow the dates.`,
     );
     expect(rangeError('2026-07-01', '2026-13-01')).toMatch(/DD-MMM-YYYY/);
+  });
+
+  it('the volume report by month counts whole months, at most 24 (B3)', () => {
+    expect(rangeMonths({ date_from: '2026-07-14', date_to: '2026-08-02' })).toBe(2);
+    expect(rangeError('2025-01-01', '2026-12-31', { maxMonths: 24 })).toBeNull();
+    expect(rangeError('2025-01-01', '2027-01-01', { maxMonths: 24 })).toBe(
+      'At most 24 months per report; narrow the dates.',
+    );
+    // 92 days does not apply by month.
+    expect(rangeError('2026-01-01', '2026-10-31', { maxMonths: 24 })).toBeNull();
   });
 
   it('reads the address: the month of the latest business date when both dates are absent', () => {

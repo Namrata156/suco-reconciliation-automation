@@ -70,6 +70,22 @@ export function SelfApprovedBadge() {
   );
 }
 
+/**
+ * A case the system closed with no Maker or Checker: its no-money reply
+ * (R01 / R03 / R04a) went into an SSKUPI file (owner 2026-11-09).
+ */
+export function ClosedBySystemBadge({ fileName }: { fileName?: string | null }) {
+  return (
+    <Badge
+      color="cyan"
+      variant="light"
+      title={`No-money reply included in ${fileName ?? 'an SSKUPI file'}; no Maker or Checker step`}
+    >
+      Closed by system
+    </Badge>
+  );
+}
+
 // --- files, checklist slots and runs (Slice 2) -------------------------------
 type Variant = 'light' | 'filled' | 'outline';
 const FILE_STATE: Record<SlotState, { label: string; color: string; variant: Variant }> = {

@@ -39,6 +39,7 @@ import type {
   WhatHappened,
 } from '../api/types';
 import {
+  ClosedBySystemBadge,
   DecisionBadge,
   FlagBadges,
   SelfApprovedBadge,
@@ -235,6 +236,10 @@ function ActionCard({ a, meta }: { a: ProposedActionInfo; meta: ModuleMeta | und
           {formatDateTime(a.decided_at)}
         </Text>
       )}
+      {/* A pending action the system withdrew when it closed the case (owner 2026-11-09). */}
+      {!a.decided_by && a.decision === 'WITHDRAWN' && a.decided_at && (
+        <Text size="sm">Withdrawn by the system on {formatDateTime(a.decided_at)}</Text>
+      )}
       {/* Design 7.3: rejection reasons are shown prominently to the maker. */}
       {a.decision === 'REJECTED' && a.decision_remarks && (
         <Alert color="red" title="Rejection reason" mt="xs">
@@ -341,6 +346,7 @@ export function CaseDetailPage() {
           </Title>
           <Group gap={6} mt={4}>
             <StatusBadge value={c.status} choices={meta?.case_statuses} />
+            {c.closed_by_system && <ClosedBySystemBadge fileName={c.npci_file?.file_name} />}
             <FlagBadges flags={c.flags} />
           </Group>
         </div>
@@ -361,6 +367,24 @@ export function CaseDetailPage() {
           )}
         </Group>
       </Group>
+
+      {c.closed_by_system && (
+        <Alert color="cyan" variant="light" role="note" aria-label="Closed by system">
+          Closed by the system when its no-money reply went into{' '}
+          {c.npci_file ? (
+            c.npci_file.file_date ? (
+              <Anchor component={Link} to={`/${module}/dates/${c.npci_file.file_date}#step-sskupi`}>
+                {c.npci_file.file_name}
+              </Anchor>
+            ) : (
+              c.npci_file.file_name
+            )
+          ) : (
+            'an SSKUPI file'
+          )}
+          . No money moves at the bank, so there is no Maker or Checker step.
+        </Alert>
+      )}
 
       <SimpleGrid cols={{ base: 2, md: 4 }} spacing="sm">
         <Field label="Business date">{formatDate(c.business_date)}</Field>
@@ -502,7 +526,7 @@ export function CaseDetailPage() {
                       </>
                     )}
                   </Table.Td>
-                  <Table.Td>{e.actor_username || 'system'}</Table.Td>
+                  <Table.Td>{e.actor_username || 'System'}</Table.Td>
                   <Table.Td>
                     {e.old_status && e.new_status && e.old_status !== e.new_status
                       ? `${labelOf(meta?.case_statuses, e.old_status)} -> ${labelOf(meta?.case_statuses, e.new_status)}`

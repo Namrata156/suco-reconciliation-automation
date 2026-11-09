@@ -54,9 +54,9 @@ export interface Permissions {
   'npci_files.generate': boolean;
   /** Download a generated file (Maker, Checker, Operations User). */
   'npci_files.download': boolean;
-  // Phase 6 (docs/phase6_api_contract.txt C1): NOT sent by the server yet.
-  // Optional until the backend adds them; lib/roles.ts allows() falls back
-  // to existing capabilities while a key is absent.
+  // Phase 6 (docs/phase6_api_contract.txt C1): sent by the server since
+  // slices 6.2-6.4. Kept optional so lib/roles.ts allows() can still fall
+  // back to existing capabilities if a server does not send a key.
   /** Reports page and the all-roles reports (all five). */
   'reports.view'?: boolean;
   /** Approval report (Administrator, Auditor, Checker; R2). */
@@ -394,8 +394,14 @@ export interface CaseListItem {
   /** "" for a settlement case. */
   rule_name?: string;
   reply?: CaseReply | null;
-  /** The SSKUPI file the case is already in. */
-  npci_file?: { id: number; file_name: string } | null;
+  /** The SSKUPI file the case is already in (file_date on the case detail only). */
+  npci_file?: { id: number; file_name: string; file_date?: string } | null;
+  /**
+   * COMPLETED by the system, no Maker or Checker (owner 2026-11-09): its
+   * no-money reply (R01 DRC 102, R03 DRC 104, R04a TCC 102) went into an
+   * SSKUPI file. The file is npci_file.
+   */
+  closed_by_system?: boolean;
 }
 
 /** GET /cases/: the page plus the reply-type tab counts (A3, without the reply_type filter). */
@@ -587,6 +593,8 @@ export interface CaseFilters {
   due_date?: string;
   /** Comma list of meta.case_orderings; "-" reverses; "" = queue order. */
   ordering?: string;
+  /** csv of meta.ageing_buckets[].label (Phase 6 C2: the ageing report's links). */
+  ageing_bucket?: string;
   page?: number;
   page_size?: number;
 }
@@ -1785,7 +1793,8 @@ export interface AuditUserActivity {
 export interface AuditOperation {
   id: number;
   created_at: string;
-  module: string;
+  /** null for a step of no module (the user activity report download, Phase 6 B7). */
+  module: string | null;
   event_type: string;
   event_type_label: string;
   username: string | null;
@@ -2011,6 +2020,8 @@ export interface NpciFileLine {
 export interface NpciPreviewLine extends NpciFileLine {
   rule_code: string;
   action_type: string;
+  /** Generating the file closes this case (no-money reply, owner 2026-11-09). */
+  closes_case?: boolean;
 }
 
 /** A case that would give a row once decided, and why it is left out. */
@@ -2062,6 +2073,8 @@ export interface NpciFilePreview {
    * (flagged for review, another reply chosen, or closed by a re-run).
    */
   changed_since_included_count?: number;
+  /** Rows whose case the system closes when the file is generated (closes_case, owner 2026-11-09). */
+  closes_by_system_count?: number;
   /** Shown as they are. */
   warnings: string[];
   files: NpciFileRef[];
@@ -2129,4 +2142,355 @@ export interface NpciFileDetail extends NpciFileRow {
   other_files_for_date: NpciFileRef[];
   /** NPCI_FILE_GENERATED and NPCI_FILE_DOWNLOADED entries, oldest first. */
   history: OperationLogEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 reports (docs/phase6_api_contract.txt B0-B8; reconciled 2026-11-09
+// against api/reports*.py and the dev database). No priority anywhere
+// (owner 2026-11-08, "P").
+// ---------------------------------------------------------------------------
+/** RR2: what the figures are and how they were produced. */
+export interface ReportBlock {
+  key: string;
+  title: string;
+  /** Module slug; null for the user activity report. */
+  module: string | null;
+  /** The filters applied, normalised (dates filled in, csv split to lists). */
+  filters: Record<string, unknown>;
+  generated_at: string;
+  generated_by: string;
+  versions: { rule_sets: string[]; ntsl_mappings: string[]; tolerances: string[] };
+}
+
+/** RR3: what a download of the report would hold. */
+export interface ExportBlock {
+  /** What the server can write now: ["csv"] until IT approves openpyxl. */
+  formats: string[];
+  /** Rows of the main sheet. */
+  row_count: number;
+  limit: number;
+  /** Every sheet within the limit. */
+  allowed: boolean;
+  sheets: { key: string; label: string; row_count: number }[];
+}
+
+/** Every report answer (B1-B7). */
+export interface ReportAnswer {
+  report: ReportBlock;
+  export: ExportBlock;
+}
+
+/** B0 GET /api/v1/reports/meta/. */
+export interface ReportsMeta {
+  export_formats: string[];
+  max_export_rows: number;
+  max_range_days: number;
+  max_range_months: number;
+  reports: { key: string; title: string; description: string; module_scoped: boolean; capability: string }[];
+}
+
+/** Filters every ranged report takes (RR1). */
+export interface ReportRangeFilters {
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+  page_size?: number;
+}
+
+// --- B1 daily reconciliation -------------------------------------------------
+export interface ReconciliationFigures {
+  files: { expected: number; present: number; missing: number; received: number };
+  match_groups: {
+    total: number;
+    /** MATCHED, UNMATCHED, PENDING_RULE_EVALUATION. */
+    by_status: Record<string, number>;
+    on_us: number;
+    cbs_reversed: number;
+  };
+  /** Every status category, 0 included. */
+  results_by_category: Record<string, number>;
+  /** Rule code -> results (zero counts may be present). */
+  rule_counts: Record<string, number>;
+  cases: { created: number; open: number };
+}
+
+export interface ReconciliationRow extends ReconciliationFigures {
+  business_date: string;
+  settlement: { status: string; unexplained_amount: string | null } | null;
+  rule_evaluation: { id: number; rule_set: string; finished_at: string | null; triggered_by: string } | null;
+  last_run: { id: number; status: string; requested_by: string; finished_at: string | null } | null;
+  links: { results: string | null; settlement: string | null; date: string };
+}
+
+export interface ReconciliationTotals extends ReconciliationFigures {
+  dates: number;
+  settlement: { by_status: Record<string, number>; unexplained_amount: string | null };
+}
+
+export interface ReconciliationReport extends Paginated<ReconciliationRow>, ReportAnswer {
+  /** Rules with a count in the range, in rule order. */
+  rule_codes: string[];
+  /** The whole range (after open_cases_only), not the page. */
+  totals: ReconciliationTotals;
+  /** Only when the range spans 2+ months; newest first, like the rows. */
+  months: (ReconciliationTotals & { month: string })[];
+}
+
+export interface ReconciliationReportFilters extends ReportRangeFilters {
+  open_cases_only?: string;
+  /** "-business_date" (default) | "business_date". */
+  ordering?: string;
+}
+
+// --- B2 settlement -----------------------------------------------------------
+export interface SettlementReportRow {
+  business_date: string;
+  status: string | null;
+  status_label: string | null;
+  reasons: string[];
+  computed_at: string | null;
+  self_check: { cycles_pass: number; cycles_total: number };
+  sop: { cbs_net: string; ntsl_net: string; difference: string; explained: string; unexplained: string } | null;
+  unexplained_amount: string | null;
+  unexplained_count: number | null;
+  fees_net: string | null;
+  tolerance_version: string | null;
+  ntsl_mapping_version: string | null;
+  settlement_case: { id: number; status: string; link: string } | null;
+  links: { settlement: string | null; date: string };
+}
+
+export interface SettlementReport extends Paginated<SettlementReportRow>, ReportAnswer {
+  totals: { by_status: Record<string, number>; unexplained_amount: string; fees_net: string };
+}
+
+export interface SettlementReportFilters extends ReportRangeFilters {
+  /** csv of TALLIED, UNEXPLAINED, NOT_READY, NONE. */
+  status?: string;
+  ordering?: string;
+}
+
+// --- B3 transaction volume ---------------------------------------------------
+export interface VolumeSideFigure {
+  /** ACQUIRER / ISSUER (NPCI), DEBIT / CREDIT / UNKNOWN (CBS), ALL (DRC, Timeout, Adjustment). */
+  side: string;
+  side_label: string;
+  count: number;
+  amount: string;
+}
+
+export interface VolumeFigures {
+  file_type: string;
+  file_type_label: string;
+  sides: VolumeSideFigure[];
+  total_count: number;
+  total_amount: string;
+  /** Raw Data, Merchant and BBP only; null for the other file types. */
+  npci: { approved: number; declined: number } | null;
+}
+
+export interface VolumeRow extends VolumeFigures {
+  /** "2026-07-14" (day) or "2026-07" (month). */
+  period: string;
+  /** null unless by_cycle=true (and always null for a file that is not cycle-wise). */
+  cycle: string | null;
+}
+
+export interface VolumeReport extends Paginated<VolumeRow>, ReportAnswer {
+  /** Per file type over the whole range. */
+  totals: VolumeFigures[];
+  /** Dates with files but no (or out-of-date) volume figures. */
+  missing_dates: string[];
+}
+
+export interface VolumeReportFilters extends ReportRangeFilters {
+  group_by?: string;
+  /** csv of file type codes. */
+  file_type?: string;
+  by_cycle?: string;
+  /** "-period" (default) | "period". */
+  ordering?: string;
+}
+
+// --- B4 exceptions -----------------------------------------------------------
+export interface ExceptionReportRow {
+  id: number;
+  business_date: string;
+  rrn: string;
+  case_type: string;
+  rule_code: string;
+  status_category: string;
+  /** NPCI amount, else CBS (D4); a settlement case: its current unexplained amount. */
+  amount: string | null;
+  status: string;
+  due_date: string | null;
+  age_days: number;
+  /** "" for settlement cases. */
+  ageing_bucket: string;
+  is_overdue: boolean;
+  assigned_to: string | null;
+  proposed_action: {
+    action_type: string;
+    response_code: string | null;
+    decision: string;
+    reference: string;
+  } | null;
+  created_at: string;
+  closed_at: string | null;
+  /** Closed by the system: no-money reply in an SSKUPI file (owner 2026-11-09). */
+  closed_by_system?: boolean;
+  last_remark: string;
+  link: string;
+}
+
+export interface ExceptionReport extends Paginated<ExceptionReportRow>, ReportAnswer {
+  summary: {
+    by_status: { status: string; count: number }[];
+    by_rule: { rule_code: string; count: number; open: number }[];
+  };
+}
+
+export interface ExceptionReportFilters extends ReportRangeFilters {
+  /** "" = active (default), "all", or csv of case statuses. */
+  status?: string;
+  rule_code?: string;
+  case_type?: string;
+  overdue?: string;
+  /** Username; "none" = unassigned. */
+  assigned_to?: string;
+  /** "true" | "false" (owner 2026-11-09). */
+  closed_by_system?: string;
+  ordering?: string;
+}
+
+// --- B5 ageing ---------------------------------------------------------------
+export interface AgeingCell {
+  bucket: string;
+  count: number;
+  amount: string;
+  overdue: number;
+  /** The case queue filtered to the cell. */
+  link: string;
+}
+
+export interface AgeingTotal {
+  count: number;
+  amount: string;
+  overdue: number;
+}
+
+export interface AgeingReport extends ReportAnswer {
+  buckets: AgeingBucketMeta[];
+  by_rule: { rule_code: string; cells: AgeingCell[]; total: AgeingTotal }[];
+  totals: { cells: AgeingCell[]; total: AgeingTotal };
+  /** Active cases with no ageing bucket (settlement cases); link null unless all of them are. */
+  not_aged: { count: number; amount: string; link: string | null };
+  oldest_case: { id: number; rrn: string; age_days: number; link: string } | null;
+}
+
+export interface AgeingReportFilters {
+  rule_code?: string;
+  case_type?: string;
+}
+
+// --- B6 / B6s approvals --------------------------------------------------------
+export interface ApprovalReportRow {
+  id: number;
+  case_id: number;
+  business_date: string;
+  rrn: string;
+  rule_code: string;
+  action_type: string;
+  action_type_label: string;
+  response_code: string | null;
+  maker: string;
+  submitted_at: string;
+  checker: string | null;
+  decided_at: string | null;
+  decision: string;
+  self_approved: boolean;
+  rejection_reason: string;
+  marked_done_at: string | null;
+  reference: string;
+  hours_to_decision: number | null;
+  /**
+   * The CASE was closed by the system (owner 2026-11-09): its pending action
+   * was WITHDRAWN (no checker), an approved one marked done with the file
+   * name as reference. True on every action of such a case.
+   */
+  closed_by_system?: boolean;
+  link: string;
+}
+
+export interface ApprovalReport extends Paginated<ApprovalReportRow>, ReportAnswer {
+  summary: {
+    by_checker: { checker: string; approved: number; rejected: number; self_approved: number }[];
+    pending_now: number;
+    oldest_pending: { id: number; submitted_at: string; link: string } | null;
+  };
+}
+
+export interface ApprovalSettingsRow {
+  kind: string;
+  kind_label: string;
+  item_label: string;
+  proposed_by: string | null;
+  proposed_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision: string;
+  self_approved: boolean;
+  remarks: string;
+  link: string;
+}
+
+export type ApprovalSettingsReport = Paginated<ApprovalSettingsRow> & ReportAnswer;
+
+export interface ApprovalReportFilters extends ReportRangeFilters {
+  decision?: string;
+  checker?: string;
+  maker?: string;
+  self_approved?: string;
+  /** Case actions only (csv). */
+  action_type?: string;
+  /** Settings changes only (csv: response_code, ntsl_mapping, tolerance). */
+  kind?: string;
+}
+
+// --- B7 user activity ----------------------------------------------------------
+export interface UserActivityReportRow {
+  user_id: number;
+  username: string;
+  full_name: string;
+  roles: RoleName[];
+  is_active: boolean;
+  logins: number;
+  failed_logins: number;
+  /** The last login inside the range, and its IP. */
+  last_login: string | null;
+  last_login_ip: string | null;
+  cases: {
+    taken: number;
+    submitted: number;
+    approved: number;
+    rejected: number;
+    marked_done: number;
+    remarks: number;
+  };
+  files: { uploaded: number; refused: number };
+  cbs_dates_selected: number;
+  runs_started: number;
+  settings: { proposed: number; decided: number };
+  report_downloads: number;
+  links: { case_events: string; user_activity: string; operations: string };
+}
+
+export type UserActivityReport = Paginated<UserActivityReportRow> & ReportAnswer;
+
+export interface UserActivityReportFilters extends ReportRangeFilters {
+  user?: string;
+  role?: string;
+  /** Module slug: narrows the work counts only, never the logins. */
+  module?: string;
+  active?: string;
 }

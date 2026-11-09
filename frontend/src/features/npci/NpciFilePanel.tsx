@@ -16,6 +16,10 @@
  * (reply_source APPROVED / SUBMITTED / RULE). Some replies still wait for a
  * Checker (NEEDS_APPROVAL) and a rejected reply stays out (REJECTED).
  *
+ * Owner 2026-11-09: generating the file closes the no-money cases (R01 DRC
+ * 102, R03 DRC 104, R04a TCC 102). The preview counts them
+ * (closes_by_system_count) and marks their rows (closes_case).
+ *
  * Shows what the NEXT file of the date would hold (counts, where the replies
  * come from, the rows with masked accounts, the cases left out and why, the
  * server's warnings), the Generate button with the partial-file confirmation
@@ -140,6 +144,20 @@ export function countReplySources(rows: Pick<NpciFileLine, 'reply_source'>[]): R
 const CURRENT_REPLY_TEXT =
   "The file uses each case's current reply: the Checker-approved one, else the Maker's submitted one, else " +
   "the rule's suggestion. Some replies need a Checker's approval first, and a rejected reply stays out.";
+
+/**
+ * What a file does to the cases in it (owner 2026-11-09; replaces Amendment 2
+ * B3 "including a case does not change its status" for no-money cases).
+ */
+export const CASE_STATUS_TEXT =
+  'Including a case in a file does not change its status, except the no-money cases (R01 / R03 / R04a): ' +
+  'the system closes those when the file is generated.';
+
+/** "261 no-money case(s) (R01 / R03 / R04a) will be closed by the system", or null for none. */
+export function closesBySystemLine(count: number | undefined): string | null {
+  if (!count) return null;
+  return `${formatCount(count)} no-money case(s) (R01 / R03 / R04a) will be closed by the system when the file is generated.`;
+}
 
 /** "RET 115", or "RET (no numeric code yet)" while the code is unknown. */
 export function replyCode(flag: string, code: string | null | undefined): string {
@@ -297,7 +315,7 @@ function FileRowsTable({
 }: {
   module: string;
   fileDate: string;
-  rows: (NpciFileLine & { rule_code?: string })[];
+  rows: (NpciFileLine & { rule_code?: string; closes_case?: boolean })[];
   label: string;
 }) {
   const withRule = rows.some((r) => r.rule_code !== undefined);
@@ -335,6 +353,18 @@ function FileRowsTable({
                   <Text size="xs" c="dimmed">
                     case of {formatDate(r.case_business_date)}
                   </Text>
+                )}
+                {r.closes_case && (
+                  <div>
+                    <Badge
+                      size="xs"
+                      color="cyan"
+                      variant="light"
+                      title="No-money case: the system closes it when the file is generated"
+                    >
+                      Will be closed by system
+                    </Badge>
+                  </div>
                 )}
               </Table.Td>
               <Table.Td>{r.rrn}</Table.Td>
@@ -694,6 +724,7 @@ function GenerateModal({
   const name = preview.next_file_name;
   const summary = notIncludedSummary(preview);
   const sources = replySourcesSummary(preview.reply_sources);
+  const closing = closesBySystemLine(preview.closes_by_system_count);
 
   const close = () => {
     setRemarks('');
@@ -742,6 +773,11 @@ function GenerateModal({
           file {name}, total {formatRupees(preview.total_amount)}.
         </Text>
         {sources && <Text size="sm">Replies: {sources}.</Text>}
+        {closing && (
+          <Alert color="cyan" variant="light" role="note" aria-label="Closed by the system">
+            {closing} No Maker or Checker step for them.
+          </Alert>
+        )}
         <Text size="sm">{CURRENT_REPLY_TEXT}</Text>
         {preview.next_sequence > 1 && (
           <Text size="sm">
@@ -844,6 +880,7 @@ function PreviewBody({
   const summary = notIncludedSummary(preview);
   const sources = replySourcesSummary(preview.reply_sources);
   const changed = preview.changed_since_included_count ?? 0;
+  const closing = closesBySystemLine(preview.closes_by_system_count);
 
   const generated = () => {
     void qc.invalidateQueries({ queryKey: ['npci-preview', module, businessDate] });
@@ -867,6 +904,7 @@ function PreviewBody({
               {formatCount(preview.row_count)} reply row(s) ready for {name} (
               {formatRupees(preview.total_amount)}).
             </Text>
+            {closing && <Text size="sm">{closing}</Text>}
             {canGenerate ? (
               <Group>
                 <Button size="md" onClick={() => setGenerating(true)} disabled={!preview.can_generate}>
@@ -889,7 +927,7 @@ function PreviewBody({
 
       <Text size="sm" c="dimmed">
         The app generates the SSKUPI reply file only. Download it and upload it to the NPCI portal yourself.{' '}
-        {CURRENT_REPLY_TEXT} A case is included in one file only.
+        {CURRENT_REPLY_TEXT} A case is included in one file only. {CASE_STATUS_TEXT}
       </Text>
 
       <Group gap="xs" wrap="wrap">

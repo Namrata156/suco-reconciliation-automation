@@ -6,6 +6,10 @@
  * buttons are hidden; a header block prints the bank, module, report name,
  * filters, page and who printed it when. "Print -> Save as PDF" in the
  * browser is the PDF route (R1: no PDF files from the server).
+ *
+ * Phase 6 (contract RR2 / RR3): with the server's "report" block, "Figures
+ * as of" is the server's generated_at and the versions the figures were
+ * produced with are listed; `actions` holds the download buttons.
  */
 import { Button, Group, Stack, Text, Title } from '@mantine/core';
 import { useEffect, useState, type ReactNode } from 'react';
@@ -13,6 +17,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useMe } from '../../auth/auth';
 import { BRAND } from '../../config';
 import { formatDate, formatDateTime } from '../../lib/format';
+import type { ReportBlock } from '../../api/types';
 import type { DateRange } from '../../lib/reports';
 import { useModuleName } from './ReportFilterBar';
 
@@ -31,7 +36,30 @@ export interface ReportFrameProps {
   refreshing?: boolean;
   /** The filter bar (not printed). */
   filters?: ReactNode;
+  /** The server's report block (RR2): as-of time and versions. */
+  report?: ReportBlock;
+  /** Replaces the printed "Business dates: ..." line (the ageing report has no dates). */
+  scopeLine?: string;
+  /** Replaces the module name (the user activity report covers every module). */
+  moduleLabel?: string;
+  /** Buttons next to Refresh / Print (downloads). */
+  actions?: ReactNode;
   children: ReactNode;
+}
+
+/** "Rule set v3.2; NTSL mapping v1; tolerance v1", or "" when none apply. */
+export function versionsLine(report: ReportBlock | undefined): string {
+  const v = report?.versions;
+  if (!v) return '';
+  const part = (label: string, list: string[] | undefined) =>
+    list && list.length ? `${label} ${list.join(', ')}` : null;
+  return [
+    part('Rule set', v.rule_sets),
+    part('NTSL mapping', v.ntsl_mappings),
+    part('Tolerance', v.tolerances),
+  ]
+    .filter(Boolean)
+    .join('; ');
 }
 
 export const rangeLabel = (r: DateRange | null) =>
@@ -47,11 +75,21 @@ export function ReportFrame({
   onRefresh,
   refreshing,
   filters,
+  report,
+  scopeLine,
+  moduleLabel,
+  actions,
   children,
 }: ReportFrameProps) {
   const me = useMe();
-  const moduleName = useModuleName();
-  const asOf = updatedAt ? formatDateTime(new Date(updatedAt).toISOString()) : null;
+  const currentModule = useModuleName();
+  const moduleName = moduleLabel ?? currentModule;
+  const asOf = report?.generated_at
+    ? formatDateTime(report.generated_at)
+    : updatedAt
+      ? formatDateTime(new Date(updatedAt).toISOString())
+      : null;
+  const versions = versionsLine(report);
   // The print header's time is taken when printing starts, not at page load.
   const [printedAt, setPrintedAt] = useState(() => new Date().toISOString());
   useEffect(() => {
@@ -73,13 +111,14 @@ export function ReportFrame({
           {title}
         </Text>
         <Text size="sm">Module: {moduleName}</Text>
-        <Text size="sm">Business dates: {rangeLabel(range)}</Text>
+        <Text size="sm">{scopeLine ?? `Business dates: ${rangeLabel(range)}`}</Text>
         {filterLines.map((l) => (
           <Text size="sm" key={l}>
             {l}
           </Text>
         ))}
         {pageLine && <Text size="sm">{pageLine} (only this page is printed)</Text>}
+        {versions && <Text size="sm">Produced with: {versions}</Text>}
         <Text size="sm">
           Figures as of {asOf ?? '-'}; printed by {me.username} at {formatDateTime(printedAt)}
         </Text>
@@ -97,6 +136,7 @@ export function ReportFrame({
           )}
         </div>
         <Group gap="xs">
+          {actions}
           {onRefresh && (
             <Button variant="default" onClick={onRefresh} loading={refreshing}>
               Refresh
@@ -112,6 +152,7 @@ export function ReportFrame({
         {asOf
           ? `Figures as of ${asOf}. Cases and settlement results keep changing after a run; refresh for the latest.`
           : 'Loading...'}
+        {versions ? ` Produced with: ${versions}.` : ''}
       </Text>
       {children}
     </Stack>

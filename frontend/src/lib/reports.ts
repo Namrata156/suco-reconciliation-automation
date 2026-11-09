@@ -32,7 +32,7 @@ export interface ReportDef {
 }
 
 /** The slice of Phase 6 the running build implements. */
-export const BUILT_REPORT_SLICE: ReportSlice = 6.1;
+export const BUILT_REPORT_SLICE: ReportSlice = 6.4;
 
 /** The 7 spec reports (design section 2), in the design's order, plus the NPCI files report (U5). */
 export const REPORTS: readonly ReportDef[] = [
@@ -88,7 +88,7 @@ export const REPORTS: readonly ReportDef[] = [
   {
     key: 'ageing',
     title: 'Ageing report',
-    description: 'Open cases by age bucket, priority and rule, with the overdue counts.',
+    description: 'Open cases by age bucket and rule, with the overdue counts.',
     to: 'reports/ageing',
     scoped: true,
     capability: 'reports.view',
@@ -137,6 +137,14 @@ export function reportsFor(
 // business-date range (contract RR1)
 // ---------------------------------------------------------------------------
 export const MAX_RANGE_DAYS = 92;
+/** B3 by month: the range is widened to whole months, at most 24 of them. */
+export const MAX_RANGE_MONTHS = 24;
+
+/** Limits of one report's range (RR1); the default is 92 days. */
+export interface RangeRules {
+  /** A count of whole calendar months instead of days (B3 by month). */
+  maxMonths?: number;
+}
 
 export interface DateRange {
   date_from: string;
@@ -193,11 +201,27 @@ export function presetRange(key: PresetKey, latest = latestBusinessDateIst()): D
   return { date_from: addDays(latest, -6), date_to: latest };
 }
 
+/** Calendar months the range touches (14 Jul - 2 Aug = 2). */
+export const rangeMonths = (r: DateRange) => {
+  const [y1, m1] = r.date_from.split('-').map(Number) as [number, number];
+  const [y2, m2] = r.date_to.split('-').map(Number) as [number, number];
+  return (y2 - y1) * 12 + (m2 - m1) + 1;
+};
+
 /** Why a range cannot be used, or null when it can (contract RR1). */
-export function rangeError(from: string | null | undefined, to: string | null | undefined): string | null {
+export function rangeError(
+  from: string | null | undefined,
+  to: string | null | undefined,
+  rules: RangeRules = {},
+): string | null {
   if (!from || !to) return 'Give both dates.';
   if (!isIsoDate(from) || !isIsoDate(to)) return 'Enter the dates as DD-MMM-YYYY.';
   if (to < from) return 'The "To" date is before the "From" date.';
+  if (rules.maxMonths) {
+    return rangeMonths({ date_from: from, date_to: to }) > rules.maxMonths
+      ? `At most ${rules.maxMonths} months per report; narrow the dates.`
+      : null;
+  }
   if (rangeDays({ date_from: from, date_to: to }) > MAX_RANGE_DAYS) {
     return `At most ${MAX_RANGE_DAYS} days per report; narrow the dates.`;
   }
@@ -212,11 +236,12 @@ export function rangeError(from: string | null | undefined, to: string | null | 
 export function rangeFromParams(
   params: URLSearchParams,
   latest = latestBusinessDateIst(),
+  rules: RangeRules = {},
 ): { range: DateRange; defaulted: boolean; error: null } | { range: null; defaulted: false; error: string } {
   const from = params.get('date_from');
   const to = params.get('date_to');
   if (!from && !to) return { range: presetRange('this_month', latest), defaulted: true, error: null };
-  const error = rangeError(from, to);
+  const error = rangeError(from, to, rules);
   if (error) return { range: null, defaulted: false, error };
   return { range: { date_from: from!, date_to: to! }, defaulted: false, error: null };
 }

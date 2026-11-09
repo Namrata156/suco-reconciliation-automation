@@ -9,6 +9,10 @@
  *   - the module, read from the header switcher (not a separate filter);
  *   - the report's own filters (`children`), which apply as they change.
  * The dates apply with "Apply", so a half-entered range never loads.
+ *
+ * Phase 6 options (RangeOptions): reports on an event date (approvals on the
+ * decision date, user activity on the event date) end at today, not at the
+ * latest business date; the volume report by month allows 24 months.
  */
 import { Button, Group, Text } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
@@ -17,14 +21,37 @@ import { useSearchParams } from 'react-router';
 
 import { useMe } from '../../auth/auth';
 import { useModuleCode } from '../../hooks/module';
-import { latestBusinessDateIst } from '../../lib/format';
-import { PRESETS, presetRange, rangeError, rangeFromParams, type DateRange } from '../../lib/reports';
+import { latestBusinessDateIst, todayIst } from '../../lib/format';
+import {
+  PRESETS,
+  presetRange,
+  rangeError,
+  rangeFromParams,
+  type DateRange,
+  type RangeRules,
+} from '../../lib/reports';
 
-/** The range in the address (or the latest business date's month), and a setter that keeps the other filters. */
-export function useReportRange() {
+export interface RangeOptions {
+  /**
+   * "business" (default): business dates, ending at the latest one (yesterday);
+   * "event": an event date (a decision, a login), which may be today.
+   */
+  basis?: 'business' | 'event';
+  /** B3 by month: up to this many whole months instead of 92 days. */
+  maxMonths?: number;
+}
+
+const rulesOf = (o: RangeOptions): RangeRules => (o.maxMonths ? { maxMonths: o.maxMonths } : {});
+
+/** The range in the address (or the latest date's month), and a setter that keeps the other filters. */
+export function useReportRange(options: RangeOptions = {}) {
   const [params, setParams] = useSearchParams();
-  const latest = latestBusinessDateIst();
-  const resolved = useMemo(() => rangeFromParams(params, latest), [params, latest]);
+  const latest = options.basis === 'event' ? todayIst() : latestBusinessDateIst();
+  const maxMonths = options.maxMonths;
+  const resolved = useMemo(
+    () => rangeFromParams(params, latest, maxMonths ? { maxMonths } : {}),
+    [params, latest, maxMonths],
+  );
   const setRange = (r: DateRange) =>
     setParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -44,15 +71,28 @@ export function useModuleName(): string {
   return m?.code ?? slug.toUpperCase();
 }
 
-export function ReportFilterBar({ children }: { children?: ReactNode }) {
+export interface ReportFilterBarProps extends RangeOptions {
+  children?: ReactNode;
+  /** The date inputs' label ("Business date", "Decision date", "Date"). */
+  dateLabel?: string;
+  /** Show "Module: UPI (change it in the header)"; off for a report of all modules. */
+  showModule?: boolean;
+}
+
+export function ReportFilterBar(props: ReportFilterBarProps) {
   const [params] = useSearchParams();
   // A new address (back button, a preset, a link) restarts the inputs from it.
   const key = `${params.get('date_from') ?? ''}|${params.get('date_to') ?? ''}`;
-  return <RangeForm key={key}>{children}</RangeForm>;
+  return <RangeForm key={key} {...props} />;
 }
 
-function RangeForm({ children }: { children?: ReactNode }) {
-  const { range, setRange, params, latest } = useReportRange();
+function RangeForm({
+  children,
+  dateLabel = 'Business date',
+  showModule = true,
+  ...options
+}: ReportFilterBarProps) {
+  const { range, setRange, params, latest } = useReportRange(options);
   const moduleName = useModuleName();
   // The inputs start from the address; an invalid address leaves them as typed there.
   const [from, setFrom] = useState<string | null>(range?.date_from ?? params.get('date_from'));
@@ -61,7 +101,7 @@ function RangeForm({ children }: { children?: ReactNode }) {
 
   const apply = (e: FormEvent) => {
     e.preventDefault();
-    const problem = rangeError(from, to);
+    const problem = rangeError(from, to, rulesOf(options));
     setError(problem);
     if (!problem) setRange({ date_from: from!, date_to: to! });
   };
@@ -78,7 +118,7 @@ function RangeForm({ children }: { children?: ReactNode }) {
       <form onSubmit={apply} noValidate>
         <Group gap="xs" align="flex-end" wrap="wrap">
           <DateInput
-            label="Business date from"
+            label={`${dateLabel} from`}
             valueFormat="DD-MMM-YYYY"
             value={from}
             onChange={setFrom}
@@ -87,7 +127,7 @@ function RangeForm({ children }: { children?: ReactNode }) {
             error={!!error}
           />
           <DateInput
-            label="Business date to"
+            label={`${dateLabel} to`}
             valueFormat="DD-MMM-YYYY"
             value={to}
             onChange={setTo}
@@ -102,9 +142,11 @@ function RangeForm({ children }: { children?: ReactNode }) {
             </Button>
           ))}
           {children}
-          <Text size="sm" c="dimmed" ml="auto">
-            Module: {moduleName} (change it in the header)
-          </Text>
+          {showModule && (
+            <Text size="sm" c="dimmed" ml="auto">
+              Module: {moduleName} (change it in the header)
+            </Text>
+          )}
         </Group>
         {error && (
           <Text size="sm" c="red" role="alert" mt={4}>

@@ -10,6 +10,10 @@
  * of them is set). Columns add the amount and the NPCI reply, and show the
  * plain rule name. "Awaiting my approval" is the Approvals inbox now
  * (7.1): ?mine=approval opens it.
+ *
+ * Phase 6 (contract C2): the ageing report's cells open this list with
+ * ageing_bucket (and a rule_code that may be a comma list); both are
+ * filters here too.
  */
 import {
   Alert,
@@ -44,7 +48,7 @@ import { Link, Navigate, useSearchParams } from 'react-router';
 import { listCases } from '../api/client';
 import type { CaseFilters, CaseListItem, ModuleMeta, ReplyType } from '../api/types';
 import { useMe } from '../auth/auth';
-import { FlagBadges, StatusBadge } from '../components/Badges';
+import { ClosedBySystemBadge, FlagBadges, StatusBadge } from '../components/Badges';
 import { BulkBar } from '../features/cases/BulkBar';
 import { useMeta, useModuleCode } from '../hooks/module';
 import { formatCount, formatDate, formatRupees } from '../lib/format';
@@ -62,6 +66,7 @@ const FILTER_KEYS = [
   'due_date',
   'ordering',
   'reply_type',
+  'ageing_bucket',
 ] as const;
 type FilterKey = (typeof FILTER_KEYS)[number];
 
@@ -84,6 +89,7 @@ export const MORE_FILTER_KEYS = [
   'overdue',
   'flag',
   'ordering',
+  'ageing_bucket',
 ] as const satisfies readonly FilterKey[];
 
 export function filtersFromParams(params: URLSearchParams): CaseFilters {
@@ -201,7 +207,12 @@ function columns(module: string, meta: ModuleMeta | undefined): ColumnDef<CaseLi
     {
       id: 'status',
       header: 'Status',
-      cell: ({ row }) => <StatusBadge value={row.original.status} choices={meta?.case_statuses} />,
+      cell: ({ row }) => (
+        <Group gap={4} wrap="wrap">
+          <StatusBadge value={row.original.status} choices={meta?.case_statuses} />
+          {row.original.closed_by_system && <ClosedBySystemBadge fileName={row.original.npci_file?.file_name} />}
+        </Group>
+      ),
     },
     { id: 'flags', header: 'Flags', cell: ({ row }) => <FlagBadges flags={row.original.flags} /> },
     {
@@ -313,6 +324,11 @@ export function CaseQueuePage() {
     { value: '', label: 'Any' },
     ...(list ?? []),
   ];
+  // A value from a link that is not one choice (a comma list of rules or buckets) stays visible.
+  const keep = (list: { value: string; label: string }[], value: string | undefined) =>
+    value && !list.some((o) => o.value === value)
+      ? [...list, { value, label: value.split(',').join(' / ') }]
+      : list;
   const tabCounts = query.data?.reply_type_counts;
   const tabCount = (v: ReplyType) => (tabCounts ? ` (${formatCount(tabCounts[v] ?? 0)})` : '');
   const allCount = tabCounts ? Object.values(tabCounts).reduce((t, n) => t + (n ?? 0), 0) : undefined;
@@ -407,11 +423,25 @@ export function CaseQueuePage() {
             />
             <Select
               label="Rule"
-              data={opt(meta?.rules.map((r) => ({ value: r.code, label: r.code })))}
+              data={keep(
+                opt(meta?.rules.map((r) => ({ value: r.code, label: r.code }))),
+                filters.rule_code,
+              )}
               value={filters.rule_code ?? ''}
               onChange={(v) => setFilter('rule_code', v)}
               w={110}
               searchable
+              allowDeselect={false}
+            />
+            <Select
+              label="Age"
+              data={keep(
+                opt(meta?.ageing_buckets.map((b) => ({ value: b.label, label: b.label }))),
+                filters.ageing_bucket,
+              )}
+              value={filters.ageing_bucket ?? ''}
+              onChange={(v) => setFilter('ageing_bucket', v)}
+              w={120}
               allowDeselect={false}
             />
             <Select

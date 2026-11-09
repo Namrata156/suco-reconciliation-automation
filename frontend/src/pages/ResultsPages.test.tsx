@@ -89,7 +89,11 @@ const SUMMARY: ResultSummary = {
 describe('Results summary on the date overview (design 4.12)', () => {
   it('counts per rule, plain numbers: the results list is gone (U3 4.5)', async () => {
     vi.stubGlobal('fetch', routeFetch({ '/results/summary/': SUMMARY, '/meta/': META }));
-    renderWithProviders(<ResultsSummaryPanel module="upi" businessDate="2026-07-14" runId={5} enabled />);
+    renderWithProviders(
+      <MeProvider me={makeMe(['Auditor'])}>
+        <ResultsSummaryPanel module="upi" businessDate="2026-07-14" runId={5} enabled />
+      </MeProvider>,
+    );
     const table = await screen.findByRole('table', { name: 'Results per rule for 14-Jul-2026' });
     expect(screen.queryByRole('link')).toBeNull();
     // Only the rules that occurred, plain name first (U1 3.5); no 0-count row.
@@ -110,7 +114,9 @@ describe('Results summary on the date overview (design 4.12)', () => {
     const fetch = routeFetch({});
     vi.stubGlobal('fetch', fetch);
     renderWithProviders(
-      <ResultsSummaryPanel module="upi" businessDate="2026-07-14" runId={null} enabled={false} />,
+      <MeProvider me={makeMe(['Auditor'])}>
+        <ResultsSummaryPanel module="upi" businessDate="2026-07-14" runId={null} enabled={false} />
+      </MeProvider>,
     );
     expect(screen.getByText(/No reconciliation results for this date yet/)).toBeTruthy();
     expect(fetch).not.toHaveBeenCalled();
