@@ -103,8 +103,10 @@ def preview_payload(module, plan: generator.FilePlan, user) -> dict:
         "rows": [{"line": i, "case_id": r.case.pk, "case_business_date": r.case.business_date, "rrn": r.line.rrn,
                   "rule_code": r.case.rule_code, "action_type": r.action_type, "reply_source": r.source,
                   "flag": r.flag, "code": r.code, "shtdat": r.line.shtdat, "amount": format_amount(r.line.amount),
-                  "account_masked": generator.mask_account(r.line.account), "text": r.line.text}
+                  "account_masked": generator.mask_account(r.line.account), "text": r.line.text,
+                  "closes_case": r.closes_case}  # owner 2026-11-09: no-money reply, closed on generation
                  for i, r in enumerate(plan.rows, start=1)],
+        "closes_by_system_count": sum(1 for r in plan.rows if r.closes_case),
         "reply_sources": plan.source_counts(),
         "not_included": [generator.excluded_payload(e) for e in plan.excluded],
         "not_included_counts": plan.excluded_counts(),

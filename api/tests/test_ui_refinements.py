@@ -84,8 +84,12 @@ class CaseReplyTests(NpciApiBase):
         self.assertEqual((r13["reply"]["reply_type"], r13["reply"]["flag"], r13["reply"]["label"], r13["amount"],
                           r13["amount_source"]), ("NEEDS_REVIEW", None, None, None, None))
         self.generate(confirm_partial=True)
-        _body, rows = self.rows()
+        # R01 DRC 102 is a no-money reply: the file closes the case (owner 2026-11-09), so it
+        # leaves the active queue; status=all still lists it.
+        _body, rows = self.rows(status="all")
         self.assertEqual(rows[self.approved.pk]["npci_file"]["file_name"], "SSKUPI14072026.csv")
+        self.assertEqual((rows[self.approved.pk]["status"], rows[self.approved.pk]["closed_by_system"]),
+                         ("COMPLETED", True))
         self.assertIsNone(rows[self.held.pk]["npci_file"])
 
     def test_tabs_filter_and_counts(self):

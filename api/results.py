@@ -238,11 +238,69 @@ def _cases_for(module, d, groups) -> dict[int, dict]:
     return out
 
 
+def filtered_results(module, d, p, errors: dict):
+    """(queryset, order_by args) for the results list filters below
+    (ResultListView); errors gets the 400 messages. Shared by the screen and
+    its download (Phase 6 B8), so both always list the same rows."""
+    qs = _with_current_result(_groups(module, d))
+    superseded = _bool_param(p, "superseded", errors)
+    qs = qs.filter(is_superseded=bool(superseded))
+    for name, field, allowed in (("rule_code", "r_rule_code", None),
+                                 ("status_category", "r_status_category", StatusCategory.values),
+                                 ("priority", "r_priority", Priority.values),
+                                 ("processing_status", "processing_status", GroupStatus.values)):
+        if allowed is None:
+            values = _csv(p[name]) if p.get(name) else None
+        else:
+            values = _enum_filter(p, name, allowed, errors)
+        if values:
+            qs = qs.filter(**{f"{field}__in": values})
+    if p.get("rrn"):
+        qs = qs.filter(rrn=p["rrn"].strip())
+    presence = p.get("presence")
+    if presence:
+        if presence not in PRESENCE_PATTERNS:
+            errors["presence"] = [f"Allowed: {', '.join(PRESENCE_PATTERNS)}"]
+        else:
+            cbs, npci = _present(CBS), _present(NPCI)
+            qs = qs.filter({"CBS_AND_NPCI": cbs & npci, "CBS_ONLY": cbs & ~npci, "NPCI_ONLY": ~cbs & npci,
+                            "NEITHER": ~cbs & ~npci}[presence])
+    for name, field in (("on_us", "is_on_us"), ("reversed", "cbs_reversed")):
+        v = _bool_param(p, name, errors)
+        if v is not None:
+            qs = qs.filter(**{field: v})
+    evaluated = _bool_param(p, "evaluated", errors)
+    if evaluated is not None:
+        qs = qs.filter(r_id__isnull=not evaluated)
+    order, order_error = _ordering(p.get("ordering"))
+    if order_error:
+        errors["ordering"] = [order_error]
+    return qs, order
+
+
+RESULT_FILTERS = ("rule_code", "status_category", "priority", "processing_status", "rrn", "presence", "on_us",
+                  "reversed", "superseded", "evaluated", "ordering")
+# The download takes the same filters minus priority (owner 2026-11-08 "P": no priority in any report;
+# cleanup 2026-11-09). The screen list keeps accepting it (unchanged API).
+EXPORT_FILTERS = tuple(f for f in RESULT_FILTERS if f != "priority")
+NO_PRIORITY = "The results download has no priority (removed from every report, owner 2026-11-08)."
+
+
+def refuse_priority(p, errors: dict) -> None:
+    """400s for a priority filter or ordering on the download."""
+    if p.get("priority"):
+        errors["priority"] = [NO_PRIORITY]
+    if any(part.lstrip("-") == "priority" for part in _csv(p.get("ordering") or "")):
+        errors["ordering"] = [NO_PRIORITY]
+
+
 class ResultListView(ResultsView):
     """Filters: rule_code, status_category, priority, processing_status
     (comma lists), rrn (exact), presence (PRESENCE_PATTERNS), on_us,
     reversed, superseded (default false), evaluated (has a current rule
-    result). ordering: RESULT_ORDERING, default rrn."""
+    result). ordering: RESULT_ORDERING, default rrn. ?export=csv|xlsx: the
+    whole filtered list as a file (Phase 6 B8, api.export); the download
+    refuses priority (filter or ordering) with a 400."""
 
     def get(self, request, module, business_date):
         d, error = self.business_date(business_date)
@@ -252,41 +310,13 @@ class ResultListView(ResultsView):
         if missing:
             return missing
         p, errors = request.query_params, {}
-        qs = _with_current_result(_groups(self.module, d))
-        superseded = _bool_param(p, "superseded", errors)
-        qs = qs.filter(is_superseded=bool(superseded))
-        for name, field, allowed in (("rule_code", "r_rule_code", None),
-                                     ("status_category", "r_status_category", StatusCategory.values),
-                                     ("priority", "r_priority", Priority.values),
-                                     ("processing_status", "processing_status", GroupStatus.values)):
-            if allowed is None:
-                values = _csv(p[name]) if p.get(name) else None
-            else:
-                values = _enum_filter(p, name, allowed, errors)
-            if values:
-                qs = qs.filter(**{f"{field}__in": values})
-        if p.get("rrn"):
-            qs = qs.filter(rrn=p["rrn"].strip())
-        presence = p.get("presence")
-        if presence:
-            if presence not in PRESENCE_PATTERNS:
-                errors["presence"] = [f"Allowed: {', '.join(PRESENCE_PATTERNS)}"]
-            else:
-                cbs, npci = _present(CBS), _present(NPCI)
-                qs = qs.filter({"CBS_AND_NPCI": cbs & npci, "CBS_ONLY": cbs & ~npci, "NPCI_ONLY": ~cbs & npci,
-                                "NEITHER": ~cbs & ~npci}[presence])
-        for name, field in (("on_us", "is_on_us"), ("reversed", "cbs_reversed")):
-            v = _bool_param(p, name, errors)
-            if v is not None:
-                qs = qs.filter(**{field: v})
-        evaluated = _bool_param(p, "evaluated", errors)
-        if evaluated is not None:
-            qs = qs.filter(r_id__isnull=not evaluated)
-        order, order_error = _ordering(p.get("ordering"))
-        if order_error:
-            errors["ordering"] = [order_error]
+        qs, order = filtered_results(self.module, d, p, errors)
+        if "export" in p:
+            refuse_priority(p, errors)
         if errors:
             return _bad_request("Invalid input", errors)
+        if "export" in p:
+            return results_export(request, self.module, d, qs.order_by(*order))
         qs = qs.select_related("settlement_cycle").prefetch_related(
             Prefetch("register_presences", queryset=RegisterPresence.objects.only(
                 "id", "match_group_id", "leg", "present", "amount", "direction", "response_code")))
@@ -308,6 +338,84 @@ class ResultListView(ResultsView):
                 "case": cases.get(g.pk),
             })
         return paginator.get_paginated_response(rows)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 B8: one date's results as a file (no priority column: owner 2026-11-08 "P")
+# ---------------------------------------------------------------------------
+_EXPORT_CHUNK = 2000
+_GROUP_STATUS_LABELS = dict(GroupStatus.choices)
+_CATEGORY_LABELS = dict(StatusCategory.choices)
+
+
+def _result_columns():
+    from api.export import AMOUNT, BOOL, COUNT, DATE, RRN, Column
+
+    return [Column("rrn", "RRN", RRN), Column("business_date", "Business date", DATE),
+            Column("settlement_cycle", "Cycle"), Column("processing_status", "Processing status"),
+            Column("cbs_present", "In CBS", BOOL), Column("cbs_amount", "CBS amount", AMOUNT),
+            Column("cbs_direction", "CBS direction"),
+            Column("npci_present", "In NPCI", BOOL), Column("npci_amount", "NPCI amount", AMOUNT),
+            Column("npci_direction", "NPCI direction"), Column("npci_response_code", "NPCI response code", RRN),
+            Column("overlays", "Dispute rows"), Column("amount_match", "Amount match", BOOL),
+            Column("direction_match", "Direction match", BOOL), Column("is_on_us", "On-us", BOOL),
+            Column("cbs_reversed", "CBS reversed", BOOL), Column("rule_code", "Rule"),
+            Column("status_category", "Status category"), Column("due_date", "Due date", DATE),
+            Column("case_id", "Case", COUNT), Column("case_status", "Case status"),
+            Column("assigned_to", "Assigned to")]
+
+
+def _result_export_rows(module, d, qs):
+    """Streams the rows: one server-side cursor over the groups, plus one
+    presence and one case query per chunk of 2,000."""
+    from itertools import batched
+
+    from exception_management.models import CaseStatus
+
+    _CASE_STATUS_LABELS = dict(CaseStatus.choices)
+    fields = ("id", "rrn", "business_date", "settlement_cycle__cycle_code", "processing_status", "amount_match",
+              "direction_match", "is_on_us", "cbs_reversed", "r_rule_code", "r_status_category", "r_due_date")
+    for chunk in batched(qs.values(*fields).iterator(chunk_size=_EXPORT_CHUNK), _EXPORT_CHUNK):
+        legs: dict[int, dict] = {}
+        for x in RegisterPresence.objects.filter(match_group_id__in=[g["id"] for g in chunk], present=True).values(
+                "match_group_id", "leg", "amount", "direction", "response_code"):
+            legs.setdefault(x["match_group_id"], {})[x["leg"]] = x
+        cases = {c["rrn"]: c for c in ExceptionCase.objects.filter(
+            payment_module=module, business_date=d, case_type=CaseType.TRANSACTION,
+            rrn__in=[g["rrn"] for g in chunk]).values("rrn", "id", "status", "assigned_to__username")}
+        for g in chunk:
+            gl, case = legs.get(g["id"], {}), cases.get(g["rrn"])
+            cbs, npci = gl.get(CBS), gl.get(NPCI)
+            yield {"rrn": g["rrn"], "business_date": g["business_date"],
+                   "settlement_cycle": g["settlement_cycle__cycle_code"],
+                   "processing_status": _GROUP_STATUS_LABELS.get(g["processing_status"], g["processing_status"]),
+                   "cbs_present": cbs is not None, "cbs_amount": cbs["amount"] if cbs else None,
+                   "cbs_direction": (cbs["direction"] or None) if cbs else None,
+                   "npci_present": npci is not None, "npci_amount": npci["amount"] if npci else None,
+                   "npci_direction": (npci["direction"] or None) if npci else None,
+                   "npci_response_code": (npci["response_code"] or None) if npci else None,
+                   "overlays": ", ".join(leg for leg in DEFAULT_OVERLAY_LEGS if leg in gl),
+                   "amount_match": g["amount_match"], "direction_match": g["direction_match"],
+                   "is_on_us": g["is_on_us"], "cbs_reversed": g["cbs_reversed"], "rule_code": g["r_rule_code"],
+                   "status_category": _CATEGORY_LABELS.get(g["r_status_category"], g["r_status_category"]),
+                   "due_date": g["r_due_date"], "case_id": case["id"] if case else None,
+                   "case_status": _CASE_STATUS_LABELS.get(case["status"], case["status"]) if case else None,
+                   "assigned_to": case["assigned_to__username"] if case else None}
+
+
+def results_export(request, module, d, qs):
+    from api.export import Sheet, export_response
+    from api.reports import report_block, versions
+
+    p = request.query_params
+    run = _latest_run(module, d)
+    filters = {"business_date": d, **{k: p[k] for k in EXPORT_FILTERS if p.get(k)}}
+    filters.setdefault("superseded", "false")
+    report = report_block("results", f"Reconciliation results for {d:%d-%b-%Y}", module, filters, request.user,
+                          versions(rule_sets=[run.rule_set.version_label] if run else []))
+    sheet = Sheet("results", "Results", _result_columns(), lambda: _result_export_rows(module, d, qs), qs.count())
+    return export_response(request, report=report, module=module, sheets=[sheet],
+                           file_base=f"{module.code}_results_{d.isoformat()}")
 
 
 # ---------------------------------------------------------------------------

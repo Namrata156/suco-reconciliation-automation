@@ -275,6 +275,9 @@ except ImportError:  # celery is pinned in requirements.txt; defensive only
 # Django REST Framework -- per locked tech stack. Endpoints: /api/exceptions/
 # (exception_management.api) and /api/v1/ (api app, Phase 5); each view sets
 # its own session authentication and role permission.
+# Phase 6 report downloads: the bank named in every file's header block.
+REPORT_BANK_NAME = os.environ.get("REPORT_BANK_NAME", "").strip() or "SUCO Souharda Sahakari Bank"
+
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",

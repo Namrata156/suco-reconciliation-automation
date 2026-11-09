@@ -238,6 +238,8 @@ class OperationType(models.TextChoices):
     NPCI_FILE_DOWNLOADED = "NPCI_FILE_DOWNLOADED", "NPCI file downloaded"
     # UI refinements 4.6 (owner 2026-10-27): "Download original" of an uploaded file
     ORIGINAL_FILE_DOWNLOADED = "ORIGINAL_FILE_DOWNLOADED", "Original file downloaded"
+    # Phase 6 (docs/phase6_api_contract.txt section A, C3): every successful report download
+    REPORT_EXPORTED = "REPORT_EXPORTED", "Report downloaded"
 
 
 class OperationLog(AppendOnlyModel):
@@ -257,7 +259,10 @@ class OperationLog(AppendOnlyModel):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
     username = models.CharField(max_length=150, blank=True)
-    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="+")
+    # NULL only for a step that belongs to no module: the user activity report download
+    # (Phase 6 B7; PM decision 2026-11-08).
+    payment_module = models.ForeignKey(PaymentModule, on_delete=models.PROTECT, related_name="+", null=True,
+                                       blank=True)
     business_date = models.DateField(null=True, blank=True)
     uploaded_file_id = models.BigIntegerField(null=True, blank=True)
     run_id = models.BigIntegerField(null=True, blank=True)

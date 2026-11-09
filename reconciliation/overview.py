@@ -83,22 +83,32 @@ def _latest_uploads(module: PaymentModule, dates: list[date]) -> dict:
                 .values("d").annotate(m=Max("uploaded_at")).values_list("d", "m"))
 
 
-def date_overviews(module: PaymentModule, dates: list[date]) -> dict[date, dict]:
+def date_overviews(module: PaymentModule, dates: list[date], *, group_breakdown: bool = False) -> dict[date, dict]:
+    """group_breakdown: the match-group query also counts each processing
+    status, on-us and CBS-reversed groups, in the same pass, returned as
+    "_groups" (the Phase 6 reconciliation report)."""
     from exception_management.models import ACTIVE_STATUSES, ExceptionCase
+    from reconciliation.models import ProcessingStatus
     from rule_engine.models import RuleEvaluationRun
     from settlement.models import SettlementResult
 
     checklists = date_checklists(module, dates)
+    breakdown = {}
+    if group_breakdown:
+        breakdown = {"on_us": Count("id", filter=Q(is_on_us=True)),
+                     "cbs_reversed": Count("id", filter=Q(cbs_reversed=True)),
+                     **{f"s_{s}": Count("id", filter=Q(processing_status=s)) for s in ProcessingStatus.values}}
     matrix = {r["business_date"]: r for r in TransactionMatchGroup.objects.filter(
         payment_module=module, business_date__in=dates, is_superseded=False).order_by()
-        .values("business_date").annotate(groups=Count("id"), built_at=Max("updated_at"))}
+        .values("business_date").annotate(groups=Count("id"), built_at=Max("updated_at"), **breakdown)}
     evaluations = _latest_per_date(RuleEvaluationRun.objects.filter(payment_module=module)
                                    .select_related("rule_set").order_by("-started_at", "-id"), dates)
     cases = {r["business_date"]: r for r in ExceptionCase.objects.filter(
         payment_module=module, business_date__in=dates).order_by().values("business_date")
         .annotate(total=Count("id"), active=Count("id", filter=Q(status__in=ACTIVE_STATUSES)))}
+    # Never the snapshot (the full calculation, ~150 KB a date): only the status fields are read here.
     settlements = _latest_per_date(SettlementResult.objects.filter(payment_module=module, is_current=True)
-                                   .order_by("-computed_at", "-id"), dates)
+                                   .defer("snapshot").order_by("-computed_at", "-id"), dates)
     runs = _latest_per_date(ReconciliationRun.objects.filter(payment_module=module)
                             .order_by("-requested_at", "-id"), dates)
     uploads = _latest_uploads(module, dates)
@@ -129,4 +139,9 @@ def date_overviews(module: PaymentModule, dates: list[date]) -> dict[date, dict]
             "_checklist": cl,
             "_evaluation": ev,
         }
+        if group_breakdown:
+            out[d]["_groups"] = {
+                "total": m["groups"] if m else 0,
+                "by_status": {s: m[f"s_{s}"] if m else 0 for s in ProcessingStatus.values},
+                "on_us": m["on_us"] if m else 0, "cbs_reversed": m["cbs_reversed"] if m else 0}
     return out

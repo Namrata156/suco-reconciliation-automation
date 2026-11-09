@@ -1,12 +1,15 @@
 """
-/api/v1/<module>/reports/... (Phase 6, docs/phase6_api_contract.txt). The
-first report built is the NPCI files report (UI refinements 8.1,
-docs/ui_refinements_api_contract_u4u5.txt F1); report_range() and
-report_block() are the contract's RR1 / RR2 and are meant for every later
-report. Excel / CSV export (contract section A) is not built yet: "export"
-is null until the shared export lands.
+Phase 6 reports, common pieces (docs/phase6_api_contract.txt): report_range()
+(RR1), report_block() / versions() (RR2), the B1 / B2 paging, the B0 meta,
+and the NPCI files report (UI refinements 8.1,
+docs/ui_refinements_api_contract_u4u5.txt F1; its "export" stays null, the
+download is not part of Phase 6).
 
-  GET /reports/npci-files/   every SSKUPI file (incl. _2, _3) by business date
+  GET /api/v1/reports/meta/                   B0
+  GET /api/v1/<module>/reports/npci-files/    every SSKUPI file (incl. _2, _3) by business date
+
+The other reports: api.reports_daily (B1-B3), api.reports_cases (B4-B6s),
+api.reports_users (B7); B8 in api.results; downloads in api.export.
 """
 from __future__ import annotations
 
@@ -27,11 +30,19 @@ from exception_management import api as legacy
 from npci_files.models import NpciFile
 
 MAX_RANGE_DAYS = 92
+MAX_RANGE_MONTHS = 24
 
 
-def report_range(params, errors: dict) -> tuple[date | None, date | None]:
+class ReportDatePagination(legacy.QueuePagination):
+    """B1 / B2: one row per business date; default 50, at most 92 (owner D5)."""
+
+    max_page_size = MAX_RANGE_DAYS
+
+
+def report_range(params, errors: dict, *, max_days: int | None = MAX_RANGE_DAYS) -> tuple[date | None, date | None]:
     """Phase 6 RR1: date_from / date_to inclusive; both omitted = this month
-    (1st .. today, IST); one omitted, bad, reversed or > 92 days -> errors."""
+    (1st .. today, IST); one omitted, bad, reversed or > 92 days -> errors.
+    max_days None: no day limit (the caller checks its own)."""
     raw_from, raw_to = params.get("date_from"), params.get("date_to")
     if not raw_from and not raw_to:
         today = timezone.localdate()
@@ -47,9 +58,24 @@ def report_range(params, errors: dict) -> tuple[date | None, date | None]:
         return None, None
     if d_to < d_from:
         errors["date_to"] = ["Must not be before date_from."]
-    elif (d_to - d_from).days + 1 > MAX_RANGE_DAYS:
-        errors["date_to"] = [f"At most {MAX_RANGE_DAYS} days per report; narrow the dates."]
+    elif max_days is not None and (d_to - d_from).days + 1 > max_days:
+        errors["date_to"] = [f"At most {max_days} days per report; narrow the dates."]
     return d_from, d_to
+
+
+def version_list(values) -> list[str]:
+    """Distinct version labels, "v1" style, sorted naturally."""
+    out = set()
+    for v in values:
+        if v in (None, ""):
+            continue
+        out.add(v if isinstance(v, str) else f"v{v}")
+    return sorted(out, key=lambda s: [int(x) if x.isdigit() else x for x in s.lstrip("v").split(".")])
+
+
+def versions(rule_sets=(), ntsl_mappings=(), tolerances=()) -> dict:
+    return {"rule_sets": version_list(rule_sets), "ntsl_mappings": version_list(ntsl_mappings),
+            "tolerances": version_list(tolerances)}
 
 
 def report_block(key: str, title: str, module, filters: dict, user, versions: dict | None = None) -> dict:
@@ -104,3 +130,44 @@ class NpciFilesReportView(ReportView):
             {"date_from": d_from, "date_to": d_to, "downloaded": downloaded, "ordering": ordering}, request.user)
         response.data["export"] = None  # the shared Phase 6 export is not built yet
         return response
+
+
+# ---------------------------------------------------------------------------
+# B0 /api/v1/reports/meta/ (static facts for the screens; no module)
+# ---------------------------------------------------------------------------
+REPORT_CATALOGUE = [
+    # key, title, description, module_scoped, capability (menu order, frontend lib/reports.ts)
+    ("reconciliation", "Daily reconciliation report",
+     "How each business date reconciled: files, transactions, cases and settlement status, one row per date.",
+     True, "reports.view"),
+    ("settlement", "Settlement report",
+     "Whether each date's NPCI settlement tied to CBS, and the unexplained amount if not.", True, "reports.view"),
+    ("npci_files", "NPCI files (SSKUPI)",
+     "Every SSKUPI file generated, with rows and amount, who generated it and who downloaded it, and when.",
+     True, "reports.view"),
+    ("volume", "Daily / monthly transaction volume",
+     "Transactions and amounts each source file carried, per day or per month.", True, "reports.view"),
+    ("exceptions", "Exception report", "Exception cases for a period, open or closed, with the action taken.",
+     True, "reports.view"),
+    ("ageing", "Ageing report", "Open cases by age bucket and rule, with the overdue counts.", True,
+     "reports.view"),
+    ("approvals", "Approval report",
+     "Every maker-checker decision in a period: who proposed, who decided, self-approvals.", True,
+     "reports.approvals"),
+    ("user_activity", "User activity report", "Logins and work done per user in a period.", False,
+     "reports.user_activity"),
+]
+
+
+class ReportsMetaView(V1APIView):
+    def get(self, request):
+        from api.export import EXPORT_LIMIT, export_formats
+
+        return Response({
+            "export_formats": export_formats(),
+            "max_export_rows": EXPORT_LIMIT,
+            "max_range_days": MAX_RANGE_DAYS,
+            "max_range_months": MAX_RANGE_MONTHS,
+            "reports": [{"key": k, "title": t, "description": d, "module_scoped": s, "capability": c}
+                        for k, t, d, s, c in REPORT_CATALOGUE],
+        })

@@ -35,8 +35,12 @@ from transactions.models.staging import (
     StagingRowBase,
     StagingTimeout,
 )
+from transactions.models.volume import DailyVolume, DailyVolumeDate, VolumeSide
 
 __all__ = [
+    "DailyVolume",
+    "DailyVolumeDate",
+    "VolumeSide",
     "STAGING_MODEL_BY_REGISTER_TYPE",
     "StagingRowBase",
     "StagingCbsGlExtract",

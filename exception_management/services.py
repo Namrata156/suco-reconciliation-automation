@@ -14,6 +14,9 @@ current status, applies the change and writes a CaseEvent.
   CLOSE_NO_ACTION goes straight from approval to COMPLETED (A3).
   bulk_submit / bulk_approve: LOW/MEDIUM, one shared action, all or nothing (P2).
   CLOSED_SUPERSEDED is set only by the system (exception_management.sync).
+  close_by_system (no user; owner 2026-11-09): OPEN / IN_PROGRESS /
+    PENDING_APPROVAL / APPROVED -> COMPLETED when the case's no-money reply
+    went into a generated NPCI file (npci_files.auto_close decides which).
 
 Roles: Maker = take, release, submit, mark_completed, add_remark; Checker =
 approve, reject; Administrator = reassign (and release a case someone else
@@ -35,6 +38,7 @@ from django.utils import timezone
 from exception_management import alerts
 from exception_management.actions import ACTION_SPECS, SETTLEMENT_ACTIONS, ActionType
 from exception_management.models import (
+    SYSTEM_CLOSABLE_STATUSES,
     CaseEvent,
     CaseStatus,
     Decision,
@@ -408,6 +412,74 @@ def clear_review(case, user, *, remarks: str, source: str = "") -> CaseEvent:
 
 
 # ---------------------------------------------------------------------------
+# system closure (owner 2026-11-09)
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def close_by_system(cases, *, reference: str, remarks: str, changes: dict | None = None,
+                    source: str = "") -> list[ExceptionCase]:
+    """Closes cases with no Maker or Checker: COMPLETED, unassigned, one
+    CLOSED_BY_SYSTEM event each (actor NULL = the system). The caller has
+    LOCKED the cases (select_for_update, this transaction) and decided they
+    qualify (npci_files.auto_close: a no-money reply included in an NPCI
+    file). A case not in SYSTEM_CLOSABLE_STATUSES raises InvalidTransition
+    and nothing is written.
+
+    The case's own proposal is settled, not left dangling:
+      - a PENDING proposal is WITHDRAWN (the system closed the case under it);
+      - an APPROVED case's approved action gets completed_at = now and
+        external_reference = `reference` (the file name); completed_by stays
+        empty (nobody marked it done).
+    `changes` (e.g. the file id and name) is added to each event's changes."""
+    cases = list(cases)
+    bad = [c for c in cases if c.status not in SYSTEM_CLOSABLE_STATUSES]
+    if bad:
+        raise InvalidTransition(f"Cannot close case {bad[0].pk} by the system: it is {bad[0].status}")
+    if not cases:
+        return []
+    now = timezone.now()
+    ids = [c.pk for c in cases]
+    pending, approved = {}, {}
+    for a in (ProposedAction.objects.select_for_update(of=("self",)).select_related("response_code", "submitted_by",
+                                                                                    "decided_by")
+              .filter(case_id__in=ids, decision__in=(Decision.PENDING, Decision.APPROVED))
+              .order_by("case_id", "decided_at", "pk")):
+        (pending if a.decision == Decision.PENDING else approved)[a.case_id] = a  # the latest approved one wins
+    actions, events = [], []
+    for case in cases:
+        old_status = case.status
+        holder = case.assigned_to.get_username() if case.assigned_to_id else None
+        action = None
+        if old_status == CaseStatus.PENDING_APPROVAL and case.pk in pending:
+            action = pending[case.pk]
+            action.decision = Decision.WITHDRAWN
+            action.decided_at = now
+            action.decision_remarks = f"Withdrawn: {remarks}"
+        elif old_status == CaseStatus.APPROVED and case.pk in approved:
+            action = approved[case.pk]
+            action.completed_at = now
+            action.external_reference = reference[:100]
+        if action is not None:
+            actions.append(action)
+        case.status = CaseStatus.COMPLETED
+        case.assigned_to = None
+        case.updated_at = now
+        event_changes = {"status": [old_status, CaseStatus.COMPLETED], "closed_by": [None, "system"]}
+        if holder:
+            event_changes["assigned_to"] = [holder, None]
+        event_changes.update(changes or {})
+        events.append(CaseEvent(**event_kwargs(
+            case, EventType.CLOSED_BY_SYSTEM, old_status=old_status, new_status=case.status, action=action,
+            remarks=remarks, changes=event_changes, source=source)))
+    ExceptionCase.objects.bulk_update(cases, ["status", "assigned_to", "updated_at"], batch_size=2000)
+    if actions:
+        ProposedAction.objects.bulk_update(
+            actions, ["decision", "decided_at", "decision_remarks", "completed_at", "external_reference"],
+            batch_size=2000)
+    CaseEvent.objects.bulk_create(events, batch_size=2000)
+    return cases
+
+
+# ---------------------------------------------------------------------------
 # what a user may do now (admin buttons, API) -- mirrors the checks above
 # ---------------------------------------------------------------------------
 TRANSITIONS = ("take", "release", "reassign", "submit", "approve", "reject", "complete", "remark", "clear_review")
@@ -545,6 +617,7 @@ __all__ = [
     "bulk_submit",
     "bulk_take",
     "clear_review",
+    "close_by_system",
     "InvalidTransition",
     "MissingInput",
     "RoleRequired",

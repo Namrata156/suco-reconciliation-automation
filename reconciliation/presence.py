@@ -693,11 +693,20 @@ def build_presence_matrix(
     # so a dispute row that moved (e.g. an Adjustment now linked to its
     # Txndate) never lingers on its old group.
     if resolved_overlays:
-        RegisterPresence.objects.filter(
-            match_group__payment_module=payment_module,
-            match_group__business_date=business_date_,
-            leg__in=list(resolved_overlays),
-        ).delete()
+        # Keyed on the date's group ids (read above: every group of the
+        # module + date, superseded too) so the DELETE is a plain lookup on the
+        # unique (match_group, leg) index. The former join through the match
+        # group made Django emit DELETE ... WHERE id IN (SELECT ... JOIN ...);
+        # with stale planner statistics (a table just vacuumed or analyzed
+        # while nearly empty, e.g. a fresh database) PostgreSQL ran that as a
+        # nested loop rescanning the table per row and never finished on a
+        # real 78K-row day (test suite stall, 2026-11-10).
+        overlay_legs = list(resolved_overlays)
+        group_ids = list(match_group_ids.values())
+        for start in range(0, len(group_ids), _LOOKUP_BATCH):
+            RegisterPresence.objects.filter(
+                match_group_id__in=group_ids[start : start + _LOOKUP_BATCH], leg__in=overlay_legs
+            ).delete()
         RegisterPresence.objects.bulk_create(
             [
                 RegisterPresence(

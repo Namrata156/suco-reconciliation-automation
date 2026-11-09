@@ -176,9 +176,11 @@ def filter_queue(qs, request):
     elif st != "all":
         qs = qs.filter(status__in=st.split(","))
     for param, lookup in (("business_date", "business_date"), ("priority", "priority"),
-                          ("rule_code", "rule_code"), ("rrn", "rrn"), ("case_type", "case_type")):
+                          ("rrn", "rrn"), ("case_type", "case_type")):
         if p.get(param):
             qs = qs.filter(**{lookup: p[param]})
+    if p.get("rule_code"):  # one code, or a comma list (Phase 6 ageing report links)
+        qs = qs.filter(rule_code__in=[c.strip() for c in p["rule_code"].split(",") if c.strip()])
     if p.get("overdue") in ("true", "false"):
         qs = qs.filter(is_overdue=True) if p["overdue"] == "true" else qs.exclude(is_overdue=True)
     if p.get("mine") == "assigned":

@@ -275,9 +275,11 @@ class OperationAuditView(AuditView):
 
 
 def operation_row(o: OperationLog) -> dict:
-    slug = module_slug(o.payment_module)
-    link = (f"/{slug}/files/{o.uploaded_file_id}" if o.uploaded_file_id
-            else f"/{slug}/dates/{o.business_date.isoformat()}" if o.business_date else None)
+    # No module (the user activity report download, Phase 6 B7): module and link are null.
+    slug = module_slug(o.payment_module) if o.payment_module_id else None
+    link = None if slug is None else (
+        f"/{slug}/files/{o.uploaded_file_id}" if o.uploaded_file_id
+        else f"/{slug}/dates/{o.business_date.isoformat()}" if o.business_date else None)
     return {
         "id": o.pk, "created_at": o.created_at, "module": slug, "event_type": o.operation,
         "event_type_label": o.get_operation_display(), "username": o.username or None, "source": o.source,
@@ -340,6 +342,10 @@ def case_event_summary(r: dict) -> str:
         return f"{who} changed the rule on {case} from {old} to {new}"
     if t == EventType.REASSIGNED and isinstance(changes.get("assigned_to"), list):
         return f"{who} reassigned {case} to {changes['assigned_to'][-1] or 'nobody'}"
+    if t == EventType.CLOSED_BY_SYSTEM:  # owner 2026-11-09
+        name = changes.get("npci_file_name")
+        name = name[-1] if isinstance(name, list) and name else None
+        return f"{who} closed {case}: no-money reply included in NPCI file {name or '(unknown)'}"
     verbs = {
         EventType.CREATED: "created {c}", EventType.RESULT_UPDATED: "updated the rule result details on {c}",
         EventType.RULE_CHANGED: "changed the rule on {c}", EventType.FLAGGED_FOR_REVIEW: "flagged {c} for review",
@@ -390,6 +396,8 @@ def operation_summary(r: dict) -> str:
         return f"{who} downloaded {name}"
     if t == OperationType.ORIGINAL_FILE_DOWNLOADED:
         return f"{who} downloaded the original file {name}"
+    if t == OperationType.REPORT_EXPORTED:
+        return f"{who} downloaded the report {name} ({d.get('row_count', 0)} rows)"
     return f"{who}: {r['event_type_label']}{on}"
 
 

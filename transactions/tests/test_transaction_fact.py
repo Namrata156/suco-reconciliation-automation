@@ -174,7 +174,8 @@ class StagingSchemaTests(TestCase):
             expected_staging
             | {f"{n}History" for n in expected_staging}
             | {"TransactionFact", "TransactionFactHistory"}
-            | {"NtslSettlementLine", "NtslSettlementLineHistory"},
+            | {"NtslSettlementLine", "NtslSettlementLineHistory"}
+            | {"DailyVolume", "DailyVolumeDate"},  # Phase 6 volume summary (R4a)
         )
 
     def test_staging_unique_row_per_uploaded_file(self):

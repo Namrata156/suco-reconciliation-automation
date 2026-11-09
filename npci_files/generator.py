@@ -39,6 +39,11 @@ description in the repository at generation time (Amendment 1, option B).
 Generating while any case is left out makes a PARTIAL file and needs an
 explicit confirmation (owner Q5).
 
+Owner 2026-11-09 (overrides Amendment 2 B3 for these rules only): a case whose
+no-money reply goes into the file (R01 DRC 102, R03 DRC 104, R04a TCC 102;
+npci_files.auto_close.AUTO_CLOSE_REPLIES) is closed by the system in the same
+transaction as the file. The preview marks those rows (PlannedRow.closes_case).
+
 plan_file(..., rule_defaults=True) is the verification path only (the
 check_npci_file command): every case is taken with its rule's reply as if a
 Checker had approved it, ignoring the files already generated. It never
@@ -61,6 +66,7 @@ from core.operations import InvalidInput, RoleRequired, WrongState, log_operatio
 from exception_management.actions import ACTION_SPECS, ActionType
 from exception_management.models import CaseStatus, CaseType, Decision, ExceptionCase, ProposedAction
 from exception_management.roles import Role, user_roles
+from npci_files import auto_close
 from npci_files.formats import (
     ACCOUNT_CELL_BY_LEG,
     ADJUSTMENT_TXN_DATE_CELL,
@@ -135,6 +141,7 @@ class PlannedRow:
     fact: TransactionFact
     line: FileLine
     source: str = ReplySource.RULE
+    closes_case: bool = False  # generating the file closes the case (no-money reply, owner 2026-11-09)
 
     @property
     def flag(self) -> str:
@@ -395,8 +402,11 @@ def plan_file(module: PaymentModule, file_date: date, *, rule_defaults: bool = F
         except FormatError as exc:
             plan.excluded.append(Excluded(case, flag, code, Reason.BAD_SOURCE_DATA, str(exc)))
             continue
+        # held cases never get here (needs review, rejected...); rule_defaults never closes anything
+        closes = (not rule_defaults and case.status in auto_close.SYSTEM_CLOSABLE_STATUSES
+                  and auto_close.reply_closes_case(case, flag, code))
         plan.rows.append(PlannedRow(case=case, action=reply.action, action_type=reply.action_type, fact=fact,
-                                    line=line, source=reply.source))
+                                    line=line, source=reply.source, closes_case=closes))
         if reply.action_type in MANUAL_CREDIT_ACTIONS and case.status != CaseStatus.COMPLETED:
             manual_credit_pending += 1
 
@@ -444,6 +454,13 @@ def _add_warnings(plan: FilePlan, manual_credit_pending: int, rule_defaults: boo
             f"{changed} case(s) already included in an earlier file have changed since (flagged for review, "
             "another reply chosen, or closed by a re-run). A file already generated never changes and a case is "
             "never included in two files: any correction is made with NPCI outside the app."
+        )
+    closing = Counter(r.case.rule_code for r in plan.rows if r.closes_case)
+    if closing:
+        listed = ", ".join(f"{rule}: {n}" for rule, n in sorted(closing.items()))
+        plan.warnings.append(
+            f"{sum(closing.values())} case(s) with a no-money reply ({listed}) are closed by the system when "
+            "this file is generated: no money moves at the bank, so no Maker or Checker step (owner 2026-11-09)."
         )
 
 
@@ -498,12 +515,16 @@ def generate_file(user, module: PaymentModule, file_date: date, *, confirm_parti
                     account_masked=mask_account(r.line.account), text=r.line.text, dispute_fact_id=r.fact.pk)
         for i, r in enumerate(plan.rows, start=1)
     ])
+    # Owner 2026-11-09: the no-money cases of this file close now, in this transaction.
+    closure = auto_close.close_included_cases(npci_file)
     log_operation(OperationType.NPCI_FILE_GENERATED, user=user, payment_module=module, business_date=file_date,
                   source=source, details={
                       "npci_file_id": npci_file.pk, "file_name": file_name, "sequence": sequence,
                       "sha256": npci_file.sha256, "rows": npci_file.row_count,
                       "total_amount": f"{npci_file.total_amount:.2f}", "partial": npci_file.partial,
                       "not_included": plan.excluded_counts(), "reply_sources": plan.source_counts(),
+                      "closed_by_system": len(closure.closed),
+                      "closed_by_system_rules": closure.closed_by("rule_code"),
                   })
     return npci_file
 

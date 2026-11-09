@@ -10,6 +10,8 @@ no logic of its own:
                                   + exception_management.sync.sync_cases_for_date
                                   (one transaction, as rule_engine.tasks.evaluate_rules)
   3 settlement reconciliation     settlement.reconcile.reconcile_settlement_date
+then, outside the steps, the daily volume summary for the Phase 6 volume
+report (transactions.services.volume; never fails the run).
 A step that raises stops the run (FAILED, with the error); what earlier
 steps wrote stays, as when the tasks are run one by one. A re-run (e.g.
 after a corrected file) is the same call: each service supersedes its own
@@ -160,12 +162,28 @@ def execute_run(run_id: int) -> ReconciliationRun:
             run.steps[step].update(status="FAILED", finished_at=timezone.now().isoformat())
             run.status, run.error, run.finished_at = RunStatus.FAILED, f"{step}: {exc}"[:2000], timezone.now()
             _save(run, "steps", "status", "error", "finished_at")
+            _refresh_volume(run, label)
             return run
         run.steps[step].update(status="DONE", finished_at=timezone.now().isoformat(), summary=summary)
         _save(run, "steps")
     run.status, run.current_step, run.finished_at = RunStatus.SUCCEEDED, "", timezone.now()
     _save(run, "status", "current_step", "finished_at")
+    _refresh_volume(run, label)
     return run
+
+
+def _refresh_volume(run: ReconciliationRun, label: str) -> None:
+    """Phase 6 R4a: the date's daily volume summary, filled at the end of
+    every run (after the settlement step, so its ANALYZE is not affected).
+    The facts do not depend on the steps, so a failed run fills it too. Never
+    fails the run: a failure is logged; `manage.py fill_daily_volume` fills
+    the date later."""
+    from transactions.services.volume import refresh_daily_volume
+
+    try:
+        refresh_daily_volume(run.payment_module, run.business_date, source=label)
+    except Exception:  # noqa: BLE001 - a report summary must never fail the run
+        logger.exception("Daily volume summary for run %s failed", run.pk)
 
 
 def run_payload(run: ReconciliationRun | None) -> dict | None:

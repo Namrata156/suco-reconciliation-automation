@@ -72,10 +72,10 @@ class SelectionAndValuesTests(NpciTestBase):
             HEADER,
             f"100000000001,DRC,14-07-2026,140.5,100000000001,000000001111,{name},102,Online reverse",
             f"100000000003,DRC,14-07-2026,5,100000000003,000000004444,{name},102,Online reverse",
-            f"100000000004,DRC,14-07-2026,7,100000000004,000000005555,{name},103,Manually credited",
+            f"100000000004,DRC,14-07-2026,7,100000000004,000000005555,{name},103,Manual credit",  # owner 2026-11-09 wording
             f"100000000002,DRC,14-07-2026,20,100000000002,000000003333,{name},104,Not effected to CBS",
             # RRC: Shtdat = the Adjustment's Txndate, adjamt = Adjamount
-            f"100000000007,RRC,24-04-2026,401,100000000007,9876543210,{name},501,Manually credited",
+            f"100000000007,RRC,24-04-2026,401,100000000007,9876543210,{name},501,Manual credit",
             f"100000000005,TCC,14-07-2026,60,100000000005,ABC0000006666,{name},102,Online credited",
             f"100000000006,RET,14-07-2026,70,100000000006,000000007777,{name},115,Account doesn't exist",
         ]
@@ -184,7 +184,8 @@ class PartialAndLaterFileTests(NpciTestBase):
         self.assertEqual((f.row_count, f.partial, f.not_included), (2, False, []))
 
     def test_second_file_holds_only_new_rows_and_no_case_twice(self):
-        first_cases = [self.drc_case(f"10000000010{i}") for i in range(3)]
+        # R02 (money): the cases stay open after the file (R01 would close, owner 2026-11-09)
+        first_cases = [self.drc_case(f"10000000010{i}", "R02") for i in range(3)]
         f1 = generate_file(self.chk, self.module, D)
         self.assertEqual((f1.file_name, f1.row_count, f1.partial), ("SSKUPI14072026.csv", 3, False))
         with self.assertRaisesRegex(WrongState, "Nothing to include"):  # nothing new yet
@@ -194,7 +195,7 @@ class PartialAndLaterFileTests(NpciTestBase):
         with self.assertRaisesRegex(WrongState, "Nothing to include"):
             generate_file(self.chk, self.module, D, confirm_partial=True)
         # A re-run brings two new cases.
-        mapping = {c.rrn: "R01" for c in first_cases}
+        mapping = {c.rrn: "R02" for c in first_cases}
         mapping.update({"100000000200": "R01", "100000000201": "R03"})
         self.rerun(mapping)
         self.sync()
@@ -230,16 +231,17 @@ class PartialAndLaterFileTests(NpciTestBase):
 
     def test_included_case_that_changes_later_gives_a_warning_not_a_row(self):
         """Included with the rule's reply; then the Maker chooses another one,
-        or a re-run closes the case: the file never changes, a warning shows."""
-        other = self.drc_case("100000000001")
-        closed = self.drc_case("100000000002")
+        or a re-run closes the case: the file never changes, a warning shows.
+        R02 (money): R01 cases would be closed by the file itself (owner 2026-11-09)."""
+        other = self.drc_case("100000000001", "R02")
+        closed = self.drc_case("100000000002", "R02")
         generate_file(self.chk, self.module, D)
         services.take(other, self.mk)
         services.submit(other, self.mk, action_type=ActionType.DRC_104)
         plan = plan_file(self.module, D)
         self.assertEqual((plan.rows, plan.excluded, len(plan.already_sent)), ([], [], 2))
         self.assertEqual([c.pk for c, _r in plan.changed_since_included], [other.pk])
-        self.rerun({"100000000001": "R01"})  # 100000000002 no longer needs action
+        self.rerun({"100000000001": "R02"})  # 100000000002 no longer needs action
         self.sync()
         self.assertEqual(self.case("100000000002").status, CaseStatus.CLOSED_SUPERSEDED)
         plan = plan_file(self.module, D)

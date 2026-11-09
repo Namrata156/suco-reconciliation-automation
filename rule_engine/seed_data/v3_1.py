@@ -18,6 +18,14 @@ note in the rule's `notes`.
 
 Codes are referenced by (flag, description): description is unique per
 flag, and works for codes whose number is unknown.
+
+One sanctioned edit since publication (owner decision 2026-11-09, made in
+code, not through the Settings maker-checker path): the wording of DRC 103
+and RRC 501 changed from "Manually credited" to "Manual credit"
+(MANUAL_CREDIT below). Wording only: no rule, condition or numeric code
+changed, and rule_engine.seeding finds an existing code by flag + numeric
+code, never by its wording. Existing databases are updated by data migration
+rule_engine/0007; files already generated keep the old text.
 """
 from __future__ import annotations
 
@@ -43,12 +51,16 @@ _SOP = "docs/sop_reference.md"
 _OPS = "Ops note (docs/reconciliation_note_photo.jpeg, transcribed in docs/sop_reference.md)"
 _RT = "docs/phase2_rule_table_v3_approved.txt"
 
+# Owner decision 2026-11-09: was "Manually credited" (DRC 103, RRC 501).
+MANUAL_CREDIT = "Manual credit"
+MANUAL_CREDIT_NOTE = "Description renamed from 'Manually credited' to 'Manual credit': owner decision 2026-11-09."
+
 RESPONSE_CODES = [
     # flag, code (None = unknown), description, source, notes
     ("DRC", "102", "Online reverse", f"{_OPS}; {_SOP} (DRC update)",
      "SOP wording: customer account reversed online."),
-    ("DRC", "103", "Manually credited", f"{_OPS}; {_SOP} (DRC update)",
-     "SOP wording: customer account reversed manually post-reconciliation."),
+    ("DRC", "103", MANUAL_CREDIT, f"{_OPS}; {_SOP} (DRC update)",
+     f"SOP wording: customer account reversed manually post-reconciliation. {MANUAL_CREDIT_NOTE}"),
     ("DRC", "104", "Not effected to CBS", f"{_OPS}; {_SOP} (DRC update)",
      "SOP wording: online decline response failed."),
     ("TCC", "102", "Online credited", f"{_OPS}; {_SOP} (Timeout update)",
@@ -64,8 +76,8 @@ RESPONSE_CODES = [
     ("RET", None, "Credit freezed", f"{_SOP} (Timeout update); {_RT} R05", "Numeric code not in the SOP or ops' note."),
     ("RET", None, "Beneficiary bank unable to credit", f"{_SOP} (Timeout update); {_RT} R05", "Numeric code not in the SOP or ops' note."),
     ("RET", None, "Any other reason", f"{_SOP} (Timeout update); {_RT} R05", "Numeric code not in the SOP or ops' note."),
-    ("RRC", "501", "Manually credited", f"{_OPS}; {_SOP} (Adjustment update)",
-     "SOP wording: manually credited to customer post reconciliation."),
+    ("RRC", "501", MANUAL_CREDIT, f"{_OPS}; {_SOP} (Adjustment update)",
+     f"SOP wording: manually credited to customer post reconciliation. {MANUAL_CREDIT_NOTE}"),
     ("NPCI_RESPONSE", "00", "Success", f"{_RT} (R09, R11, R12, R17)",
      "NPCI response code of a successful transaction."),
     ("NPCI_RESPONSE", "RB", "Deemed approved", f"{_RT} GLOSSARY / Q4; NPCI UPI Circular 17, OC 79 FY16-17",
@@ -149,7 +161,7 @@ RULES = [
         code="R02", name="DRC - debited but NOT reversed",
         condition=_all(DRC_SSK, CBS),
         status="REVERSAL_REQUIRED", action="Reverse the customer manually, then update the DRC",
-        priority="HIGH", response_code=("DRC", "Manually credited"), **T1,
+        priority="HIGH", response_code=("DRC", MANUAL_CREDIT), **T1,
         tat_note=_RBI_COMP, rbi_compensation_after_tat=True,
         source="SOP + Ops note; TAT: RBI/2019-20/67, Owner (Q5)",
         notes="Ops: Eff=yes, rev=#N/A. 'NOT reversed' is implied by order (R01 took the reversed ones).",
@@ -204,7 +216,7 @@ RULES = [
             "Maker checks the customer's account. No automatic credit. The maker either credits and "
             "replies RRC 501, or replies RRC 501 without crediting. The checker approves."
         ),
-        priority="HIGH", response_code=("RRC", "Manually credited"), **T1,
+        priority="HIGH", response_code=("RRC", MANUAL_CREDIT), **T1,
         reason_template=(
             "RET/refund received, but CBS already shows the reversal. Verify before crediting, or "
             "the customer is paid twice."
@@ -225,7 +237,7 @@ RULES = [
             "Credit the customer manually, then reply to NPCI with flag RRC. For RET: return on the "
             "same date and mark the colour in the working sheet."
         ),
-        priority="HIGH", response_code=("RRC", "Manually credited"), **T1,
+        priority="HIGH", response_code=("RRC", MANUAL_CREDIT), **T1,
         source="SOP + Ops note",
         notes=(
             "A RET here can answer a remitter-side Timeout (code RB). 'and not R06b' is implied by "

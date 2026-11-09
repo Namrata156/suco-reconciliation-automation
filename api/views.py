@@ -405,14 +405,26 @@ def case_extras(cases) -> dict[int, dict]:
     legs, names, amounts = _presences(cases), _rule_names(cases), _settlement_amounts(cases)
     files = {case_id: {"id": fid, "file_name": name} for case_id, fid, name in NpciFileRow.objects.filter(
         case_id__in=[c.pk for c in cases]).values_list("case_id", "npci_file_id", "npci_file__file_name")}
+    system_closed = closed_by_system_ids(cases)
     out = {}
     for c in cases:
         reply = reps[c.pk]
         amount, source = _amount(c, reply, legs.get(c.match_group_id, {}), amounts)
         out[c.pk] = {"amount": amount, "amount_source": source, "rule_name": names.get(c.rule_result_id, ""),
                      "reply": npci_replies.reply_payload(c, reply), "npci_file": files.get(c.pk),
+                     "closed_by_system": c.pk in system_closed,
                      "_reply": reply, "_legs": legs.get(c.match_group_id, {})}
     return out
+
+
+def closed_by_system_ids(cases) -> set[int]:
+    """Of these cases, the COMPLETED ones the system closed (no-money reply in
+    an NPCI file, owner 2026-11-09; a CLOSED_BY_SYSTEM event). One query."""
+    ids = [c.pk for c in cases if c.status == CaseStatus.COMPLETED]
+    if not ids:
+        return set()
+    return set(CaseEvent.objects.filter(case_id__in=ids, event_type=EventType.CLOSED_BY_SYSTEM)
+               .values_list("case_id", flat=True))
 
 
 def _leg_block(p, *, npci=False) -> dict:
@@ -473,7 +485,7 @@ class _SelfApprovalField:
         return bool(own)
 
 
-_EXTRA_FIELDS = ("amount", "amount_source", "rule_name", "reply")
+_EXTRA_FIELDS = ("amount", "amount_source", "rule_name", "reply", "closed_by_system")
 
 
 class _ExtrasMixin:
@@ -563,6 +575,14 @@ class CaseListView(CaseMixin, legacy.CaseListView):
             if bad:
                 errors["reply_type"] = [f"Unknown {', '.join(bad)}; allowed: "
                                         f"{', '.join(npci_replies.ReplyType.values)}"]
+        buckets = None
+        if request.query_params.get("ageing_bucket"):  # Phase 6 C2: the ageing report's cell links
+            buckets = [v.strip() for v in request.query_params["ageing_bucket"].split(",") if v.strip()]
+            labels = list(AgeingBucket.objects.filter(payment_module=self.module).order_by("order")
+                          .values_list("label", flat=True))
+            bad = [v for v in buckets if v not in labels]
+            if bad:
+                errors["ageing_bucket"] = [f"Unknown {', '.join(bad)}; allowed: {', '.join(labels)}"]
         if errors:
             return _bad_request("Invalid input", errors)
         qs, error = legacy.filter_queue(self.scope(legacy._annotated()), request)
@@ -570,6 +590,8 @@ class CaseListView(CaseMixin, legacy.CaseListView):
             return error
         if due is not None:
             qs = qs.filter(due_date=due)
+        if buckets:
+            qs = qs.filter(ageing_bucket__in=buckets)
         qs = npci_replies.annotate_reply_type(qs.select_related("default_response_code"))
         # Tab counts for every other filter of the request (contract A3), one query.
         counts = qs.order_by().aggregate(**{t: Count("id", filter=Q(reply_type=t))

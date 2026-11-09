@@ -90,6 +90,8 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
     # Phase 6 contract C1 (docs/phase6_api_contract.txt); first used by the NPCI files report
     # (docs/ui_refinements_api_contract_u4u5.txt F1).
     "reports.view": _ALL,
+    "reports.approvals": (Role.ADMINISTRATOR, Role.AUDITOR, Role.CHECKER),  # B6, B6s (design R2)
+    "reports.user_activity": (Role.ADMINISTRATOR, Role.AUDITOR),  # B7 (logins and IP addresses)
 }
 
 

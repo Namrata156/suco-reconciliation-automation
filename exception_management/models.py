@@ -70,6 +70,11 @@ class CaseStatus(models.TextChoices):
 ACTIVE_STATUSES = (CaseStatus.OPEN, CaseStatus.IN_PROGRESS, CaseStatus.PENDING_APPROVAL, CaseStatus.APPROVED)
 # Approved or done: a re-run never changes these silently (design section 6).
 DECIDED_STATUSES = (CaseStatus.APPROVED, CaseStatus.COMPLETED)
+# Owner 2026-11-09: a case the system may close (-> COMPLETED) once its no-money
+# reply is in a generated NPCI file (npci_files.auto_close). Not COMPLETED (already
+# closed) or CLOSED_SUPERSEDED (a re-run closed it).
+SYSTEM_CLOSABLE_STATUSES = (CaseStatus.OPEN, CaseStatus.IN_PROGRESS, CaseStatus.PENDING_APPROVAL,
+                            CaseStatus.APPROVED)
 
 _PRIORITY_RANK = {Priority.HIGH: 0, Priority.MEDIUM: 1, Priority.LOW: 2}
 
@@ -345,6 +350,8 @@ class ProposedAction(models.Model):
                 fields=["case"], condition=Q(decision="PENDING"), name="one_pending_action_per_case"
             ),
         ]
+        # Phase 6 C4: the approval report filters on the decision date.
+        indexes = [models.Index(fields=["decided_at"], name="action_decided_at_idx")]
         ordering = ["case", "submitted_at"]
 
     def __str__(self) -> str:
@@ -385,6 +392,10 @@ class EventType(models.TextChoices):
     REOPENED = "REOPENED", "Reopened: needs action again"
     ADJUSTMENT_ROWS_CHANGED = "ADJUSTMENT_ROWS_CHANGED", "Multiple-adjustment-rows flag changed"
     WARNINGS_CHANGED = "WARNINGS_CHANGED", "Warning changed (RRC already sent)"
+    # system (NPCI file generation; owner 2026-11-09): a no-money reply (R01 DRC 102,
+    # R03 DRC 104, R04a TCC 102) went into a generated SSKUPI file -> COMPLETED with no
+    # Maker or Checker (npci_files.auto_close, services.close_by_system).
+    CLOSED_BY_SYSTEM = "CLOSED_BY_SYSTEM", "Closed by the system (no-money reply included in an NPCI file)"
     # users
     TAKEN = "TAKEN", "Taken"
     RELEASED = "RELEASED", "Released"
