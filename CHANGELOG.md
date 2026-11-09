@@ -6,6 +6,61 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-11-10
+
+- **Added: auto-close of no-money cases** (owner 2026-11-09). Generating
+  an SSKUPI file closes the R01 (DRC 102), R03 (DRC 104) and R04a
+  (TCC 102) cases it holds, when they still carry that reply and are not
+  flagged for review: status COMPLETED, new case event CLOSED_BY_SYSTEM
+  naming the file (no actor); a pending proposal is withdrawn, an approved
+  action gets the file name as reference. Rule list in
+  `npci_files/auto_close.py`. Backfill command
+  `close_included_no_money_cases [--dry-run]` (not run for real). API:
+  `closed_by_system` on cases, B4 and B6; preview `closes_case` /
+  `closes_by_system_count`. Migration exception_management 0011.
+- **Changed:** response-code text DRC 103 / RRC 501 "Manually credited" →
+  "Manual credit" (owner), migration rule_engine 0007; files already
+  generated keep the old text.
+- **Changed:** one-date results download refuses `priority` (filter or
+  ordering).
+- **Fixed:** presence build could stall on replacing a date's dispute rows
+  when table stats were near zero (seen as a 13-min DELETE in the test
+  suite; same exposure on a freshly loaded day). The DELETE now goes by
+  group id in batches of 5,000. Full suite 825/825 in 24.8 min.
+- **Added (frontend): "Closed by system"** badge on the case queue, case
+  page (with the closing file linked), B4 (plus a filter) and B6; case
+  history shows "System" for actor-less events; the SSKUPI preview and
+  Generate dialog show how many no-money cases will close and mark those
+  rows. Vitest 283/283.
+
+## 2026-11-09
+
+- **Added: Phase 6 report backend, slices 6.2–6.4** (uncommitted). Report
+  meta (B0); daily reconciliation (B1, page size 50, max 92); settlement
+  (B2); volume by day/month/file type/cycle (B3) from a new daily volume
+  table filled after every run and by `manage.py fill_daily_volume`;
+  exceptions (B4, amount = NPCI else CBS); ageing by rule (B5, settlement
+  cases under `not_aged`); approvals and settings approvals (B6/B6s);
+  user activity (B7); per-date results download (B8). No priority in any
+  report (owner). Streamed CSV downloads (RRNs as `="…"`, formula guard),
+  each successful download audited as `REPORT_EXPORTED`; Excel switches
+  on once IT approves openpyxl. `/me/` gains `reports.approvals` and
+  `reports.user_activity`. Case list takes `ageing_bucket` and a comma
+  list of `rule_code`. `OperationLog.payment_module` now optional (PM
+  decision). Date overview no longer loads settlement snapshots (faster
+  `/dates/`, dashboard, B1). Migrations core 0014, transactions 0003,
+  exception_management 0010 applied to dev and both e2e DBs. Full suite
+  804/804.
+- **Added: Phase 6 report screens wired to the backend** (uncommitted).
+  Results and Settlement (all dates) on B1/B2 (50 dates per page,
+  totals, month subtotals); new Volume, Exceptions, Ageing (cells link to
+  the filtered case list; settlement cases in "Not aged"), Approvals
+  (case actions / settings changes) and User activity screens; CSV
+  download button per report (Excel appears once the server lists it);
+  one-date results CSV on the date page. Case queue gains an Age filter.
+  Fixed: Operations audit list crashed on entries with no module. Vitest
+  277/277, lint/type-check/build clean.
+
 ## 2026-11-08
 
 - **Docs:** `docs/sop_reference.md` — column layout and formulas of ops'

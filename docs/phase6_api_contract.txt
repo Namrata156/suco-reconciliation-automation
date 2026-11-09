@@ -404,3 +404,18 @@ D. QUESTIONS FOR THE BACKEND ENGINEER
      range): is date_overviews() fast enough for 92 dates? If not, the SPA
      keeps paging at 31.
   D6 Log refused downloads as well as successful ones?
+
+  ANSWERS (owner, 2026-11-08):
+  D1 Agreed: the parameter is "export" (not "format").
+  D2 Agreed: CSV RRNs are written as ="<rrn>".
+  D3 Keep on_us and cbs_reversed in B1 (do not drop them).
+  D4 Case amount = the matched transaction's amount: NPCI's figure, falling
+     back to CBS when there is no NPCI row (the money ops act on).
+  D5 B1 / B2 page_size default 50 (not 31); max stays 92.
+  D6 Log successful downloads only; refused downloads are not logged.
+  P  Priority removed from all reports (owner 2026-11-08, consistent with
+     priority hidden on every screen 2026-11-02): B4 has no priority
+     column, filter or summary (summary.by_status_priority becomes
+     by_status: [{"status", "count"}]); B5 drops by_priority (by_rule and
+     totals remain; cell links filter by rule_code); B5 filter priority
+     removed.
