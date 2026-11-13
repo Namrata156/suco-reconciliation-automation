@@ -6,6 +6,39 @@ component, see `TRACKER.md`; for requirements, see
 `docs/Reconciliation_Automation.docx`. Don't duplicate status here, and
 don't duplicate this history there.
 
+## 2026-11-13
+
+- **Added: rev credit file** (owner 2026-11-11/12):
+  - Generate it on the date page, then download it, check it in Excel (delete rows or fix accounts only), and upload it.
+  - Uploading approves each listed case and completes it, with the file name as the CBS reference, all or nothing. Rows deleted from the file leave their cases open.
+  - The file carries R07r, R02 (DRC 103) and R04b (TCC 103, once approved).
+  - The first row's narration names the business date: `UPI TO RRC DRC TCC REVERSAL DATED ON NOV 02`.
+  - Old-format 12-digit accounts are marked in a Check column.
+  - Code: `npci_files/credit_voucher.py`, API `dates/<d>/credit-voucher/` (`api/credit_vouchers.py`). Screen: `CreditVoucherPanel` on the date page, before the SSKUPI step.
+  - New case event CREDIT_FILE_APPROVED and operation types CREDIT_VOUCHER_GENERATED / _DOWNLOADED / _APPROVED.
+  - Migrations: npci_files 0003, core 0015, exception_management 0012.
+- **Added: rule set v3.4.**
+  - New rule R07r: an Adjustment "Refund Reversal Confirmation" where we are the remitter. Manual Credit Required, HIGH, T+1; checked just before R07a.
+  - R06's status changes to "RRC 501 reply – credit on confirmation" (category `RRC_REPLY_CREDIT_ON_CONFIRMATION`).
+  - R06 now closes automatically when its RRC 501 row goes into an SSKUPI file. This applies only to cases with the new status, so older (v3.3) R06 cases stay open (owner 2026-11-13).
+  - RRC 501 keeps the text "Manual credit".
+  - Migrations: rule_engine 0008/0009, exception_management 0013. The v3.4 section is in `docs/phase2_rule_table_v3_approved.txt`.
+- **Changed: roles switched off** (owner 2026-11-12):
+  - New setting `ROLES_ENFORCED`, off by default. While it's off, every active user who signs in holds all roles, so maker-checker separation no longer applies anywhere.
+  - Self-approval is still recorded, and every step is still logged by username.
+  - `/me` returns `roles_enforced`; the screens hide role lists, columns and filters while it's false.
+  - Tests run with roles on (`config/test_runner.py`); the off case is covered by `api/tests/test_roles_off.py`.
+  - `ROLES_ENFORCED=true` restores the old behaviour.
+- **Verified 2026-11-13:**
+  - Tests for the changed apps: 613/614 passed. The one failure was a doc-order check, fixed; the seed tests then passed 15/15.
+  - Vitest 297/297; lint and build clean.
+  - Playwright `e2e/rev_file.spec.ts` passed on a copy of the 2 Nov data, signed in as one user with no roles:
+    - 18 cases approved, 4 left open;
+    - the SSKUPI file closed 61 cases by system (45 R06, 12 R01, 4 R03);
+    - every step was logged under that username.
+  - Migrations applied to dev.
+  - Full suite: 867 tests in 34.8 min. 839 passed; 28 `file_processing` errors came from the sample folder having been renamed to `sample_files/`. The folder was renamed back to `sample_decrypted_files/`, which is git-ignored, and `file_processing` then passed 89/89.
+
 ## 2026-11-10
 
 - **Added: auto-close of no-money cases** (owner 2026-11-09). Generating
@@ -15,7 +48,8 @@ don't duplicate this history there.
   naming the file (no actor); a pending proposal is withdrawn, an approved
   action gets the file name as reference. Rule list in
   `npci_files/auto_close.py`. Backfill command
-  `close_included_no_money_cases [--dry-run]` (not run for real). API:
+  `close_included_no_money_cases [--dry-run]`; run on dev 2026-11-10
+  (owner): 320 cases closed in the 4 existing files. API:
   `closed_by_system` on cases, B4 and B6; preview `closes_case` /
   `closes_by_system_count`. Migration exception_management 0011.
 - **Changed:** response-code text DRC 103 / RRC 501 "Manually credited" →

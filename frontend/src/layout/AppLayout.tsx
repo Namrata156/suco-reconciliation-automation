@@ -20,7 +20,7 @@ import { RrnSearchBox } from '../components/RrnSearchBox';
 import { SessionWatcher } from '../auth/SessionWatcher';
 import { BRAND } from '../config';
 import { useModuleCode } from '../hooks/module';
-import { can, menuFor, menuHref, type MenuItem } from '../lib/roles';
+import { can, menuFor, menuHref, rolesEnforced, type MenuItem } from '../lib/roles';
 import { NotFoundPage } from '../pages/NotFoundPage';
 
 /**
@@ -179,9 +179,12 @@ export function AppLayout({ global = false }: { global?: boolean }) {
                   <Text size="sm" fw={600}>
                     {me.full_name || me.username}
                   </Text>
-                  <Text size="xs" c="dimmed">
-                    {me.roles.join(', ')}
-                  </Text>
+                  {/* Roles switched off (owner 2026-11-12): the name only. */}
+                  {rolesEnforced(me) && (
+                    <Text size="xs" c="dimmed">
+                      {me.roles.join(', ')}
+                    </Text>
+                  )}
                 </UnstyledButton>
               </Menu.Target>
               <Menu.Dropdown>

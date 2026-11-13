@@ -50,10 +50,12 @@ describe('Refresh keeps the session alive while auto-refresh is paused', () => {
       runs: [],
       history: [],
     };
-    // The date answers with its overview; the other panels (NPCI file) have nothing (404).
+    // The date answers with its overview; the other panels (NPCI file, rev credit file) have nothing (404).
     const fetch = vi.fn().mockImplementation((url: string) =>
       Promise.resolve(
-        /\/npci-file/.test(url) ? new Response(JSON.stringify({ detail: 'none' }), { status: 404 }) : json(running),
+        /\/(npci-file|credit-voucher)/.test(url)
+          ? new Response(JSON.stringify({ detail: 'none' }), { status: 404 })
+          : json(running),
       ),
     );
     vi.stubGlobal('fetch', fetch);

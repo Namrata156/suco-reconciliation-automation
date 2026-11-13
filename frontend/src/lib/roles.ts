@@ -19,6 +19,14 @@ export const ROLES = {
 
 export const hasRole = (roles: readonly string[] | undefined, role: RoleName) => !!roles?.includes(role);
 
+/**
+ * Whether the server enforces roles (plan B, owner 2026-11-12: switched off
+ * by default). When off, every signed-in user may do everything, so the
+ * screens hide role names, role columns and role filters. A server that does
+ * not send the field yet enforces roles.
+ */
+export const rolesEnforced = (me: Pick<Me, 'roles_enforced'> | undefined) => me?.roles_enforced !== false;
+
 /** A capability check that treats a missing permissions object as "no". */
 export const can = (perms: Partial<Permissions> | undefined, cap: Capability) => perms?.[cap] === true;
 

@@ -5,6 +5,8 @@
  * module filter narrows the WORK counts only. Every user is listed, also
  * those with no activity. "Last login" is the last one inside the range.
  * Each row links to the audit lists for that user and range.
+ * With roles switched off (/me roles_enforced false, owner 2026-11-12) the
+ * role filter and each user's role line are hidden.
  */
 import { Anchor, Badge, Group, Select, Stack, Table, Text, TextInput } from '@mantine/core';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -20,7 +22,7 @@ import { ReportFrame } from '../features/reports/ReportFrame';
 import { ANY_YES_NO, NoReportAccess, Num, ReportProblems } from '../features/reports/reportParts';
 import { formatCount, formatDate, formatDateTime } from '../lib/format';
 import { spaLink } from '../lib/links';
-import { allows, ROLES } from '../lib/roles';
+import { allows, ROLES, rolesEnforced } from '../lib/roles';
 import { pageBounds } from '../lib/urlFilters';
 
 export const USER_ACTIVITY_PAGE_SIZE = 50;
@@ -51,6 +53,7 @@ function UserFilter({ value, onApply }: { value: string | undefined; onApply: (v
 export function UserActivityReportPage() {
   const me = useMe();
   const allowed = allows(me.permissions, 'reports.user_activity');
+  const withRoles = rolesEnforced(me);
   const { range, error: rangeErr } = useReportRange({ basis: 'event' });
   const [params, setParams] = useSearchParams();
   const pageNo = Math.max(1, Math.floor(Number(params.get('page') || '1')) || 1);
@@ -59,7 +62,8 @@ export function UserActivityReportPage() {
     date_from: range?.date_from,
     date_to: range?.date_to,
     user: get('user'),
-    role: get('role'),
+    // A ?role= left in the address means nothing while roles are off.
+    role: withRoles ? get('role') : undefined,
     module: get('module'),
     active: get('active'),
     page: pageNo,
@@ -118,14 +122,19 @@ export function UserActivityReportPage() {
       filters={
         <ReportFilterBar basis="event" dateLabel="Date" showModule={false}>
           <UserFilter key={filters.user ?? ''} value={filters.user} onApply={(v) => set('user', v)} />
-          <Select
-            label="Role"
-            data={[{ value: '', label: 'Any' }, ...Object.values(ROLES).map((r) => ({ value: r, label: r }))]}
-            value={filters.role ?? ''}
-            onChange={(v) => set('role', v)}
-            allowDeselect={false}
-            w={170}
-          />
+          {withRoles && (
+            <Select
+              label="Role"
+              data={[
+                { value: '', label: 'Any' },
+                ...Object.values(ROLES).map((r) => ({ value: r, label: r })),
+              ]}
+              value={filters.role ?? ''}
+              onChange={(v) => set('role', v)}
+              allowDeselect={false}
+              w={170}
+            />
+          )}
           <Select
             label="Module (work counts)"
             data={[
@@ -188,9 +197,11 @@ export function UserActivityReportPage() {
                         {u.username}
                       </Text>
                       {u.full_name !== u.username && <Text size="xs">{u.full_name}</Text>}
-                      <Text size="xs" c="dimmed">
-                        {u.roles.length ? u.roles.join(', ') : 'No role'}
-                      </Text>
+                      {withRoles && (
+                        <Text size="xs" c="dimmed">
+                          {u.roles.length ? u.roles.join(', ') : 'No role'}
+                        </Text>
+                      )}
                       {!u.is_active && (
                         <Badge color="gray" variant="outline" size="sm">
                           Deactivated

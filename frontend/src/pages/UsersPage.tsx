@@ -4,6 +4,8 @@
  * 2026-10-22). Editing stays in the Django admin (P3); the screen links to it
  * when the server gives the address (Administrator with staff status; always
  * null for an Auditor).
+ * With roles switched off (/me roles_enforced false, owner 2026-11-12) the
+ * role filter and the Roles column are hidden: the page lists the accounts.
  */
 import { Alert, Badge, Button, Group, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -13,7 +15,7 @@ import { ApiError, listUsersAndRoles } from '../api/client';
 import { useMe } from '../auth/auth';
 import { ListPager } from '../components/ListPager';
 import { formatCount, formatDateTime } from '../lib/format';
-import { can, ROLES } from '../lib/roles';
+import { can, ROLES, rolesEnforced } from '../lib/roles';
 import { pageBounds, useUrlFilters } from '../lib/urlFilters';
 
 const PAGE_SIZE = 50;
@@ -45,7 +47,11 @@ function SearchBox({ value, onApply }: { value: string; onApply: (v: string) => 
 export function UsersPage() {
   const me = useMe();
   const allowed = can(me.permissions, 'users.view');
-  const { filters, setFilter, reset } = useUrlFilters(FILTER_KEYS, PAGE_SIZE);
+  const withRoles = rolesEnforced(me);
+  const { filters: urlFilters, setFilter, reset } = useUrlFilters(FILTER_KEYS, PAGE_SIZE);
+  // A ?role= left in the address means nothing while roles are off.
+  const filters = withRoles ? urlFilters : { ...urlFilters, role: undefined };
+  const headers = ['User name', 'Name', ...(withRoles ? ['Roles'] : []), 'Status', 'Last login'];
   const query = useQuery({
     queryKey: ['users-and-roles', filters],
     queryFn: () => listUsersAndRoles(filters),
@@ -68,7 +74,7 @@ export function UsersPage() {
     <Stack gap="sm">
       <Group justify="space-between">
         <Title order={1} size="h3">
-          Users and roles
+          {withRoles ? 'Users and roles' : 'Users'}
         </Title>
         {adminUrl && (
           <Button component="a" href={adminUrl} variant="default">
@@ -77,18 +83,22 @@ export function UsersPage() {
         )}
       </Group>
       <Text size="sm" c="dimmed">
-        Read-only. Accounts and roles are changed in the Django admin.
+        {withRoles
+          ? 'Read-only. Accounts and roles are changed in the Django admin.'
+          : 'Read-only. Accounts are changed in the Django admin. Every signed-in user may do every step; each step is recorded under the user name.'}
       </Text>
 
       <Group gap="xs" align="flex-end" wrap="wrap" component="section" aria-label="Filters">
-        <Select
-          label="Role"
-          data={[{ value: '', label: 'Any' }, ...Object.values(ROLES).map((r) => ({ value: r, label: r }))]}
-          value={filters.role ?? ''}
-          onChange={(v) => setFilter('role', v)}
-          allowDeselect={false}
-          w={190}
-        />
+        {withRoles && (
+          <Select
+            label="Role"
+            data={[{ value: '', label: 'Any' }, ...Object.values(ROLES).map((r) => ({ value: r, label: r }))]}
+            value={filters.role ?? ''}
+            onChange={(v) => setFilter('role', v)}
+            allowDeselect={false}
+            w={190}
+          />
+        )}
         <Select
           label="Account status"
           data={[
@@ -125,7 +135,7 @@ export function UsersPage() {
         <Table withTableBorder aria-label="Users and roles" aria-busy={query.isFetching}>
           <Table.Thead>
             <Table.Tr>
-              {['User name', 'Name', 'Roles', 'Status', 'Last login'].map((h) => (
+              {headers.map((h) => (
                 <Table.Th key={h} scope="col">
                   {h}
                 </Table.Th>
@@ -144,15 +154,17 @@ export function UsersPage() {
                   )}
                 </Table.Td>
                 <Table.Td>{u.full_name || '-'}</Table.Td>
-                <Table.Td>
-                  {u.roles.length ? (
-                    u.roles.join(', ')
-                  ) : (
-                    <Text c="dimmed" span>
-                      No role
-                    </Text>
-                  )}
-                </Table.Td>
+                {withRoles && (
+                  <Table.Td>
+                    {u.roles.length ? (
+                      u.roles.join(', ')
+                    ) : (
+                      <Text c="dimmed" span>
+                        No role
+                      </Text>
+                    )}
+                  </Table.Td>
+                )}
                 <Table.Td>
                   {u.is_active ? (
                     'Active'
@@ -167,7 +179,7 @@ export function UsersPage() {
             ))}
             {!query.isPending && (data?.results.length ?? 0) === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={5}>No account matches these filters.</Table.Td>
+                <Table.Td colSpan={headers.length}>No account matches these filters.</Table.Td>
               </Table.Tr>
             )}
           </Table.Tbody>

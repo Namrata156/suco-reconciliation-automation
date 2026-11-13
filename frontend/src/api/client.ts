@@ -18,6 +18,10 @@ import type {
   ApprovalReport,
   ApprovalReportFilters,
   ApprovalSettingsReport,
+  CreditVoucherDetail,
+  CreditVoucherList,
+  CreditVoucherPreview,
+  CreditVoucherUploadResult,
   ExceptionReport,
   ExceptionReportFilters,
   ReconciliationReport,
@@ -529,6 +533,55 @@ export function generateNpciFile(
 
 export function listNpciFiles(module: string, filters: NpciFileFilters): Promise<NpciFileListPage> {
   return request<NpciFileListPage>('GET', `${mod(module)}/npci-files/`, { query: { ...filters } });
+}
+
+// ---------------------------------------------------------------------------
+// CBS credit file, the "rev" file (api/credit_vouchers.py). 409 on generate:
+// nothing to include (errors.rows / errors.not_included). Upload: 400 =
+// refused, errors.file and errors.rows ([{line, sr_no, rrn, errors}]); 409 =
+// the version is approved / superseded or a listed case changed
+// (errors.cases); nothing is approved on any refusal.
+// ---------------------------------------------------------------------------
+const creditVoucher = (module: string, businessDate: string) => `${day(module, businessDate)}/credit-voucher`;
+
+export function getCreditVoucherPreview(module: string, businessDate: string): Promise<CreditVoucherPreview> {
+  return request<CreditVoucherPreview>('GET', `${creditVoucher(module, businessDate)}/preview/`);
+}
+
+export function listCreditVouchers(module: string, businessDate: string): Promise<CreditVoucherList> {
+  return request<CreditVoucherList>('GET', `${creditVoucher(module, businessDate)}/`);
+}
+
+export function generateCreditVoucher(
+  module: string,
+  businessDate: string,
+  payload: { remarks?: string },
+): Promise<CreditVoucherDetail> {
+  return request<CreditVoucherDetail>('POST', `${creditVoucher(module, businessDate)}/`, { body: payload });
+}
+
+export function getCreditVoucher(
+  module: string,
+  businessDate: string,
+  id: number,
+): Promise<CreditVoucherDetail> {
+  return request<CreditVoucherDetail>('GET', `${creditVoucher(module, businessDate)}/${id}/`);
+}
+
+/** The checked CSV: approves and closes every case it still lists (all or nothing). */
+export function uploadCreditVoucher(
+  module: string,
+  businessDate: string,
+  id: number,
+  file: File,
+  remarks = '',
+): Promise<CreditVoucherUploadResult> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  if (remarks) form.append('remarks', remarks);
+  return request<CreditVoucherUploadResult>('POST', `${creditVoucher(module, businessDate)}/${id}/upload/`, {
+    body: form,
+  });
 }
 
 /** U5 F1: every SSKUPI file generated in a business-date range, with totals. */

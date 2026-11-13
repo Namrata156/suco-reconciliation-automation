@@ -1046,7 +1046,7 @@ export function NpciFilePanel({
 }: {
   module: string;
   businessDate: string;
-  /** Inside the date page's "6. SSKUPI file" step: no card or heading of its own. */
+  /** Inside the date page's "7. SSKUPI file" step: no card or heading of its own. */
   bare?: boolean;
 }) {
   const me = useMe();

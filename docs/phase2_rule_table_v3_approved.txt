@@ -7,7 +7,91 @@
                   cross-day checks. See "v3.2 AMENDMENT" below.
  v3.3 amendment - DECIDED 2026-10-23 (project owner): deadlines count
                   calendar days. See "v3.3 AMENDMENT" below.
+ v3.4 amendment - DECIDED 2026-11-11/12 (project owner): new rule R07r,
+                  R06 replies RRC 501 first. See "v3.4 AMENDMENT" below.
 ================================================================================
+
+v3.4 AMENDMENT (2026-11-11, R06 status category 2026-11-12)
+-----------------------------------------------------------
+  - Owner, 2026-11-11 (CBS credit file plan): follow ops' practice. Ops'
+    2 Nov 2026 samples (Adjustment report, ops' rev sheet
+    "upi rev 02112026.xls", SSKUPI02112026.csv) show that a Credit
+    Adjustment / Online Refund / RET for an SSK-remitter payment is
+    answered with RRC 501 at once. The customer is credited only when
+    NPCI's "Refund Reversal Confirmation" for that RRN arrives.
+  - NEW rule R07r "Adjustment - Refund Reversal Confirmation (SSK =
+    Remitter)". It sits just before R07a.
+      When     : Adjustment row, SSK = Remitter, Adjtype exactly
+                 "Refund Reversal Confirmation" (case-sensitive, same as
+                 R06 / R07a)
+      Status   : Manual Credit Required
+      Action   : Credit the customer in CBS through the day's credit file
+                 (rev file). No SSKUPI reply, because NPCI has already
+                 confirmed the refund reversal.
+      Priority : HIGH
+      Code     : none (no SSKUPI reply)
+      TAT      : T+1 (calendar day, as in v3.3)
+      Account  : the Adjustment report's "Remitter Account number"
+      Source   : Owner (2026-11-11); ops' 2 Nov 2026 rev sheet (22 of the
+                 23 SSK-remitter Refund Reversal Confirmation rows were
+                 credited there)
+  - R07a: condition unchanged. It still lists "Refund Reversal
+    Confirmation", but those rows now reach R07r first (first rule that
+    fits wins). R07a keeps Debit Reversal Confirmation and TCC.
+  - R07r is approved through the CBS credit file (npci_files.credit_voucher):
+      1. The file for a date is generated and downloaded.
+      2. Ops check it in Excel. They may delete rows and fill in or correct
+         account numbers, nothing else.
+      3. Uploading the checked file approves every case still listed in
+         it AND marks it done (case COMPLETED, file name as the CBS
+         reference) in one step. All or nothing: if any row is wrong,
+         nothing is approved. Deleted rows leave their cases open.
+    An R07r row goes in the file of the Adjustment row's date (Adjdate).
+    The same file also carries R02 (DRC 103) and R04b (TCC 103, only once
+    a Checker has approved TCC 103) manual credits. Those cases then go
+    into the SSKUPI file as before; R07r does not. An RRN credited through
+    an approved file is never listed again.
+    Who may upload: with roles enforced, a Checker other than the user who
+    generated the file. Owner 2026-11-12: roles are switched off
+    (ROLES_ENFORCED), so anyone who can sign in may do every step,
+    including uploading a file they generated.
+  - R06 now means "reply RRC 501; the credit follows when the confirmation
+    arrives (R07r)". New status category RRC_REPLY_CREDIT_ON_CONFIRMATION,
+    shown as "RRC 501 reply - credit on confirmation" (owner 2026-11-12;
+    was Manual Credit Required). Action text: reply to NPCI with flag RRC
+    501; the customer is credited when NPCI's Refund Reversal Confirmation
+    arrives (R07r, through the credit file), not now; for RET, return on
+    the same date and mark the colour in the working sheet. Condition,
+    priority (HIGH), TAT (T+1) and code (RRC 501) are unchanged.
+  - R06 is closed by the system (npci_files.auto_close). When an SSKUPI
+    file is generated with an R06 case's RRC 501 row in it, the case
+    becomes COMPLETED in the same step, with a "closed by system" event
+    naming the file. No Maker or Checker step. This does NOT happen if the
+    case now carries a different reply, is flagged for review, is held back
+    (e.g. the Checker rejected that reply), or is already completed.
+    R01, R03 and R04a already closed this way (owner 2026-11-09). R06b
+    still goes through full Maker-Checker.
+    Owner 2026-11-13: this applies ONLY to R06 cases of rule set v3.4 or
+    later, i.e. cases whose status category is "RRC 501 reply - credit on
+    confirmation". An R06 case created under v3.3 or earlier (status
+    "Manual Credit Required") is NOT closed, even with the same RRC 501
+    row in the SSKUPI file: it stays open for ops to handle (credit by
+    hand, as before), or until the date is re-run under v3.4, which gives
+    the case the new status category so the next file closes it. The
+    preview's "closed by the system" count follows the same rule. The RRC
+    501 response-code text stays "Manual credit" (owner 2026-11-13).
+    R01, R03 and R04a are unchanged.
+  - Nothing else changes: every other rule's condition, order, status,
+    priority, code and TAT is as in v3.3.
+  - Counts: the v3.3 counts still apply. R07r takes its rows out of R07a's
+    227 / 44 / 20; the split per date is not recorded (the acceptance check
+    counts R07r as R07a).
+  - Rollout: migration rule_engine 0008 retires v3.3 and makes v3.4 active
+    (effective from 2026-11-11) on a database whose active set is v3.3.
+    Results and cases already there are NOT changed. A date's Refund
+    Reversal Confirmations become R07r cases when the date is next re-run.
+    Migrations rule_engine 0009 and exception_management 0013 add the new
+    status category (no data change).
 
 v3.3 AMENDMENT (2026-10-23)
 ---------------------------
@@ -239,6 +323,10 @@ R06b Adjustment - credit due, but CBS already shows the money back  NEW v3.1
      Source   : Owner (Q7)
 
 R06  Adjustment - Credit Adjustment, Online Refund or RET (SSK = Remitter)
+     v3.4     : RRC 501 reply - credit on confirmation, HIGH, T+1. Reply
+                RRC 501 now; the credit follows as R07r. Closed by the
+                system once its RRC 501 is in an SSKUPI file (see the v3.4
+                AMENDMENT). Status and action below are the v3 text.
      When     : Adjustment row of type "Credit Adjustment", "Online Refund"
                 or "RET", SSK = Remitter (and not R06b)
      Status   : Manual Credit Required
@@ -255,7 +343,13 @@ R06  Adjustment - Credit Adjustment, Online Refund or RET (SSK = Remitter)
                 payment and no money back, so a manual credit is correct.
      Source   : SOP + Ops note
 
+  [NEW v3.4] R07r Adjustment - Refund Reversal Confirmation (SSK = Remitter)
+     (Not a v3.1 heading, so this list still matches the v3.1 seed order.)
+     Checked just before R07a. Manual Credit Required, HIGH, T+1, no code;
+     credited through the CBS credit file. See the v3.4 AMENDMENT.
+
 R07a Adjustment - confirmation of an action already taken
+     v3.4     : Refund Reversal Confirmations now reach R07r first.
      When     : Adjustment row of type "Debit Reversal Confirmation",
                 "Refund Reversal Confirmation" or "TCC", SSK = Remitter
      Status   : No Financial Action Required

@@ -182,7 +182,7 @@ describe("Home: today's job and the SSKUPI tile (1.1 / 1.2)", () => {
 });
 
 describe('Date page steps (3.1)', () => {
-  it('six steps in order with their ticks', () => {
+  it('seven steps in order with their ticks', () => {
     const d = makeDateOverview({
       files: { ...makeDateOverview().files, missing: 0, loaded: 66 },
       rule_evaluation: {
@@ -206,7 +206,8 @@ describe('Date page steps (3.1)', () => {
       '3. Results: done',
       '4. Settlement tally: attention (Not tallied)',
       '5. Cases to work: attention (3 open)',
-      '6. SSKUPI file: waiting (No file yet)',
+      '6. Rev credit file: waiting',
+      '7. SSKUPI file: waiting (No file yet)',
     ]);
   });
 

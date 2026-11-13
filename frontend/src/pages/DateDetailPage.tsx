@@ -1,6 +1,6 @@
 /**
  * One business date (design 4.11, Amendment 1 step 3), laid out as the
- * numbered steps of the day (UI refinements U2, 3.1): a checklist of the six
+ * numbered steps of the day (UI refinements U2, 3.1): a checklist of the seven
  * steps on top, each with a tick or "waiting", then one section per step:
  *   1 Files arrived       the expected-files checklist and files outside it
  *   2 Run reconciliation  the run panel with the "Run" button (Operations
@@ -9,9 +9,15 @@
  *                         4.12); technical detail in a collapsed "Details"
  *   4 Settlement tally    the settlement status and a link to it
  *   5 Cases to work       the date's cases
- *   6 SSKUPI file         generate, the files with Download, and why there
+ *   6 Rev credit file     the CBS credit file: generate, download, upload the
+ *                         checked file (CreditVoucherPanel; plan B, owner
+ *                         2026-11-12). Before the SSKUPI step: the upload
+ *                         approves the DRC 103 / TCC 103 credits that file
+ *                         then carries
+ *   7 SSKUPI file         generate, the files with Download, and why there
  *                         is nothing new (NpciFilePanel; owner: the box is
- *                         called "SSKUPI file" everywhere)
+ *                         called "SSKUPI file" everywhere); a hint while
+ *                         a rev file waits for its checked file
  * The date's status (contract A0) is the server's sentence; a value the SPA
  * does not know yet is shown as sent. The history is collapsed at the end.
  * Refreshes itself while a run is active or files are being processed
@@ -47,6 +53,12 @@ import { Checklist } from '../features/dates/Checklist';
 import { isRunActive, RunPanel } from '../features/dates/RunPanel';
 import { OperationHistory } from '../features/files/OperationHistory';
 import { sskupiStep } from '../features/home/TodaysJob';
+import {
+  CreditVoucherPanel,
+  revStep,
+  useCreditVoucherList,
+  useCreditVoucherPreview,
+} from '../features/npci/CreditVoucherPanel';
 import { NpciFilePanel } from '../features/npci/NpciFilePanel';
 import { ResultsSummaryPanel } from '../features/results/ResultsSummaryPanel';
 import { useModuleCode } from '../hooks/module';
@@ -77,14 +89,18 @@ export function reconciledLine(
 
 export interface DateStep {
   n: number;
-  key: 'files' | 'run' | 'results' | 'settlement' | 'cases' | 'sskupi';
+  key: 'files' | 'run' | 'results' | 'settlement' | 'cases' | 'rev' | 'sskupi';
   title: string;
   state: StepState;
   badge?: string;
 }
 
-/** The six steps of a date with their tick / "waiting" (UI refinements 3.1). */
-export function dateSteps(d: BusinessDateOverview): DateStep[] {
+/**
+ * The seven steps of a date with their tick / "waiting" (UI refinements 3.1).
+ * `rev` is the rev credit file's tick (revStep), from its own endpoint;
+ * omitted = still loading ("waiting").
+ */
+export function dateSteps(d: BusinessDateOverview, rev?: Pick<DateStep, 'state' | 'badge'>): DateStep[] {
   const f = d.files;
   const filesDone =
     f.expected > 0 &&
@@ -134,8 +150,9 @@ export function dateSteps(d: BusinessDateOverview): DateStep[] {
           : 'None open'
         : undefined,
     },
+    { n: 6, key: 'rev', title: 'Rev credit file', state: 'waiting', ...rev },
     {
-      n: 6,
+      n: 7,
       key: 'sskupi',
       title: 'SSKUPI file',
       state: sskupi?.state ?? 'waiting',
@@ -192,6 +209,9 @@ export function DateDetailPage() {
   });
   const d = query.data;
   const polling = pollingState(busy(d), active);
+  // The rev file's tick and the SSKUPI hint; fetched once the date is known to exist.
+  const revList = useCreditVoucherList(module, businessDate, !!d);
+  const revPreview = useCreditVoucherPreview(module, businessDate, !!d);
 
   // The home page links to a step (#step-sskupi): scroll to it once the page is there.
   const loaded = !!d;
@@ -238,7 +258,8 @@ export function DateDetailPage() {
   }
 
   const casesLink = `/${module}/cases?business_date=${d.business_date}&status=all`;
-  const steps = dateSteps(d);
+  const steps = dateSteps(d, revStep(revList.data, revPreview.data, !!d.rule_evaluation?.finished_at));
+  const pendingRev = revList.data?.pending_approval ? revList.data.latest : null;
   const step = (key: DateStep['key']) => steps.find((s) => s.key === key)!;
 
   return (
@@ -269,7 +290,7 @@ export function DateDetailPage() {
       {/* The day's checklist: every step with its tick, each a link to its section. */}
       <Card withBorder padding="sm" component="nav" aria-label="Steps of the day">
         <SimpleGrid
-          cols={{ base: 2, sm: 3, lg: 6 }}
+          cols={{ base: 2, sm: 4, lg: 7 }}
           spacing="xs"
           component="ol"
           style={{ listStyle: 'none', padding: 0, margin: 0 }}
@@ -419,7 +440,18 @@ export function DateDetailPage() {
         </Group>
       </Step>
 
+      <Step step={step('rev')}>
+        <CreditVoucherPanel module={module} businessDate={d.business_date} />
+      </Step>
+
       <Step step={step('sskupi')} prominent>
+        {pendingRev && (
+          <Alert color="orange" title="Rev credit file not uploaded yet" role="note">
+            {pendingRev.file_name} is generated but its checked file has not been uploaded. Upload it first (
+            <Anchor href="#step-rev">step {step('rev').n}</Anchor>): the credits it approves (DRC 103 / TCC
+            103) go into the SSKUPI file only after that, and a run of the date.
+          </Alert>
+        )}
         <NpciFilePanel module={module} businessDate={d.business_date} bare />
       </Step>
 

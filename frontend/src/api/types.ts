@@ -76,6 +76,12 @@ export interface Me {
   modules: PaymentModuleRef[];
   /** "/admin/" for an Administrator with staff status, else null. */
   admin_url: string | null;
+  /**
+   * Plan B (owner 2026-11-12): false when the server's ROLES_ENFORCED switch
+   * is off, i.e. every signed-in user may do everything and the screens hide
+   * role names. Missing = true (servers from before the switch).
+   */
+  roles_enforced?: boolean;
   session: {
     idle_timeout_seconds: number;
     warning_seconds: number;
@@ -2493,4 +2499,154 @@ export interface UserActivityReportFilters extends ReportRangeFilters {
   /** Module slug: narrows the work counts only, never the logins. */
   module?: string;
   active?: string;
+}
+
+// ---------------------------------------------------------------------------
+// CBS credit file, the "rev" file (api/credit_vouchers.py; owner 2026-11-11 /
+// 2026-11-12). Generate a version, download it, fill in / correct the
+// accounts in Excel, upload the checked file: the upload approves and closes
+// the cases it still lists. Accounts are masked (last 4 only) in JSON.
+// ---------------------------------------------------------------------------
+/** Derived on the server: APPROVED once uploaded; SUPERSEDED once a later version exists. */
+export type CreditVoucherStatus = 'GENERATED' | 'APPROVED' | 'SUPERSEDED';
+
+/** Rows and amount per rule (R07r / R02 / R04b). */
+export interface CreditVoucherCount {
+  rule_code: string;
+  rows: number;
+  amount: string;
+}
+
+/** A case of a credit rule that is not in the file, and why. */
+export interface CreditVoucherNotIncluded {
+  case_id: number;
+  case_business_date: string;
+  rrn: string;
+  rule_code: string;
+  status: string;
+  reason: string;
+  reason_label: string;
+  detail: string;
+}
+
+/** One credit row (preview or stored version). */
+export interface CreditVoucherLine {
+  line: number;
+  sr_no: number;
+  case_id: number;
+  rule_code: string;
+  action_type: string;
+  rrn: string;
+  txn_date: string;
+  amount: string;
+  account_masked: string;
+  /** Non-empty when the user must fill in or correct the account. */
+  check: string;
+  narration: string;
+}
+
+export interface CreditVoucherPreviewLine extends CreditVoucherLine {
+  case_business_date: string;
+  case_status: string;
+}
+
+export interface CreditVoucherDetailLine extends CreditVoucherLine {
+  approved: boolean;
+  uploaded_account_masked: string | null;
+  account_changed: boolean | null;
+}
+
+/** GET /dates/<d>/credit-voucher/preview/: what the next version would hold now (nothing saved). */
+export interface CreditVoucherPreview {
+  voucher_date: string;
+  next_version: number;
+  next_file_name: string;
+  debit_account_masked: string;
+  narration: string;
+  row_count: number;
+  total_amount: string;
+  rows_to_check: number;
+  counts: CreditVoucherCount[];
+  rows: CreditVoucherPreviewLine[];
+  not_included: CreditVoucherNotIncluded[];
+  not_included_counts: Partial<Record<string, number>>;
+  warnings: string[];
+  can_generate: boolean;
+}
+
+export interface CreditVoucherApproval {
+  approved_by: string;
+  approved_at: string;
+  uploaded_file_name: string;
+  uploaded_sha256: string;
+  approved_count: number;
+  left_open_count: number;
+  total_amount: string;
+}
+
+/** One version of the date's credit file. */
+export interface CreditVoucherRow {
+  id: number;
+  voucher_date: string;
+  version: number;
+  file_name: string;
+  status: CreditVoucherStatus | string;
+  status_label: string;
+  row_count: number;
+  total_amount: string;
+  rows_to_check: number;
+  counts: CreditVoucherCount[];
+  not_included_count: number;
+  debit_account_masked: string;
+  narration: string;
+  sha256: string;
+  size_bytes: number;
+  generated_by: string;
+  generated_at: string;
+  remarks: string;
+  downloads: NpciFileDownload[];
+  download_count: number;
+  /** null when the user may not download. */
+  download_url: string | null;
+  /** Set while the version is GENERATED. */
+  upload_url: string | null;
+  can_upload: boolean;
+  approval: CreditVoucherApproval | null;
+}
+
+export interface CreditVoucherDetail extends CreditVoucherRow {
+  rows: CreditVoucherDetailLine[];
+  not_included: CreditVoucherNotIncluded[];
+  warnings: string[];
+  history: OperationLogEntry[];
+}
+
+/** GET /dates/<d>/credit-voucher/: the date's versions, newest first. */
+export interface CreditVoucherList {
+  voucher_date: string;
+  results: CreditVoucherRow[];
+  latest: CreditVoucherRow | null;
+  /** The latest version is GENERATED: its checked file is still to be uploaded. */
+  pending_approval: boolean;
+  can_generate: boolean;
+  can_download: boolean;
+}
+
+/** POST .../<id>/upload/ 200. */
+export interface CreditVoucherUploadResult {
+  approved_count: number;
+  left_open_count: number;
+  approved_case_ids: number[];
+  left_open: { case_id: number; rrn: string; rule_code: string; amount: string }[];
+  accounts_changed: number;
+  voucher: CreditVoucherDetail;
+}
+
+/** POST .../<id>/upload/ 400: errors.file (whole file) and errors.rows (per line). */
+export interface CreditVoucherRowError {
+  /** Line in the uploaded file (1 = the column names). */
+  line: number;
+  sr_no: string;
+  rrn: string | null;
+  errors: string[];
 }
