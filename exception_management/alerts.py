@@ -45,7 +45,7 @@ from exception_management.models import (
     ExceptionCase,
     ProposedAction,
 )
-from exception_management.roles import Role
+from exception_management.roles import Role, users_holding_q
 
 _LIST_LIMIT = 50
 
@@ -61,7 +61,9 @@ def _rule(case) -> str:
 
 
 def role_members(*roles):
-    return list(get_user_model().objects.filter(is_active=True, groups__name__in=roles).distinct().order_by("pk"))
+    # Roles switched off (owner 2026-11-12): every active user.
+    return list(get_user_model().objects.filter(is_active=True).filter(users_holding_q(*roles)).distinct()
+                .order_by("pk"))
 
 
 def _slug(module_id) -> str:

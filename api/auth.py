@@ -18,7 +18,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from api.base import SessionAuthentication401, V1APIView, active_modules, capabilities, module_slug
-from exception_management.roles import Role, user_roles
+from exception_management.roles import Role, roles_enforced, user_roles
 
 # The SPA warns this long before the idle timeout (design 4.2 / 7.2).
 SESSION_WARNING_SECONDS = 120
@@ -37,6 +37,9 @@ def me_payload(user) -> dict:
         "username": user.get_username(),
         "full_name": user.get_full_name() or user.get_username(),
         "roles": [r for r in Role.ALL if r in roles],
+        # Owner 2026-11-12: false = roles switched off (settings.ROLES_ENFORCED): every signed-in
+        # user holds every role and permission; the SPA hides role names, columns and filters.
+        "roles_enforced": roles_enforced(),
         "permissions": capabilities(user),
         "modules": [{"code": m.code, "slug": module_slug(m), "name": m.name} for m in active_modules()],
         # Users and roles stay in the Django admin (P3); the SPA links to it.

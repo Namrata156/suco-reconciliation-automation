@@ -53,7 +53,8 @@ from rule_engine.models import AgeingBucket
 from settlement.models import MapStatus, NtslCategoryMapVersion, SettlementCase, SettlementTolerance
 
 CLOSED_STATUSES = (CaseStatus.COMPLETED, CaseStatus.CLOSED_SUPERSEDED)
-CLOSING_EVENTS = (EventType.COMPLETED, EventType.SUPERSEDED, EventType.CLOSED_BY_SYSTEM)
+CLOSING_EVENTS = (EventType.COMPLETED, EventType.SUPERSEDED, EventType.CLOSED_BY_SYSTEM,
+                  EventType.CREDIT_FILE_APPROVED)  # owner 2026-11-11: done through the CBS credit file
 # The queue's ordering fields (api.views.ORDERING_FIELDS) without priority (owner "P").
 CASE_ORDERINGS = {"business_date": "business_date", "due_date": "due_date", "age": "age_days", "status": "status",
                   "rule_code": "rule_code", "rrn": "rrn", "created_at": "created_at", "updated_at": "updated_at"}

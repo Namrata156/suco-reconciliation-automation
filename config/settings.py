@@ -283,3 +283,15 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
 }
+
+# CBS credit file ("rev" file, owner 2026-11-11; npci_files.credit_voucher): the
+# GL account its first row debits with the total (GL 1535, as in ops' sheet).
+CREDIT_VOUCHER_DEBIT_ACCOUNT = os.environ.get("CREDIT_VOUCHER_DEBIT_ACCOUNT", "").strip() or "2000011535000000"
+
+# Owner decision 2026-11-12 (Plan B): roles can be switched off. False (the
+# default): every active, signed-in user may do everything, every step still
+# logged by username (exception_management.roles). True: the five roles and
+# their maker-checker limits apply as before. The test runner sets it True
+# (config.test_runner); tests of the switched-off case override it.
+ROLES_ENFORCED = os.environ.get("ROLES_ENFORCED", "").strip().lower() in ("1", "true", "yes", "on")
+TEST_RUNNER = "config.test_runner.RolesEnforcedTestRunner"

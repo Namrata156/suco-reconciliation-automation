@@ -1,7 +1,8 @@
 """
 Owner decision 2026-11-09: no-money cases (R01 DRC 102, R03 DRC 104, R04a
 TCC 102) close by themselves when the NPCI file holding them is generated;
-money cases (R02, R05, R06...) keep the Maker-Checker workflow. Which cases
+since 2026-11-11 (rule set v3.4) R06 RRC 501 too. Money cases (R02, R05,
+R04b...) keep the Maker-Checker workflow. Which cases
 close, which stay, the audit, a second file of the date, re-runs, the
 backfill command and the API output. Synthetic data.
 """
@@ -13,6 +14,7 @@ from unittest import mock
 from django.core.management import call_command
 from django.utils import timezone
 
+from api.npci_files import preview_payload
 from api.tests.test_phase6_daily import csv_lines
 from api.tests.test_v1 import V1TestBase
 from core.models import OperationLog, OperationType
@@ -24,6 +26,7 @@ from npci_files import auto_close
 from npci_files.generator import generate_file, plan_file
 from npci_files.models import NpciFileRow
 from npci_files.tests.base import D, NpciTestBase
+from rule_engine.models import RuleSet, StatusCategory
 
 UPI = "/api/v1/upi"
 
@@ -40,7 +43,8 @@ def closing_events(case=None):
 class AutoCloseTests(NpciTestBase):
     def test_the_list_lives_in_one_constant(self):
         self.assertEqual(auto_close.AUTO_CLOSE_REPLIES,
-                         {"R01": ("DRC", "102"), "R03": ("DRC", "104"), "R04a": ("TCC", "102")})
+                         {"R01": ("DRC", "102"), "R03": ("DRC", "104"), "R04a": ("TCC", "102"),
+                          "R06": ("RRC", "501")})  # R06: owner 2026-11-11 (rule set v3.4)
 
     def test_each_no_money_rule_closes_when_the_file_is_generated(self):
         r01 = self.drc_case("100000000001", "R01")
@@ -122,7 +126,6 @@ class AutoCloseTests(NpciTestBase):
     def test_money_rules_never_close(self):
         r02 = self.drc_case("100000000001", "R02")  # DRC 103
         r05 = self.timeout_case("100000000002", "R05")  # RET 115
-        r06 = self.rrc_case("100000000003")  # manual credit + RRC 501
         approved_r02 = self.drc_case("100000000004", "R02")
         self.approve(approved_r02)
         r04b = self.timeout_case("100000000005", "R04b")  # TCC 102, but not a no-money rule
@@ -130,11 +133,27 @@ class AutoCloseTests(NpciTestBase):
         plan = plan_file(self.module, D)
         self.assertFalse(any(r.closes_case for r in plan.rows))
         f = generate_file(self.chk, self.module, D)
-        self.assertEqual(f.row_count, 5)
-        for case, expected in ((r02, CaseStatus.OPEN), (r05, CaseStatus.OPEN), (r06, CaseStatus.OPEN),
+        self.assertEqual(f.row_count, 4)
+        for case, expected in ((r02, CaseStatus.OPEN), (r05, CaseStatus.OPEN),
                                (approved_r02, CaseStatus.APPROVED), (r04b, CaseStatus.APPROVED)):
             self.assertEqual(status(case), expected, case.rule_code)
         self.assertFalse(closing_events().exists())
+
+    def test_r06_rrc_501_closes_when_the_file_is_generated(self):
+        # Owner 2026-11-11 (rule set v3.4, ops' practice): RRC 501 is sent first; the credit
+        # follows the Refund Reversal Confirmation (R07r, CBS credit file).
+        r06 = self.rrc_case("100000000003")
+        submitted = self.rrc_case("100000000006")
+        self.submit_only(submitted)
+        plan = plan_file(self.module, D)
+        self.assertTrue(all(r.closes_case for r in plan.rows))
+        self.assertFalse(any("credited by hand" in w for w in plan.warnings))  # no manual-credit warning now
+        f = generate_file(self.chk, self.module, D)
+        self.assertEqual((f.row_count, sorted(f.rows.values_list("flag", "code"))),
+                         (2, [("RRC", "501"), ("RRC", "501")]))
+        for case in (r06, submitted):
+            self.assertEqual(status(case), CaseStatus.COMPLETED)
+            self.assertIn("R06 RRC 501: 2026-11-11", closing_events(case).get().remarks)
 
     def test_flagged_for_review_does_not_close(self):
         flagged = self.drc_case("100000000001", "R01")
@@ -211,6 +230,89 @@ class AutoCloseTests(NpciTestBase):
     def test_rule_defaults_mode_marks_nothing(self):
         self.drc_case("100000000001", "R01")
         self.assertFalse(any(r.closes_case for r in plan_file(self.module, D, rule_defaults=True).rows))
+
+
+class R06RuleSetGateTests(NpciTestBase):
+    """Owner 2026-11-13: only R06 cases of rule set v3.4 or later close by
+    themselves. An R06 case of v3.3 or earlier (Manual Credit Required) keeps
+    the same RRC 501 row but stays open, for ops or for a re-run of the date."""
+
+    def old_r06_case(self, rrn, **kw):
+        """An R06 case created while v3.3 was the rule set (its result points at v3.3)."""
+        active = (self.rule_set, self.rules)
+        self.rule_set = RuleSet.objects.get(payment_module=self.module, version_label="v3.3")
+        self.rules = {r.code: r for r in self.rule_set.rules.all()}
+        try:
+            return self.rrc_case(rrn, **kw)
+        finally:
+            self.rule_set, self.rules = active
+
+    def test_fixtures(self):
+        self.assertEqual(self.rule_set.version_label, "v3.4")
+        new, old = self.rrc_case("100000000001"), self.old_r06_case("100000000002")
+        self.assertEqual((new.rule_code, new.status_category, new.rule_result.rule_set.version_label),
+                         ("R06", StatusCategory.RRC_REPLY_CREDIT_ON_CONFIRMATION, "v3.4"))
+        self.assertEqual((old.rule_code, old.status_category, old.rule_result.rule_set.version_label),
+                         ("R06", StatusCategory.MANUAL_CREDIT_REQUIRED, "v3.3"))
+
+    def test_v3_4_closes_older_stays_open_with_an_identical_row_and_the_preview_agrees(self):
+        new = self.rrc_case("100000000001")
+        old = self.old_r06_case("100000000002")
+        plan = plan_file(self.module, D)
+        by_case = {r.case.pk: r for r in plan.rows}
+        self.assertEqual((by_case[new.pk].flag, by_case[new.pk].code), (by_case[old.pk].flag, by_case[old.pk].code))
+        self.assertEqual((by_case[old.pk].flag, by_case[old.pk].code), ("RRC", "501"))
+        self.assertEqual({pk: r.closes_case for pk, r in by_case.items()}, {new.pk: True, old.pk: False})
+        payload = preview_payload(self.module, plan, self.chk)
+        self.assertEqual(payload["closes_by_system_count"], 1)
+        self.assertEqual({r["case_id"]: r["closes_case"] for r in payload["rows"]}, {new.pk: True, old.pk: False})
+        self.assertTrue(any("1 case(s) with a no-money reply (R06: 1) are closed by the system" in w
+                            for w in plan.warnings))
+        # the older one still tells NPCI the customer is credited by hand: the warning stays for it
+        self.assertTrue(any(w.startswith("1 row(s) tell NPCI the customer was credited by hand")
+                            for w in plan.warnings))
+
+        f = generate_file(self.chk, self.module, D)
+        self.assertEqual(sorted(f.rows.values_list("flag", "code")), [("RRC", "501"), ("RRC", "501")])
+        self.assertEqual(status(new), CaseStatus.COMPLETED)
+        self.assertEqual(status(old), CaseStatus.OPEN)
+        self.assertFalse(closing_events(old).exists())
+        log = OperationLog.objects.get(operation=OperationType.NPCI_FILE_GENERATED)
+        self.assertEqual((log.details["closed_by_system"], log.details["closed_by_system_rules"]), (1, {"R06": 1}))
+        # the backfill applies the same rule and says why
+        result = auto_close.close_included_cases(f, dry_run=True)
+        self.assertEqual((result.closed, dict(result.skipped)),
+                         ([], {auto_close.Skip.ALREADY_COMPLETED: 1, auto_close.Skip.OLDER_RULE_SET: 1}))
+
+    def test_older_case_in_the_workflow_stays_with_people(self):
+        old = self.old_r06_case("100000000001")
+        self.approve(old)  # Checker-approved RRC 501
+        self.assertFalse(plan_file(self.module, D).rows[0].closes_case)
+        generate_file(self.chk, self.module, D)
+        self.assertEqual(status(old), CaseStatus.APPROVED)
+        self.assertFalse(closing_events().exists())
+
+    def test_a_re_run_under_v3_4_makes_an_older_case_close_with_the_next_file(self):
+        old = self.old_r06_case("100000000001")
+        self.assertFalse(plan_file(self.module, D).rows[0].closes_case)
+        self.rerun({"100000000001": "R06"})  # re-run of the date under the active v3.4
+        self.sync()
+        case = self.case("100000000001")
+        self.assertEqual((case.pk, case.status_category), (old.pk, StatusCategory.RRC_REPLY_CREDIT_ON_CONFIRMATION))
+        self.assertTrue(plan_file(self.module, D).rows[0].closes_case)
+        generate_file(self.chk, self.module, D)
+        self.assertEqual(status(old), CaseStatus.COMPLETED)
+
+    def test_r01_r03_r04a_do_not_depend_on_the_status_category(self):
+        self.assertEqual(set(auto_close.AUTO_CLOSE_STATUS_CATEGORY), {"R06"})
+        cases = [self.drc_case("100000000001", "R01"), self.drc_case("100000000002", "R03"),
+                 self.timeout_case("100000000003", "R04a")]
+        ExceptionCase.objects.filter(pk__in=[c.pk for c in cases]).update(
+            status_category=StatusCategory.MANUAL_CREDIT_REQUIRED)  # any category: they still close
+        self.assertTrue(all(r.closes_case for r in plan_file(self.module, D).rows))
+        generate_file(self.chk, self.module, D)
+        for case in cases:
+            self.assertEqual(status(case), CaseStatus.COMPLETED, case.rule_code)
 
 
 class BackfillCommandTests(NpciTestBase):

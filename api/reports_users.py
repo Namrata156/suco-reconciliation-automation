@@ -33,7 +33,7 @@ from api.results import _bool_param
 from core.models import OperationLog, OperationType, PaymentModule, UserActivity, UserActivityType
 from exception_management import api as legacy
 from exception_management.models import CaseEvent, EventType
-from exception_management.roles import Role
+from exception_management.roles import Role, listed_roles, users_holding_q
 from settlement.models import MappingEventType
 
 CASE_COUNTS = {"taken": EventType.TAKEN, "submitted": EventType.SUBMITTED, "approved": EventType.APPROVED,
@@ -100,14 +100,13 @@ def user_row(u, counts: dict, d_from, d_to) -> dict:
     def n(name):
         return counts.get(name, {}).get(u.pk, 0)
 
-    names = set(Role.ALL) if u.is_superuser else {g.name for g in u.groups.all()}
     last = counts.get("_last_login", {}).get(u.pk)
     username = u.get_username()
     q = lambda **extra: urlencode({"user": username, **extra}, quote_via=quote)  # noqa: E731
     dates = {"date_from": d_from.isoformat(), "date_to": d_to.isoformat()}
     return {
         "user_id": u.pk, "username": username, "full_name": u.get_full_name() or username,
-        "roles": [r for r in Role.ALL if r in names], "is_active": u.is_active,
+        "roles": listed_roles(u), "is_active": u.is_active,
         "logins": n("logins"),
         "failed_logins": n("failed_logins") + counts.get("_failed_by_name", {}).get(username.lower(), 0),
         "last_login": last[0] if last else None, "last_login_ip": last[1] if last else None,
@@ -164,7 +163,7 @@ class UserActivityReportView(V1APIView):
             return _bad_request("Invalid input", errors)
         users = get_user_model().objects.prefetch_related("groups").order_by("username")
         if role:
-            users = users.filter(Q(is_superuser=True) | Q(groups__name=role)).distinct()
+            users = users.filter(users_holding_q(role)).distinct()  # ignored when roles are switched off
         if active is not None:
             users = users.filter(is_active=active)
         if user:

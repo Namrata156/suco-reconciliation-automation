@@ -11,21 +11,21 @@ seed data is printed as a warning).
 
 A fresh DB without the UPI PaymentModule gets everything from this command;
 an existing DB that already has UPI got it from data migrations
-rule_engine/0002 (v3.1), 0005 (v3.2) and 0006 (v3.3) (same pattern as
+rule_engine/0002 (v3.1), 0005 (v3.2), 0006 (v3.3) and 0008 (v3.4) (same pattern as
 seed_settlement_cycles / core 0003).
 """
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from rule_engine.seed_data import v3_1, v3_2, v3_3
+from rule_engine.seed_data import v3_1, v3_2, v3_3, v3_4
 from rule_engine.seeding import seed_rule_table
 
-VERSIONS = (v3_1, v3_2, v3_3)  # oldest first; the last one ends up ACTIVE
+VERSIONS = (v3_1, v3_2, v3_3, v3_4)  # oldest first; the last one ends up ACTIVE
 
 
 class Command(BaseCommand):
-    help = "Seeds UPI rule sets v3.1, v3.2 and v3.3 (v3.3 active), the response-code table and ageing buckets. Idempotent."
+    help = "Seeds UPI rule sets v3.1, v3.2, v3.3 and v3.4 (v3.4 active), the response-code table and ageing buckets. Idempotent."
 
     def handle(self, *args, **options):
         for data in VERSIONS:

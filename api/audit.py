@@ -41,7 +41,7 @@ from api.settings_views import SETTINGS_KINDS
 from core.models import OperationLog, OperationType, PaymentModule, UserActivity, UserActivityType
 from exception_management import api as legacy
 from exception_management.models import CaseEvent, CodeChangeEventType, EventType, ResponseCodeChangeEvent
-from exception_management.roles import Role, has_role, user_roles
+from exception_management.roles import Role, has_role, listed_roles, user_roles, users_holding_q
 from settlement.models import MappingEventType, NtslMappingEvent, SettlementToleranceEvent
 
 AUDIT_ROLES = frozenset({Role.ADMINISTRATOR, Role.AUDITOR})
@@ -346,6 +346,10 @@ def case_event_summary(r: dict) -> str:
         name = changes.get("npci_file_name")
         name = name[-1] if isinstance(name, list) and name else None
         return f"{who} closed {case}: no-money reply included in NPCI file {name or '(unknown)'}"
+    if t == EventType.CREDIT_FILE_APPROVED:  # owner 2026-11-11
+        name = changes.get("credit_voucher_file_name")
+        name = name[-1] if isinstance(name, list) and name else None
+        return f"{who} approved and closed {case} through the CBS credit file {name or '(unknown)'}"
     verbs = {
         EventType.CREATED: "created {c}", EventType.RESULT_UPDATED: "updated the rule result details on {c}",
         EventType.RULE_CHANGED: "changed the rule on {c}", EventType.FLAGGED_FOR_REVIEW: "flagged {c} for review",
@@ -396,6 +400,15 @@ def operation_summary(r: dict) -> str:
         return f"{who} downloaded {name}"
     if t == OperationType.ORIGINAL_FILE_DOWNLOADED:
         return f"{who} downloaded the original file {name}"
+    if t == OperationType.CREDIT_VOUCHER_GENERATED:  # owner 2026-11-11
+        return f"{who} generated the CBS credit file {name} ({d.get('rows', 0)} rows){on}"
+    if t == OperationType.CREDIT_VOUCHER_DOWNLOADED:
+        return f"{who} downloaded the CBS credit file {name}"
+    if t == OperationType.CREDIT_VOUCHER_APPROVED:
+        return (f"{who} uploaded the checked CBS credit file {name}: {d.get('approved', 0)} case(s) approved, "
+                f"{d.get('left_open', 0)} left open")
+    if t == OperationType.CREDIT_VOUCHER_REFUSED:
+        return f"{who}'s upload of the checked CBS credit file {name} was refused"
     if t == OperationType.REPORT_EXPORTED:
         return f"{who} downloaded the report {name} ({d.get('row_count', 0)} rows)"
     return f"{who}: {r['event_type_label']}{on}"
@@ -520,7 +533,7 @@ class UsersAndRolesView(V1APIView):
             return _bad_request("Invalid input", errors)
         qs = get_user_model().objects.prefetch_related("groups").order_by("username")
         if role:
-            qs = qs.filter(Q(is_superuser=True) | Q(groups__name=role)).distinct()
+            qs = qs.filter(users_holding_q(role)).distinct()  # ignored when roles are switched off
         if active:
             qs = qs.filter(is_active=active == "true")
         search = (p.get("search") or "").strip()
@@ -530,9 +543,8 @@ class UsersAndRolesView(V1APIView):
         paginator, page = _page(self, request, qs)
         rows = []
         for u in page:
-            names = set(Role.ALL) if u.is_superuser else {g.name for g in u.groups.all()}
             rows.append({"id": u.pk, "username": u.get_username(), "full_name": u.get_full_name() or u.get_username(),
-                         "roles": [r for r in Role.ALL if r in names], "is_superuser": u.is_superuser,
+                         "roles": listed_roles(u), "is_superuser": u.is_superuser,
                          "is_active": u.is_active, "last_login": u.last_login})
         response = paginator.get_paginated_response(rows)
         # The Django admin link is for the Administrator only (an Auditor gets null even if staff).

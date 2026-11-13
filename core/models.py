@@ -240,6 +240,11 @@ class OperationType(models.TextChoices):
     ORIGINAL_FILE_DOWNLOADED = "ORIGINAL_FILE_DOWNLOADED", "Original file downloaded"
     # Phase 6 (docs/phase6_api_contract.txt section A, C3): every successful report download
     REPORT_EXPORTED = "REPORT_EXPORTED", "Report downloaded"
+    # CBS credit file ("rev" file, owner 2026-11-11; npci_files.credit_voucher)
+    CREDIT_VOUCHER_GENERATED = "CREDIT_VOUCHER_GENERATED", "CBS credit file generated"
+    CREDIT_VOUCHER_DOWNLOADED = "CREDIT_VOUCHER_DOWNLOADED", "CBS credit file downloaded"
+    CREDIT_VOUCHER_APPROVED = "CREDIT_VOUCHER_APPROVED", "CBS credit file uploaded and approved"
+    CREDIT_VOUCHER_REFUSED = "CREDIT_VOUCHER_REFUSED", "CBS credit file upload refused"
 
 
 class OperationLog(AppendOnlyModel):

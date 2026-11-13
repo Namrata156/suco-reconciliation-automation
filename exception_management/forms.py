@@ -12,11 +12,10 @@ from typing import Callable
 
 from django import forms
 from django.contrib.auth import get_user_model
-from django.db.models import Q
 
 from exception_management import services
 from exception_management.actions import ACTION_SPECS, SETTLEMENT_ACTIONS, ActionType
-from exception_management.roles import Role
+from exception_management.roles import Role, users_holding_q
 from core.models import PaymentModule
 from rule_engine.models import CodeFlag, ResponseCode
 
@@ -46,7 +45,7 @@ class ReassignForm(CaseForm):
         super().__init__(*args, **kwargs)
         self.fields["to_user"].queryset = (
             get_user_model().objects.filter(is_active=True)
-            .filter(Q(is_superuser=True) | Q(groups__name=Role.MAKER)).distinct().order_by("username")
+            .filter(users_holding_q(Role.MAKER)).distinct().order_by("username")
         )
 
 

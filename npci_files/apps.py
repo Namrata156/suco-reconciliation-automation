@@ -8,7 +8,15 @@ class NpciFilesConfig(AppConfig):
 
     def ready(self):
         from core.append_only import guard_deletes
-        from npci_files.models import NpciFile, NpciFileRow
+        from npci_files.models import (
+            CreditVoucher,
+            CreditVoucherApproval,
+            CreditVoucherCredit,
+            CreditVoucherRow,
+            NpciFile,
+            NpciFileRow,
+        )
 
-        guard_deletes(NpciFile)
-        guard_deletes(NpciFileRow)
+        for model in (NpciFile, NpciFileRow, CreditVoucher, CreditVoucherRow, CreditVoucherApproval,
+                      CreditVoucherCredit):
+            guard_deletes(model)

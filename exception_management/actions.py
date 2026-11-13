@@ -87,6 +87,10 @@ DEFAULT_ACTION_BY_RULE: dict[str, str] = {
     "R05": ActionType.RET,  # RET, reason pre-filled 115 (owner Q1)
     "R06": ActionType.MANUAL_CREDIT_RRC_501,
     "R06b": ActionType.RRC_501_NO_CREDIT,  # evidence mandatory (D4); maker may switch to a manual credit
+    # Rule set v3.4 (owner 2026-11-11): the CBS credit of a Refund Reversal
+    # Confirmation, made through the credit file (rev file); no NPCI reply, so
+    # an action without a response code.
+    "R07r": ActionType.REFUND_CUSTOMER,
     "R12": ActionType.CBS_ADJUSTMENT_ENTRY,
 }
 

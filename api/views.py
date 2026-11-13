@@ -48,7 +48,7 @@ from exception_management.models import (
     ProposedAction,
     ResponseCodeChangeRequest,
 )
-from exception_management.roles import Role, has_role, user_roles
+from exception_management.roles import Role, has_role, listed_roles, user_roles, users_holding_q
 from exception_management.services import BULK_PRIORITIES
 from file_processing.intake import _file_state as file_state
 from file_processing.intake import date_checklists, file_type_options
@@ -115,16 +115,15 @@ class UserListView(V1APIView):
         role = request.query_params.get("role")
         if role and role not in Role.ALL:
             return _bad_request("Unknown role", {"role": [f"Must be one of: {', '.join(Role.ALL)}"]})
-        holds = Q(groups__name=role) if role else Q(groups__name__in=Role.ALL)
-        qs = (get_user_model().objects.filter(is_active=True).filter(Q(is_superuser=True) | holds)
+        # Roles switched off (owner 2026-11-12): every active user, role filter ignored.
+        qs = (get_user_model().objects.filter(is_active=True).filter(users_holding_q(*([role] if role else [])))
               .distinct().order_by("username").prefetch_related("groups"))
         paginator = legacy.QueuePagination()
         page = paginator.paginate_queryset(qs, request, view=self)
         rows = []
         for u in page:
-            names = set(Role.ALL) if u.is_superuser else {g.name for g in u.groups.all()}
             rows.append({"id": u.pk, "username": u.get_username(), "full_name": u.get_full_name() or u.get_username(),
-                         "roles": [r for r in Role.ALL if r in names]})
+                         "roles": listed_roles(u)})
         return paginator.get_paginated_response(rows)
 
 

@@ -40,8 +40,9 @@ Generating while any case is left out makes a PARTIAL file and needs an
 explicit confirmation (owner Q5).
 
 Owner 2026-11-09 (overrides Amendment 2 B3 for these rules only): a case whose
-no-money reply goes into the file (R01 DRC 102, R03 DRC 104, R04a TCC 102;
-npci_files.auto_close.AUTO_CLOSE_REPLIES) is closed by the system in the same
+no-money reply goes into the file (R01 DRC 102, R03 DRC 104, R04a TCC 102, and
+since 2026-11-11 R06 RRC 501 -- owner 2026-11-13: only R06 cases of rule set v3.4+;
+npci_files.auto_close.AUTO_CLOSE_REPLIES / reply_closes_case) is closed by the system in the same
 transaction as the file. The preview marks those rows (PlannedRow.closes_case).
 
 plan_file(..., rule_defaults=True) is the verification path only (the
@@ -407,7 +408,9 @@ def plan_file(module: PaymentModule, file_date: date, *, rule_defaults: bool = F
                   and auto_close.reply_closes_case(case, flag, code))
         plan.rows.append(PlannedRow(case=case, action=reply.action, action_type=reply.action_type, fact=fact,
                                     line=line, source=reply.source, closes_case=closes))
-        if reply.action_type in MANUAL_CREDIT_ACTIONS and case.status != CaseStatus.COMPLETED:
+        # A row that closes its case on generation (R06 RRC 501 since rule set v3.4) is not a
+        # credit made by hand now: the credit follows the confirmation (R07r, credit file).
+        if reply.action_type in MANUAL_CREDIT_ACTIONS and case.status != CaseStatus.COMPLETED and not closes:
             manual_credit_pending += 1
 
     plan.rows.sort(key=lambda r: plan.file_format.sort_key(r.flag, r.code, r.fact.pk))

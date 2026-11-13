@@ -29,7 +29,7 @@ class NpciTestBase(CaseTestBase):
         self._row = 0
 
     def dispute(self, case: ExceptionCase, leg: str, amount, account: str, *, d: date | None = None,
-                txn_date: str | None = None, txn_amount=None) -> TransactionFact:
+                txn_date: str | None = None, txn_amount=None, extra_cells: dict | None = None) -> TransactionFact:
         """The NPCI dispute row of `case` for `leg`, dated d (Adjdate for an
         Adjustment; default the case's date). Account in cell 11 (DRC /
         Timeout) or 12 (Adjustment); Txndate in Adjustment cell 8."""
@@ -48,6 +48,7 @@ class NpciTestBase(CaseTestBase):
                      "12": account}
         else:
             cells = {"9": "SSK", "11": account}
+        cells.update(extra_cells or {})
         staging = STAGING_MODEL_BY_REGISTER_TYPE[register_type].objects.create(
             uploaded_file=uf, row_number=self._row, row_reference=f":{self._row}", raw_cells=cells)
         fact = TransactionFact.objects.create(

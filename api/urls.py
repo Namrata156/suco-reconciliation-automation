@@ -4,7 +4,7 @@
 """
 from django.urls import path
 
-from api import (alerts, audit, auth, dashboard, lookup, npci_files, operations, reports, reports_cases,
+from api import (alerts, audit, auth, credit_vouchers, dashboard, lookup, npci_files, operations, reports, reports_cases,
                  reports_daily, reports_users, results, settings_views, views)
 
 urlpatterns = [
@@ -112,6 +112,17 @@ urlpatterns = [
     path("<slug:module>/dates/<str:business_date>/npci-file/preview/", npci_files.NpciPreviewView.as_view(),
          name="v1-npci-file-preview"),
     path("<slug:module>/npci-files/", npci_files.NpciFileListView.as_view(), name="v1-npci-file-list"),
+    # CBS credit file ("rev" file, owner 2026-11-11; api/credit_vouchers.py)
+    path("<slug:module>/dates/<str:business_date>/credit-voucher/", credit_vouchers.CreditVoucherListView.as_view(),
+         name="v1-credit-voucher-list"),
+    path("<slug:module>/dates/<str:business_date>/credit-voucher/preview/",
+         credit_vouchers.CreditVoucherPreviewView.as_view(), name="v1-credit-voucher-preview"),
+    path("<slug:module>/dates/<str:business_date>/credit-voucher/<int:pk>/",
+         credit_vouchers.CreditVoucherDetailView.as_view(), name="v1-credit-voucher-detail"),
+    path("<slug:module>/dates/<str:business_date>/credit-voucher/<int:pk>/download/",
+         credit_vouchers.CreditVoucherDownloadView.as_view(), name="v1-credit-voucher-download"),
+    path("<slug:module>/dates/<str:business_date>/credit-voucher/<int:pk>/upload/",
+         credit_vouchers.CreditVoucherUploadView.as_view(), name="v1-credit-voucher-upload"),
     path("<slug:module>/npci-files/<int:pk>/", npci_files.NpciFileDetailView.as_view(), name="v1-npci-file-detail"),
     path("<slug:module>/npci-files/<int:pk>/download/", npci_files.NpciFileDownloadView.as_view(),
          name="v1-npci-file-download"),

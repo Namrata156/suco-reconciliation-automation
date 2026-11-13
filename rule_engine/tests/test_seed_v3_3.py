@@ -99,8 +99,10 @@ class CommandTests(TestCase):
     def test_v3_3_active_v3_2_retired(self):
         v32 = RuleSet.objects.get(version_label="v3.2")
         v33 = RuleSet.objects.get(version_label="v3.3")
-        self.assertEqual((v32.status, v33.status), (RuleSetStatus.RETIRED, RuleSetStatus.ACTIVE))
+        # v3.4 (owner 2026-11-11) is seeded after v3.3 and retires it.
+        self.assertEqual((v32.status, v33.status), (RuleSetStatus.RETIRED, RuleSetStatus.RETIRED))
         self.assertIsNotNone(v32.retired_at)
+        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.4")
         self.assertEqual(RuleSet.objects.filter(payment_module=self.upi, status="ACTIVE").count(), 1)
         self.assertIn("rule set v3.3 created and activated with 24 rules", self.out.getvalue())
         self.assertFalse(v33.rules.filter(tat_day_basis="WORKING").exists())
@@ -118,8 +120,8 @@ class CommandTests(TestCase):
         out = StringIO()
         call_command("seed_rule_sets", stdout=out)
         self.assertNotIn("differs", out.getvalue())
-        self.assertEqual((RuleSet.objects.count(), Rule.objects.count()), (3, 72))
-        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.3")
+        self.assertEqual((RuleSet.objects.count(), Rule.objects.count()), (4, 97))  # + v3.4
+        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.4")
 
 
 class MigrationTests(TestCase):

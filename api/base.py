@@ -92,6 +92,11 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
     "reports.view": _ALL,
     "reports.approvals": (Role.ADMINISTRATOR, Role.AUDITOR, Role.CHECKER),  # B6, B6s (design R2)
     "reports.user_activity": (Role.ADMINISTRATOR, Role.AUDITOR),  # B7 (logins and IP addresses)
+    # CBS credit file (rev file, owner 2026-11-11/12; npci_files.credit_voucher GENERATE / DOWNLOAD /
+    # UPLOAD_ROLES, which the server checks). Roles switched off: everyone.
+    "credit_vouchers.generate": (Role.MAKER, Role.OPERATIONS_USER),
+    "credit_vouchers.download": (Role.MAKER, Role.OPERATIONS_USER, Role.CHECKER),
+    "credit_vouchers.upload": (Role.CHECKER,),
 }
 
 

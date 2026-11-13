@@ -157,10 +157,13 @@ class AuthTests(V1TestBase):
             Role.ADMINISTRATOR: {"cases.reassign", "settings.propose_tolerance", "audit.view", "users.view",
                                  "users.admin", "reports.approvals", "reports.user_activity"},
             # npci_files.*: NPCI file design Q2 (owner 2026-10-22/23)
-            Role.OPERATIONS_USER: {"files.upload", "npci_files.download"},
-            Role.MAKER: {"cases.work", "settings.propose_codes", "settings.propose_mapping", "npci_files.download"},
+            # credit_vouchers.*: the CBS credit file (owner 2026-11-11/12)
+            Role.OPERATIONS_USER: {"files.upload", "npci_files.download", "credit_vouchers.generate",
+                                   "credit_vouchers.download"},
+            Role.MAKER: {"cases.work", "settings.propose_codes", "settings.propose_mapping", "npci_files.download",
+                         "credit_vouchers.generate", "credit_vouchers.download"},
             Role.CHECKER: {"cases.approve", "settings.approve", "npci_files.generate", "npci_files.download",
-                           "reports.approvals"},
+                           "reports.approvals", "credit_vouchers.download", "credit_vouchers.upload"},
             Role.AUDITOR: {"audit.view", "users.view",  # users.view: owner decision 2026-10-22
                            "reports.approvals", "reports.user_activity"},
         }

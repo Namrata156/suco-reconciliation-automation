@@ -6,12 +6,15 @@ Acceptance check for the rule evaluator (Phase 2 Step 4), read-only.
    swapped for a per-group one) in a READ ONLY transaction and compares its
    rule per match group with the current RuleResult of every group.
 2. Compares the current per-rule counts with
-   rule_engine.seed_data.v3_3.EXPECTED_COUNTS (identical to v3.1's: v3.2
+   rule_engine.seed_data.v3_4.EXPECTED_COUNTS (identical to v3.1's: v3.2
    changes only R13's outcome and v3.3 only the deadline basis, not which
    groups a rule matches) and reports
    which rule set version the current results reference.
 The oracle SQL encodes v3.1's CASE order and conditions, which v3.2 and v3.3 keep
-unchanged, so it remains the per-group oracle.
+unchanged, so it remains the per-group oracle. v3.4 (owner 2026-11-11) splits
+R07a: its new rule R07r takes the Refund Reversal Confirmations. The oracle
+and the counts know no R07r, so a current R07r result is compared as R07a
+(v3_4.ORACLE_ALIASES).
 
 The project's tests load only single-cycle samples, so the full-date counts
 can't be a unit test; this command is the acceptance check instead.
@@ -29,7 +32,7 @@ from django.db import connection, transaction
 
 from core.models import PaymentModule
 from rule_engine.models import RuleResult
-from rule_engine.seed_data import v3_3 as expected
+from rule_engine.seed_data import v3_4 as expected
 
 ORACLE = Path(settings.BASE_DIR) / "docs" / "phase2_rule_table_v3_1_reference.sql"
 _CASE_HEAD = "r as (select business_date, case"
@@ -66,7 +69,7 @@ class Command(BaseCommand):
         module = PaymentModule.objects.get(code=options["payment_module"])
         oracle = oracle_rules()
         ours = dict(
-            (gid, (d, code))
+            (gid, (d, expected.ORACLE_ALIASES.get(code, code)))
             for gid, d, code in RuleResult.objects.filter(payment_module=module, is_superseded=False).values_list(
                 "match_group_id", "business_date", "rule_code"
             )

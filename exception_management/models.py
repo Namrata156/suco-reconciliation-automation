@@ -397,6 +397,10 @@ class EventType(models.TextChoices):
     # Maker or Checker (npci_files.auto_close, services.close_by_system).
     CLOSED_BY_SYSTEM = "CLOSED_BY_SYSTEM", "Closed by the system (no-money reply included in an NPCI file)"
     # users
+    # Owner 2026-11-11: a Checker uploaded the checked CBS credit file (rev file); that one
+    # upload approves the case's credit and marks it done, with the file as the CBS
+    # reference (npci_files.credit_voucher). One event per case, actor = the uploader.
+    CREDIT_FILE_APPROVED = "CREDIT_FILE_APPROVED", "Approved and done through the CBS credit file (rev)"
     TAKEN = "TAKEN", "Taken"
     RELEASED = "RELEASED", "Released"
     REASSIGNED = "REASSIGNED", "Reassigned"

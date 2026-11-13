@@ -17,6 +17,10 @@ current status, applies the change and writes a CaseEvent.
   close_by_system (no user; owner 2026-11-09): OPEN / IN_PROGRESS /
     PENDING_APPROVAL / APPROVED -> COMPLETED when the case's no-money reply
     went into a generated NPCI file (npci_files.auto_close decides which).
+  approve_by_credit_file (Checker; owner 2026-11-11): OPEN / IN_PROGRESS /
+    PENDING_APPROVAL / APPROVED -> COMPLETED in one step when a Checker
+    uploads the checked CBS credit file listing the case
+    (npci_files.credit_voucher decides which).
 
 Roles: Maker = take, release, submit, mark_completed, add_remark; Checker =
 approve, reject; Administrator = reassign (and release a case someone else
@@ -480,6 +484,74 @@ def close_by_system(cases, *, reference: str, remarks: str, changes: dict | None
 
 
 # ---------------------------------------------------------------------------
+# approval through the CBS credit file (owner 2026-11-11)
+# ---------------------------------------------------------------------------
+CREDIT_FILE_STATUSES = (CaseStatus.OPEN, CaseStatus.IN_PROGRESS, CaseStatus.PENDING_APPROVAL, CaseStatus.APPROVED)
+
+
+@transaction.atomic
+def approve_by_credit_file(items, user, *, proposed_by, proposed_at, reference: str, remarks: str,
+                           source: str = "") -> list[ProposedAction]:
+    """A Checker's upload of the checked CBS credit file (rev file) approves
+    every case it lists and marks it done in one step, with the file name as
+    the CBS reference (npci_files.credit_voucher decides which cases qualify;
+    the per-case take / submit / approve / mark-done steps are what the file
+    replaces). `items`: [(case, action_type, changes)], the cases LOCKED by the
+    caller in this transaction. Per case:
+      - OPEN / IN_PROGRESS: the credit action is recorded as proposed by
+        `proposed_by` (who generated the file) at `proposed_at`, and approved;
+      - PENDING_APPROVAL: the Maker's pending action (it must be that credit
+        action) is approved;
+      - APPROVED: the approved action (that credit action, not yet done) is used;
+    then approved by `user`, completed by `user` now with external_reference
+    = `reference`, the case COMPLETED (assignment kept) and ONE
+    CREDIT_FILE_APPROVED event written (actor = `user`). Any case that does
+    not fit raises and, the caller's transaction being atomic, nothing is
+    written."""
+    _require(user, Role.CHECKER)
+    reference = _text(reference, "The external (CBS) reference")[:100]
+    remarks = (remarks or "").strip()
+    now = timezone.now()
+    out = []
+    for case, action_type, changes in items:
+        _require_status(case, *CREDIT_FILE_STATUSES, verb="approve through the credit file")
+        old_status = case.status
+        if old_status in (CaseStatus.OPEN, CaseStatus.IN_PROGRESS):
+            action = ProposedAction(
+                case=case, rule_result_id=case.rule_result_id, rule_code=case.rule_code, action_type=action_type,
+                response_code=_resolve_response_code(case, action_type, None), remarks=remarks,
+                submitted_by=proposed_by, submitted_at=proposed_at,
+            )
+        elif old_status == CaseStatus.PENDING_APPROVAL:
+            action = _pending(case)
+        else:
+            action = (ProposedAction.objects.select_for_update(of=("self",))
+                      .filter(case=case, decision=Decision.APPROVED).order_by("-decided_at", "-pk").first())
+            if action is None or action.completed_at is not None:
+                raise InvalidTransition(f"Case {case.pk} has no approved action waiting to be done")
+        if action.action_type != action_type:
+            raise InvalidTransition(f"Case {case.pk} carries {action.action_type}, not {action_type}")
+        if action.decision != Decision.APPROVED:
+            action.decision = Decision.APPROVED
+            action.decided_by = user
+            action.decided_at = now
+            action.decision_remarks = remarks
+            action.self_approved = action.submitted_by_id == user.pk
+        action.external_reference = reference
+        action.completed_by = user
+        action.completed_at = now
+        action.save()
+        _set_status(case, CaseStatus.COMPLETED)
+        record_event(case, EventType.CREDIT_FILE_APPROVED, actor=user, old_status=old_status,
+                     new_status=case.status, action=action, remarks=remarks,
+                     changes={"status": [old_status, CaseStatus.COMPLETED], "external_reference": [None, reference],
+                              **(changes or {})},
+                     source=source)
+        out.append(action)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # what a user may do now (admin buttons, API) -- mirrors the checks above
 # ---------------------------------------------------------------------------
 TRANSITIONS = ("take", "release", "reassign", "submit", "approve", "reject", "complete", "remark", "clear_review")
@@ -624,6 +696,7 @@ __all__ = [
     "WorkflowError",
     "add_remark",
     "approve",
+    "approve_by_credit_file",
     "mark_completed",
     "reassign",
     "reject",

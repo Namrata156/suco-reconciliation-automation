@@ -6,14 +6,29 @@ Maker or Checker step: the system already proved them from CBS GL 1535.
   R01   DRC, debited and already reversed   -> DRC 102
   R03   DRC, never reached CBS              -> DRC 104
   R04a  Timeout, credited online            -> TCC 102
+  R06   Credit Adjustment / Online Refund / RET (SSK = Remitter) -> RRC 501
+        (owner 2026-11-11, rule set v3.4, ops' practice: the RRC 501 reply is
+        sent first; the customer is credited when NPCI's Refund Reversal
+        Confirmation arrives, as an R07r case in the CBS credit file,
+        npci_files.credit_voucher. So no money moves when the R06 reply is
+        sent.)
+        Owner 2026-11-13: ONLY R06 cases of rule set v3.4 or later, i.e.
+        whose status category is RRC_REPLY_CREDIT_ON_CONFIRMATION
+        (AUTO_CLOSE_STATUS_CATEGORY). An R06 case of v3.3 or earlier
+        ("Manual Credit Required": the customer is credited by hand) stays
+        open with the same RRC 501 row in the file, for ops to handle or for
+        the date to be re-run under v3.4 (the re-run copies the new category
+        onto the case, which then closes with the next file).
 
-Every other rule (R02 DRC 103, R05 RET, R06 RRC 501, R06b, R04b, R07x, ...)
-keeps the full Maker-Checker workflow (docs/npci_file_design_draft_v1.txt
-Amendment 2 B3 still applies to them).
+Every other rule (R02 DRC 103, R05 RET, R06b, R04b, R07x, ...) keeps the full
+Maker-Checker workflow (docs/npci_file_design_draft_v1.txt Amendment 2 B3
+still applies to them); R02 / R04b manual credits and R07r can instead be
+approved in one step through the credit file (npci_files.credit_voucher).
 
 A case included in a file is closed, in the SAME transaction as the file
 (generator.generate_file), only when all of these hold:
-  - it is a transaction case whose rule is in AUTO_CLOSE_REPLIES;
+  - it is a transaction case whose rule is in AUTO_CLOSE_REPLIES (R06: and
+    whose status category is the v3.4 one, AUTO_CLOSE_STATUS_CATEGORY);
   - the row written for it is that rule's no-money reply (flag + numeric
     code), and the case still carries that reply (a Maker who submitted, or a
     Checker who approved, a DIFFERENT reply leaves the case for people);
@@ -43,14 +58,29 @@ from django.db import transaction
 from exception_management import services
 from exception_management.models import SYSTEM_CLOSABLE_STATUSES, CaseStatus, CaseType, ExceptionCase
 from npci_files.models import NpciFile, NpciFileRow
+from rule_engine.models import StatusCategory
 
 # The one place the list lives: rule code -> its no-money reply (flag, numeric code).
 AUTO_CLOSE_REPLIES: dict[str, tuple[str, str]] = {
     "R01": ("DRC", "102"),  # DRC, already reversed
     "R03": ("DRC", "104"),  # DRC, never reached CBS
     "R04a": ("TCC", "102"),  # Timeout, credited online
+    "R06": ("RRC", "501"),  # owner 2026-11-11: reply first; credited later as R07r (credit file)
 }
 AUTO_CLOSE_RULES = tuple(AUTO_CLOSE_REPLIES)
+
+# Owner 2026-11-13: a rule listed here closes only when the case carries this
+# status category. R06 got RRC_REPLY_CREDIT_ON_CONFIRMATION in rule set v3.4
+# (before: MANUAL_CREDIT_REQUIRED, credited by hand), so this is "R06 of v3.4
+# or later". Keyed on the category, not on the version label: the category is
+# copied onto the case from its CURRENT rule result by every sync (so a re-run
+# under v3.4 makes an old case eligible), it is what actually says "no money
+# moves now", and it needs no parsing of free-text labels ("v3.10" < "v3.4" as
+# text). A later version that changes R06's category stops the auto-close until
+# the owner decides again (the safe direction).
+AUTO_CLOSE_STATUS_CATEGORY: dict[str, str] = {
+    "R06": StatusCategory.RRC_REPLY_CREDIT_ON_CONFIRMATION,
+}
 
 GENERATION_SOURCE = "system: NPCI file generation"
 
@@ -59,6 +89,7 @@ class Skip:
     """Why an included case is not closed (dry-run counts)."""
 
     NOT_A_NO_MONEY_RULE = "rule not in the no-money list"
+    OLDER_RULE_SET = "R06 case from rule set v3.3 or earlier (Manual Credit Required)"
     ROW_NOT_NO_MONEY_REPLY = "the file row is not the rule's no-money reply"
     REPLY_CHANGED = "the case now carries another reply"
     NEEDS_REVIEW = "flagged for review"
@@ -68,10 +99,20 @@ class Skip:
     NOT_TRANSACTION = "not a transaction case"
 
 
+def rule_closes_case(case: ExceptionCase) -> bool:
+    """True when the case's rule (and, for R06, its v3.4+ status category)
+    is one whose no-money reply closes it."""
+    if case.rule_code not in AUTO_CLOSE_REPLIES:
+        return False
+    category = AUTO_CLOSE_STATUS_CATEGORY.get(case.rule_code)
+    return category is None or case.status_category == category
+
+
 def reply_closes_case(case: ExceptionCase, flag: str | None, code: str | None) -> bool:
-    """True when (flag, code) is the no-money reply of the case's rule."""
-    expected = AUTO_CLOSE_REPLIES.get(case.rule_code)
-    return expected is not None and (flag, code) == expected
+    """True when (flag, code) is the no-money reply of the case's rule and
+    the rule closes this case (rule_closes_case). Used by both the preview
+    (generator.plan_file -> closes_case) and the closing itself."""
+    return rule_closes_case(case) and (flag, code) == AUTO_CLOSE_REPLIES[case.rule_code]
 
 
 def skip_reason(case: ExceptionCase, row_flag: str, row_code: str, reply, latest: dict) -> str | None:
@@ -87,6 +128,8 @@ def skip_reason(case: ExceptionCase, row_flag: str, row_code: str, reply, latest
         return Skip.SUPERSEDED
     if case.rule_code not in AUTO_CLOSE_REPLIES:
         return Skip.NOT_A_NO_MONEY_RULE
+    if not rule_closes_case(case):
+        return Skip.OLDER_RULE_SET
     if not reply_closes_case(case, row_flag, row_code):
         return Skip.ROW_NOT_NO_MONEY_REPLY
     if not reply_closes_case(case, reply.flag, reply.code):
@@ -112,7 +155,7 @@ class FileClosure:
 def _remarks(npci_file: NpciFile) -> str:
     return (f"Closed by the system: the no-money reply was included in NPCI file {npci_file.file_name} "
             f"(file id {npci_file.pk}). No money moves at the bank, so no Maker or Checker step "
-            "(owner decision 2026-11-09).")
+            "(owner decision 2026-11-09; R06 RRC 501: 2026-11-11).")
 
 
 def close_included_cases(npci_file: NpciFile, *, source: str = GENERATION_SOURCE,

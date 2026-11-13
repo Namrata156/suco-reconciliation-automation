@@ -97,6 +97,10 @@ class StatusCategory(models.TextChoices):
     RETURN_REQUIRED = "RETURN_REQUIRED", "Return Required"
     CHARGEBACK_REQUIRED = "CHARGEBACK_REQUIRED", "Chargeback Required"
     NO_FINANCIAL_ACTION_REQUIRED = "NO_FINANCIAL_ACTION_REQUIRED", "No Financial Action Required"
+    # Owner 2026-11-12 (rule set v3.4, R06): not in the spec's list. The RRC 501 reply is sent now and
+    # the customer is credited when NPCI's Refund Reversal Confirmation arrives (R07r), so R06 is not a
+    # pending manual credit in reports or on the dashboard.
+    RRC_REPLY_CREDIT_ON_CONFIRMATION = "RRC_REPLY_CREDIT_ON_CONFIRMATION", "RRC 501 reply – credit on confirmation"
 
 
 class Priority(models.TextChoices):

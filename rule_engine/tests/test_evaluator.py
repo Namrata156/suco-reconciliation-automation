@@ -41,6 +41,7 @@ from rule_engine.evaluator import (
 from rule_engine.facts import extract_facts
 from rule_engine.management.commands.check_rule_evaluation import oracle_rules
 from rule_engine.models import RuleEvaluationRun, RuleResult
+from rule_engine.seed_data import v3_4
 from rule_engine.tasks import evaluate_rules
 from transactions.models import TransactionFact
 from transactions.models.history import StagingAdjustmentHistory
@@ -303,6 +304,9 @@ class FirstMatchTests(EvaluatorTestBase):
         ("24", dict(cbs=True, npci=True, code="U9"), "R17"),
         ("25", dict(cbs=True, npci=True, amount_match=None, direction_match=None), "R99"),
         ("26", dict(cbs=True, npci=True, timeout=False, adj=dict(ssk=False, type="RET")), "R04c"),
+        # v3.4 (owner 2026-11-11): the Refund Reversal Confirmation leaves R07a for R07r
+        ("27", dict(cbs=True, npci=True, adj=dict(type="Refund Reversal Confirmation")), "R07r"),
+        ("28", dict(adj=dict(ssk=False, type="Refund Reversal Confirmation")), "R08"),
     ]
 
     def test_each_rule_and_its_order(self):
@@ -315,7 +319,7 @@ class FirstMatchTests(EvaluatorTestBase):
                 self.assertEqual(self.result(f"3000000000{suffix}").rule_code, expected)
         self.assertEqual(RuleResult.objects.filter(is_superseded=False).count(), len(self.CASES))
         results = RuleResult.objects.filter(is_superseded=False)
-        self.assertEqual({r.rule_set.version_label for r in results}, {"v3.3"})
+        self.assertEqual({r.rule_set.version_label for r in results}, {"v3.4"})
         self.assertTrue(all(r.facts and r.rule.code == r.rule_code for r in results))
 
     def test_first_match_helper_never_returns_none(self):
@@ -332,7 +336,9 @@ class OracleAgreementTests(FirstMatchTests):
         for suffix, kwargs, _ in self.CASES:
             self.group(f"3000000000{suffix}", **kwargs)
         self.evaluate()
-        ours = {r.match_group_id: (r.business_date, r.rule_code) for r in RuleResult.objects.filter(is_superseded=False)}
+        # v3.4's R07r is v3.1's R07a split off: the oracle knows it as R07a (v3_4.ORACLE_ALIASES).
+        ours = {r.match_group_id: (r.business_date, v3_4.ORACLE_ALIASES.get(r.rule_code, r.rule_code))
+                for r in RuleResult.objects.filter(is_superseded=False)}
         self.assertEqual(oracle_rules(), ours)
 
 
@@ -467,12 +473,12 @@ class SingleDayTests(EvaluatorTestBase):
     day"): each business date is evaluated against its own files only. R13
     is a T+1 review item; there is no cross-day check in either direction."""
 
-    def test_active_set_is_v3_3(self):
+    def test_active_set_is_v3_4(self):
         self.group("620000000001", cbs=True)
         summary = self.evaluate()
-        self.assertEqual(summary.rule_set_version, "v3.3")
+        self.assertEqual(summary.rule_set_version, "v3.4")
         r = self.result("620000000001")
-        self.assertEqual((r.rule_set.version_label, r.rule.rule_set.version_label), ("v3.3", "v3.3"))
+        self.assertEqual((r.rule_set.version_label, r.rule.rule_set.version_label), ("v3.4", "v3.4"))
 
     def test_r13_pending_investigation_medium_due_next_calendar_day(self):
         for rrn, d, due in (

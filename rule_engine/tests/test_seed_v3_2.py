@@ -64,7 +64,7 @@ class CommandTests(TestCase):
     def test_v3_2_seeded_v3_1_retired(self):
         v31 = RuleSet.objects.get(version_label="v3.1")
         v32 = RuleSet.objects.get(version_label="v3.2")
-        self.assertEqual((v31.status, v32.status), (RuleSetStatus.RETIRED, RuleSetStatus.RETIRED))  # v3.3 active
+        self.assertEqual((v31.status, v32.status), (RuleSetStatus.RETIRED, RuleSetStatus.RETIRED))  # v3.4 active
         self.assertEqual(RuleSet.objects.filter(payment_module=self.upi, status="ACTIVE").count(), 1)
         self.assertEqual(v32.rules.count(), 24)
         self.assertIn("rule set v3.2 created and activated with 24 rules", self.out.getvalue())
@@ -86,8 +86,8 @@ class CommandTests(TestCase):
         out = StringIO()
         call_command("seed_rule_sets", stdout=out)
         self.assertNotIn("differs", out.getvalue())
-        self.assertEqual((RuleSet.objects.count(), Rule.objects.count()), (3, 72))
-        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.3")
+        self.assertEqual((RuleSet.objects.count(), Rule.objects.count()), (4, 97))  # + v3.3, v3.4
+        self.assertEqual(RuleSet.objects.get(status="ACTIVE").version_label, "v3.4")
 
 
 class MigrationTests(TestCase):
